@@ -10,12 +10,14 @@ export interface CreateSessionInput {
   userId: string
   tokenHash: string
   expiresAt: Date
+  lastActivityAt?: Date
 }
 
 export interface AuthRepository {
   findUserByExternalIdentity(provider: string, providerSubject: string): Promise<AuthenticatedUser | null>
   createSession(input: CreateSessionInput): Promise<void>
-  findUserBySessionHash(tokenHash: string, now: Date): Promise<AuthenticatedUser | null>
+  findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number): Promise<AuthenticatedUser | null>
+  touchSession(tokenHash: string, activityAt: Date): Promise<void>
   invalidateSession(tokenHash: string, invalidatedAt: Date): Promise<void>
   isSupervisorOf(supervisorUserId: string, kaimahiUserId: string): Promise<boolean>
 }
@@ -60,7 +62,7 @@ export class PostgresAuthRepository implements AuthRepository {
     await this.db.insert(schema.applicationSessions).values(input)
   }
 
-  async findUserBySessionHash(tokenHash: string, now: Date): Promise<AuthenticatedUser | null> {
+  async findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number): Promise<AuthenticatedUser | null> {
     const rows = await this.db
       .select({
         id: schema.appUsers.id,
@@ -77,11 +79,19 @@ export class PostgresAuthRepository implements AuthRepository {
         eq(schema.applicationSessions.tokenHash, tokenHash),
         isNull(schema.applicationSessions.invalidatedAt),
         gt(schema.applicationSessions.expiresAt, now),
+        gt(schema.applicationSessions.lastActivityAt, new Date(now.getTime() - idleTimeoutMinutes * 60 * 1000)),
       ))
       .limit(1)
 
     if (!rows[0]) return null
     return this.withRoles(rows[0])
+  }
+
+  async touchSession(tokenHash: string, activityAt: Date): Promise<void> {
+    await this.db
+      .update(schema.applicationSessions)
+      .set({ lastActivityAt: activityAt })
+      .where(and(eq(schema.applicationSessions.tokenHash, tokenHash), isNull(schema.applicationSessions.invalidatedAt)))
   }
 
   async invalidateSession(tokenHash: string, invalidatedAt: Date): Promise<void> {

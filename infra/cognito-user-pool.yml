@@ -28,6 +28,11 @@ Resources:
       UserPoolName: !Ref UserPoolName
       UserPoolTier: ESSENTIALS
       DeletionProtection: ACTIVE
+      UserPoolTags:
+        Application: te-kaupapa
+        Environment: staging
+        ManagedBy: te-kaupapa-repository
+        Purpose: authentication-pilot
       UsernameAttributes:
         - email
       AutoVerifiedAttributes:

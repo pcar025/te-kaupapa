@@ -41,7 +41,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL auth repository integration', () => {
       })
 
       const repository = new PostgresAuthRepository(connection.db)
-      await expect(repository.findUserBySessionHash(tokenHash, new Date())).resolves.toMatchObject({
+      await expect(repository.findUserBySessionHash(tokenHash, new Date(), 60)).resolves.toMatchObject({
         id: userId,
         organisation: { id: organisationId },
         roles: ['KAIMAHI', 'SUPERVISOR'],

@@ -22,9 +22,9 @@ Milestone 1 adds a standalone Te Kaupapa authentication and authorization bounda
 
 ## Session and CSRF design
 
-The `application_session` table stores a UUID, SHA-256 hash of a random opaque browser cookie, expiry, invalidation time, and user UUID. The raw session token is never persisted. A successful OIDC callback starts a new session, which is the relevant session rotation point. Logout revokes the stored session before clearing the cookie.
+The `application_session` table stores a UUID, SHA-256 hash of a random opaque browser cookie, expiry, last qualifying activity time, invalidation time, and user UUID. The raw session token is never persisted. A successful OIDC callback starts a new session, which is the relevant session rotation point. Logout revokes the stored session before clearing the cookie.
 
-The session cookie is `HttpOnly`, `SameSite=Lax`, path-scoped to `/`, and `Secure` in production. A separate signed, short-lived, HttpOnly OIDC transaction cookie holds state, nonce, and the PKCE verifier. Neither cookie is available to JavaScript or `localStorage`.
+The session cookie is `HttpOnly`, `SameSite=Lax`, path-scoped to `/`, and `Secure` in production. It has a 12-hour absolute lifetime and the server refuses normal access after 60 minutes without qualifying authenticated API activity; activity can refresh the idle deadline but never the absolute expiry. A separate signed, short-lived, HttpOnly OIDC transaction cookie holds state, nonce, and the PKCE verifier. Neither cookie is available to JavaScript or `localStorage`.
 
 State-changing routes currently validate `Origin` or `Referer` against a narrow configured allow-list. This is an explicit CSRF control; CORS is not treated as CSRF protection. A CSRF token is not necessary for the single logout mutation while this strict origin check and `SameSite=Lax` cookie model apply. Reassess this decision before adding cross-origin state-changing operations or embedded clients.
 
@@ -93,11 +93,26 @@ npm run provision:cognito-user -- \
   --dry-run
 ```
 
-Remove `--dry-run` only in the approved staging environment after setting `DATABASE_URL`, `AWS_REGION`, and `COGNITO_USER_POOL_ID`. The real command creates or finds the Cognito user by email without `TemporaryPassword`, then creates/updates the internal organization/user/role records and links the Cognito `sub`. `--supervises-user-ids` is optional and accepts already-provisioned Kaimahi UUIDs in the same organisation; the database rejects invalid role, cross-organisation, and self-supervision assignments. It does not set a permanent password, send custom email, expose an administrative screen, or log the user’s email in its success output. A retry is safe when Cognito already has that email. An existing Cognito subject must never be silently reassigned to a different Te Kaupapa person.
+Remove `--dry-run` only in the approved staging environment after setting `DATABASE_URL`, `AWS_REGION`, and `COGNITO_USER_POOL_ID`. The real command creates or finds the Cognito user by email without `TemporaryPassword`, then creates/updates the internal organization/user/role records and links the Cognito `sub`. It does not administratively mark an arbitrary email address verified: the staging Cognito email-OTP test must confirm the provider’s supported first-sign-in verification behaviour. `--supervises-user-ids` is optional and accepts already-provisioned Kaimahi UUIDs in the same organisation; the database rejects invalid role, cross-organisation, and self-supervision assignments. It does not set a permanent password, send custom email, expose an administrative screen, or log the user’s email in its success output. A retry is safe when Cognito already has that email. An existing Cognito subject must never be silently reassigned to a different Te Kaupapa person.
 
 ## Cognito behavioural verification
 
 This implementation was based on AWS’s current documentation: Essentials or Plus is required for managed login/passwordless/passkeys; managed login version 2 is required for the current passkey experience; email OTP requires Cognito email delivery through SES; and admin-created passwordless users are created by omitting `TemporaryPassword`. Cognito’s managed login owns the passkey enrollment and recovery experience. The exact deployed user-pool behaviour, sender verification, and passkey relying-party domain must still be tested in the approved staging account.
+
+## Staging activation record — 9 August 2026
+
+The requested region is `ap-southeast-2`. No Te Kaupapa AWS resource has been created, modified, or deleted. The configured AWS credentials were rejected by the mandatory `sts:GetCallerIdentity` call with `InvalidClientTokenId`; consequently no account identity, Cognito collision discovery, SES status, RDS status, Secrets Manager state, or CloudFormation state could be trusted or inspected. This is an external credential issue, not a live-authentication implementation failure.
+
+The CloudFormation template applies `Application=te-kaupapa`, `Environment=staging`, `ManagedBy=te-kaupapa-repository`, and `Purpose=authentication-pilot` to the Cognito user pool. Apply the same tags to the CloudFormation stack at deployment time; Cognito user-pool domains and app clients do not expose equivalent tag properties in this template.
+
+Once Peter supplies valid credentials for the intended existing account, deploy [the isolated template](../infra/cognito-user-pool.yml) with only these local development endpoints:
+
+- callback: `http://localhost:3011/api/auth/callback`
+- managed-login logout destination: `http://localhost:8443`
+
+The template must use a dedicated available `te-kaupapa-staging` Cognito-domain prefix (or the smallest isolated suffix), SES sender identity owned by Te Kaupapa, and a separately approved Te Kaupapa PostgreSQL database. No sender identity, pilot email, database, secret, or runtime IAM role has been supplied or created. After credentials are repaired, perform the required read-only discovery before deployment; do not reuse any CareFlow or ambiguous resource.
+
+For teardown after an approved pilot, first disable/delete pilot users and revoke their application sessions, then delete only the CloudFormation stack created for this task. Do not delete a protected user pool until deletion protection has been deliberately disabled by an authorized operator, and do not delete any shared or CareFlow resource.
 
 ## Validation
 

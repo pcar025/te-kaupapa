@@ -72,8 +72,10 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (request.authenticatedUser) return request.authenticatedUser
     const token = request.cookies[config.cookieName]
     if (!token) return null
-    const user = await repository.findUserBySessionHash(sha256(token), now())
+    const tokenHash = sha256(token)
+    const user = await repository.findUserBySessionHash(tokenHash, now(), config.sessionIdleTimeoutMinutes)
     if (!user || user.status !== 'active') return null
+    await repository.touchSession(tokenHash, now())
     request.authenticatedUser = user
     return user
   }
@@ -154,6 +156,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
         userId: user.id,
         tokenHash: sha256(token),
         expiresAt: new Date(now().getTime() + config.sessionTtlHours * 60 * 60 * 1000),
+        lastActivityAt: now(),
       })
       reply.setCookie(config.cookieName, token, sessionCookie)
       return reply.redirect(config.frontendOrigin)

@@ -28,10 +28,17 @@ class MemoryRepository implements AuthRepository {
     this.sessions.set(input.tokenHash, input)
   }
 
-  async findUserBySessionHash(tokenHash: string, now: Date) {
+  async findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number) {
     const session = this.sessions.get(tokenHash)
-    if (!session || session.invalidatedAt || session.expiresAt <= now) return null
+    if (!session) return null
+    const lastActivityAt = session.lastActivityAt ?? session.expiresAt
+    if (session.invalidatedAt || session.expiresAt <= now || lastActivityAt <= new Date(now.getTime() - idleTimeoutMinutes * 60 * 1000)) return null
     return [...this.identities.values()].find((user) => user.id === session.userId) ?? null
+  }
+
+  async touchSession(tokenHash: string, activityAt: Date) {
+    const session = this.sessions.get(tokenHash)
+    if (session) session.lastActivityAt = activityAt
   }
 
   async invalidateSession(tokenHash: string, invalidatedAt: Date) {
@@ -65,6 +72,7 @@ function config(): AppConfiguration {
     cookieName: 'test_session',
     cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough',
     sessionTtlHours: 12,
+    sessionIdleTimeoutMinutes: 60,
   }
 }
 
@@ -179,5 +187,36 @@ describe('authenticated application shell API', () => {
       headers: { cookie: 'test_session=supervisor-session' },
     })).statusCode).toBe(204)
     await app.close()
+  })
+
+  it('enforces server-side idle expiry without extending the absolute session lifetime', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const now = new Date('2026-08-09T04:00:00.000Z')
+    const idleToken = 'idle-session'
+    await repository.createSession({
+      id: '9f49620a-6a90-4739-934d-44c487c51d04',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(idleToken),
+      expiresAt: new Date(now.getTime() + 12 * 60 * 60 * 1000),
+      lastActivityAt: new Date(now.getTime() - 61 * 60 * 1000),
+    })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${idleToken}` } })).statusCode).toBe(401)
+
+    const activeToken = 'active-session'
+    await repository.createSession({
+      id: '12834aa0-8e1e-4d43-a57f-ddecae4b95f9',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(activeToken),
+      expiresAt: new Date(now.getTime() + 1),
+      lastActivityAt: now,
+    })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(200)
+    const afterAbsoluteExpiry = new Date(now.getTime() + 2)
+    const expiredApp = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => afterAbsoluteExpiry })
+    expect((await expiredApp.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
+    await app.close()
+    await expiredApp.close()
   })
 })

@@ -54,7 +54,6 @@ async function findOrCreateCognitoUser(input: { email: string; displayName: stri
       DesiredDeliveryMediums: ['EMAIL'],
       UserAttributes: [
         { Name: 'email', Value: input.email },
-        { Name: 'email_verified', Value: 'true' },
         { Name: 'name', Value: input.displayName },
       ],
     }))
