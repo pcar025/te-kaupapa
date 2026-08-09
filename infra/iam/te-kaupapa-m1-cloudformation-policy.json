@@ -79,16 +79,10 @@
       }
     },
     {
-      "Sid": "DeleteOnlyTheFiveInspectedFailedTeKaupapaStacks",
+      "Sid": "DeleteOnlyTaggedCanonicalTeKaupapaAuthenticationStacks",
       "Effect": "Allow",
       "Action": "cloudformation:DeleteStack",
-      "Resource": [
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/1a9d51a0-93d9-11f1-9fa8-0a1000a44c5d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/dbc97550-93db-11f1-b5bb-02a79eb87fcf"
-      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
@@ -100,16 +94,10 @@
       }
     },
     {
-      "Sid": "VerifyOnlyTheFiveFailedStackRecordsAreGone",
+      "Sid": "VerifyOnlyCanonicalTeKaupapaAuthenticationStackCleanup",
       "Effect": "Allow",
       "Action": "cloudformation:DescribeStacks",
-      "Resource": [
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/1a9d51a0-93d9-11f1-9fa8-0a1000a44c5d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/dbc97550-93db-11f1-b5bb-02a79eb87fcf"
-      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2"
