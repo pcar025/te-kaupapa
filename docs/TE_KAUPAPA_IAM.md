@@ -27,6 +27,7 @@ Confirm the returned ARN identifies `te-kaupapa-dev` or its assumed session and 
 
 - `sts`: `GetCallerIdentity` for the required preflight verification.
 - `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml). It may delete only tagged instances of the fixed canonical `te-kaupapa-staging-authentication` stack name, after their resources are confirmed safe for the approved cleanup.
+- `cloudformation`: additionally create, inspect, and delete one named change set only for the already-successful canonical authentication stack. This is limited to the approved passkey RP-ID review, the fixed resource types, the four required request/resource tags, and change-set name `te-kaupapa-passkey-rpid-20260809`; it cannot inspect or execute a change set for another stack.
 
 `TeKaupapaMilestone1CognitoSes` contains only:
 
@@ -66,6 +67,8 @@ The following permissions use `Resource: "*"`:
 Neither replacement policy grants IAM administration, `iam:*`, `iam:PassRole`, RDS permissions, Secrets Manager permissions, SES identity/DNS/sending/production-access operations, stack-set operations, or broad service wildcards. The sole exception is the exact `iam:CreateServiceLinkedRole` action required by Cognito email configuration, constrained to `email.cognito-idp.amazonaws.com`; it cannot create a role for another service or modify/delete/attach any role. They also exclude public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
 
 It grants `cloudformation:DeleteStack` only for the fixed canonical stack path `te-kaupapa-staging-authentication/*`, in this account and region, and only while the stack has all four required Te Kaupapa resource tags. CloudFormation generates a new stack ID on each retry, so this stack-name scope avoids accumulating per-ID cleanup exceptions while still excluding every other stack name, including CareFlow. A separate read-only `DescribeStacks` statement is scoped to the same canonical path without a resource-tag condition so a deletion waiter can verify removal after CloudFormation no longer exposes the stack's tags. It does not permit deletion of `te-kaupapa-staging-authentication-v2`, a successful stack under another name, any non-Te-Kaupapa stack, or any arbitrary future name. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
+
+The one passkey change-set exception is narrower still: `CreateChangeSet`, `DescribeChangeSet`, and `DeleteChangeSet` apply only to stack ID `29a3c780-93e1-11f1-936a-02407fbd357b` and the fixed name `te-kaupapa-passkey-rpid-20260809`. It authorizes preview and cleanup of the exact approved update, not `ExecuteChangeSet`; the already-scoped `UpdateStack` action remains the separately controlled operation that can apply an approved reviewed template. AWS documents these change-set actions as stack-scoped and supports the resource-type, change-set-name, and request-tag conditions used here.
 
 ## CareFlow isolation and limits
 

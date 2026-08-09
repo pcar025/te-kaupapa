@@ -59,6 +59,58 @@
       }
     },
     {
+      "Sid": "CreateOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
+      "Effect": "Allow",
+      "Action": "cloudformation:CreateChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain"
+          ],
+          "aws:TagKeys": [
+            "Application",
+            "Environment",
+            "ManagedBy",
+            "Purpose"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "cloudformation:ChangeSetName": "te-kaupapa-passkey-rpid-20260809",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot",
+          "aws:RequestTag/Application": "te-kaupapa",
+          "aws:RequestTag/Environment": "staging",
+          "aws:RequestTag/ManagedBy": "te-kaupapa-repository",
+          "aws:RequestTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "InspectAndRemoveOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:DeleteChangeSet"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "cloudformation:ChangeSetName": "te-kaupapa-passkey-rpid-20260809",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
       "Sid": "InspectOnlyTaggedTeKaupapaStagingStacks",
       "Effect": "Allow",
       "Action": [
