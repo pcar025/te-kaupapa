@@ -55,7 +55,6 @@ Resources:
             # passwordless factors. Admin-created pilot users receive no
             # password, so EMAIL_OTP and WEB_AUTHN remain their usable flows.
             - PASSWORD
-      WebAuthnRelyingPartyID: !Sub '${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
       WebAuthnUserVerification: preferred
       Schema:
         - Name: email
