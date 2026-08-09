@@ -59,7 +59,7 @@ The following permissions use `Resource: "*"`:
 
 The policy grants no IAM administration, no `iam:*`, no `iam:PassRole`, no RDS permissions, no Secrets Manager permissions, no SES identity/DNS/sending/production-access operations, no stack-set operations, and no broad service wildcards. It also excludes public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
 
-It grants `cloudformation:DeleteStack` only for the two named, tagged `ROLLBACK_COMPLETE` stack records left by the failed 9 August 2026 activation attempts. It does not permit deletion of a canonical stack, any future stack, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
+It grants `cloudformation:DeleteStack` only for the two named, tagged `ROLLBACK_COMPLETE` stack records left by the failed 9 August 2026 activation attempts. A separate read-only `DescribeStacks` statement is scoped to those exact two stack ARNs so the deletion waiter can prove they are gone after their tags are no longer available for a tag condition. It does not permit deletion of a canonical stack, any future stack, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
 
 ## CareFlow isolation and limits
 

@@ -97,6 +97,20 @@
       }
     },
     {
+      "Sid": "VerifyOnlyTheTwoFailedStackRecordsAreGone",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": [
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
       "Sid": "CreateOnlyRequiredTaggedTeKaupapaUserPool",
       "Effect": "Allow",
       "Action": "cognito-idp:CreateUserPool",
