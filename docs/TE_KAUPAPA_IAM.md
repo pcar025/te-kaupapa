@@ -25,7 +25,7 @@ Confirm the returned ARN identifies `te-kaupapa-dev` or its assumed session and 
 The policy contains only these services:
 
 - `sts`: `GetCallerIdentity` for the required preflight verification.
-- `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml).
+- `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml). It may delete only the two inspected `ROLLBACK_COMPLETE` records named in the policy, after their resources are confirmed deleted.
 - `cognito-idp`: create and apply the four required tags to the new user pool, then configure, inspect, and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools. It also permits read-only availability checking for the one requested Cognito domain prefix.
 - `ses`: read-only account/identity discovery to establish sandbox status and a suitable verified sender.
 
@@ -59,7 +59,7 @@ The following permissions use `Resource: "*"`:
 
 The policy grants no IAM administration, no `iam:*`, no `iam:PassRole`, no RDS permissions, no Secrets Manager permissions, no SES identity/DNS/sending/production-access operations, no stack-set operations, and no broad service wildcards. It also excludes public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
 
-It does not grant `cloudformation:DeleteStack`. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate stack teardown requires separate review/approval; the user pool has deletion protection enabled.
+It grants `cloudformation:DeleteStack` only for the two named, tagged `ROLLBACK_COMPLETE` stack records left by the failed 9 August 2026 activation attempts. It does not permit deletion of a canonical stack, any future stack, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
 
 ## CareFlow isolation and limits
 

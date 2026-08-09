@@ -79,6 +79,24 @@
       }
     },
     {
+      "Sid": "DeleteOnlyTheTwoInspectedFailedTeKaupapaStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:DeleteStack",
+      "Resource": [
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/*"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
       "Sid": "CreateOnlyRequiredTaggedTeKaupapaUserPool",
       "Effect": "Allow",
       "Action": "cognito-idp:CreateUserPool",
