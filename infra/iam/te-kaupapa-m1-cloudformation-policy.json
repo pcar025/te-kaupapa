@@ -1,0 +1,114 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VerifyCallerIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ValidateTeKaupapaCognitoTemplate",
+      "Effect": "Allow",
+      "Action": "cloudformation:ValidateTemplate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "CreateOnlyTeKaupapaStagingCognitoStack",
+      "Effect": "Allow",
+      "Action": "cloudformation:CreateStack",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "UpdateOnlyTaggedTeKaupapaStagingCognitoStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:UpdateStack",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "InspectOnlyTaggedTeKaupapaStagingStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:DescribeStacks",
+        "cloudformation:GetTemplate"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteOnlyTheTwoInspectedFailedTeKaupapaStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:DeleteStack",
+      "Resource": [
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "VerifyOnlyTheTwoFailedStackRecordsAreGone",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": [
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    }
+  ]
+}
