@@ -42,7 +42,7 @@ Creation of a user pool must carry all four request tags:
 
 All existing-user-pool write, read, and pilot-user operations require those same resource tags on a Cognito user-pool ARN in account `905418481310`, region `ap-southeast-2`. The policy never grants Cognito writes to an untagged or other-product pool. CloudFormation stack operations are ARN-scoped to `te-kaupapa-staging-*`; stack updates/inspection also require the same stack tags and are restricted to the three Cognito resource types.
 
-CloudFormation performs `cognito-idp:TagResource` after `CreateUserPool` when it applies `UserPoolTags`. The policy permits that one action only for the four required tag keys and values in the approved account and region; it does not grant `UntagResource`. This is necessary because a new user pool has no resource tags until that call completes.
+CloudFormation propagates stack-level and system tags to Cognito user pools. The policy permits `cognito-idp:TagResource` only when the request includes the four required Te Kaupapa tag values and when every tag key is either one of those four keys or an `aws:cloudformation:*` system key. It permits `cognito-idp:UntagResource` only for those CloudFormation system keys, not for Te Kaupapa ownership tags. This is necessary because a new user pool has no resource tags until that call completes, and Cognito documents all of `TagResource`, `UntagResource`, and `ListTagsForResource` as CloudFormation tagging prerequisites.
 
 ## Unavoidable wildcards
 
