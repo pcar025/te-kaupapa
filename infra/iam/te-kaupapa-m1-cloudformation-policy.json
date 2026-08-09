@@ -28,7 +28,8 @@
           "cloudformation:ResourceTypes": [
             "AWS::Cognito::UserPool",
             "AWS::Cognito::UserPoolClient",
-            "AWS::Cognito::UserPoolDomain"
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
           ]
         },
         "StringEquals": {
@@ -46,7 +47,8 @@
           "cloudformation:ResourceTypes": [
             "AWS::Cognito::UserPool",
             "AWS::Cognito::UserPoolClient",
-            "AWS::Cognito::UserPoolDomain"
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
           ]
         },
         "StringEquals": {
@@ -59,7 +61,7 @@
       }
     },
     {
-      "Sid": "CreateOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
+      "Sid": "CreateOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSet",
       "Effect": "Allow",
       "Action": "cloudformation:CreateChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
@@ -68,7 +70,8 @@
           "cloudformation:ResourceTypes": [
             "AWS::Cognito::UserPool",
             "AWS::Cognito::UserPoolClient",
-            "AWS::Cognito::UserPoolDomain"
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
           ],
           "aws:TagKeys": [
             "Application",
@@ -79,7 +82,7 @@
         },
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": "te-kaupapa-passkey-rpid-20260809",
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-branding-20260810",
           "aws:ResourceTag/Application": "te-kaupapa",
           "aws:ResourceTag/Environment": "staging",
           "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
@@ -92,17 +95,14 @@
       }
     },
     {
-      "Sid": "RemoveOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
+      "Sid": "RemoveOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSet",
       "Effect": "Allow",
       "Action": "cloudformation:DeleteChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": [
-            "te-kaupapa-passkey-rpid-20260809",
-            "arn:aws:cloudformation:ap-southeast-2:905418481310:changeSet/te-kaupapa-passkey-rpid-20260809/bcf42fb5-683d-408b-a25f-3a7fc694923b"
-          ],
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-branding-20260810",
           "aws:ResourceTag/Application": "te-kaupapa",
           "aws:ResourceTag/Environment": "staging",
           "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
@@ -111,7 +111,7 @@
       }
     },
     {
-      "Sid": "InspectOnlyCanonicalTeKaupapaPasskeyRpIdChangeSets",
+      "Sid": "InspectOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSets",
       "Effect": "Allow",
       "Action": "cloudformation:DescribeChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
