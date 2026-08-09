@@ -13,6 +13,12 @@
       }
     },
     {
+      "Sid": "VerifyOnlyCognitoEmailServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::905418481310:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService"
+    },
+    {
       "Sid": "CreateOnlyRequiredTaggedTeKaupapaUserPool",
       "Effect": "Allow",
       "Action": "cognito-idp:CreateUserPool",
