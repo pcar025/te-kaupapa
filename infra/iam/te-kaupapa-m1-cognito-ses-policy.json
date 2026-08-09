@@ -34,6 +34,7 @@
         "cognito-idp:DescribeUserPool",
         "cognito-idp:DescribeUserPoolClient",
         "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:DescribeManagedLoginBrandingByClient",
         "cognito-idp:GetUserPoolMfaConfig",
         "cognito-idp:ListTagsForResource",
         "cognito-idp:ListUserPoolClients",
