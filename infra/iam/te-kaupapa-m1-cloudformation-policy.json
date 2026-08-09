@@ -129,7 +129,10 @@
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": "arn:aws:cloudformation:ap-southeast-2:905418481310:changeSet/te-kaupapa-passkey-rpid-20260809/bcf42fb5-683d-408b-a25f-3a7fc694923b"
+          "cloudformation:ChangeSetName": [
+            "te-kaupapa-passkey-rpid-20260809",
+            "arn:aws:cloudformation:ap-southeast-2:905418481310:changeSet/te-kaupapa-passkey-rpid-20260809/bcf42fb5-683d-408b-a25f-3a7fc694923b"
+          ]
         }
       }
     },
