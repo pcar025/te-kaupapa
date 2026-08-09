@@ -26,7 +26,7 @@ Confirm the returned ARN identifies `te-kaupapa-dev` or its assumed session and 
 `TeKaupapaMilestone1CloudFormation` contains only:
 
 - `sts`: `GetCallerIdentity` for the required preflight verification.
-- `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml). It may delete only the four inspected `ROLLBACK_COMPLETE` records named in the policy, after their resources are confirmed deleted.
+- `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml). It may delete only the five inspected failed-stack records named in the policy, after their resources are confirmed safe for the approved cleanup.
 
 `TeKaupapaMilestone1CognitoSes` contains only:
 
@@ -65,7 +65,7 @@ The following permissions use `Resource: "*"`:
 
 Neither replacement policy grants IAM administration, `iam:*`, `iam:PassRole`, RDS permissions, Secrets Manager permissions, SES identity/DNS/sending/production-access operations, stack-set operations, or broad service wildcards. The sole exception is the exact `iam:CreateServiceLinkedRole` action required by Cognito email configuration, constrained to `email.cognito-idp.amazonaws.com`; it cannot create a role for another service or modify/delete/attach any role. They also exclude public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
 
-It grants `cloudformation:DeleteStack` only for four immutable, tagged `ROLLBACK_COMPLETE` stack ARNs left by the failed 9 August 2026 activation attempts. Each was inspected and has only a `DELETE_COMPLETE` Cognito user-pool resource. A separate read-only `DescribeStacks` statement is scoped to those same immutable ARNs so the deletion waiter can prove they are gone after their tags are no longer available for a tag condition. It does not permit deletion of a successful canonical stack, any future stack that reuses a name, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
+It grants `cloudformation:DeleteStack` only for five immutable, tagged failed-stack ARNs left by the failed 9 August 2026 activation attempts. Four are `ROLLBACK_COMPLETE` records with only a `DELETE_COMPLETE` Cognito user-pool resource. The fifth is the separately approved `ROLLBACK_FAILED` record whose tagged user pool was authoritatively confirmed empty before its deletion protection was inactivated. A separate read-only `DescribeStacks` statement is scoped to those same immutable ARNs so the deletion waiter can prove they are gone after their tags are no longer available for a tag condition. It does not permit deletion of a successful canonical stack, any future stack that reuses a name, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
 
 ## CareFlow isolation and limits
 
