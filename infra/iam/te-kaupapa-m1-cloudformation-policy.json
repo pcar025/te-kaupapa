@@ -61,7 +61,7 @@
       }
     },
     {
-      "Sid": "CreateOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSet",
+      "Sid": "CreateOnlyCanonicalTeKaupapaManagedLoginAuthConfigChangeSet",
       "Effect": "Allow",
       "Action": "cloudformation:CreateChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
@@ -82,7 +82,7 @@
         },
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-branding-20260810",
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-auth-config-20260810",
           "aws:ResourceTag/Application": "te-kaupapa",
           "aws:ResourceTag/Environment": "staging",
           "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
@@ -95,14 +95,14 @@
       }
     },
     {
-      "Sid": "RemoveOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSet",
+      "Sid": "RemoveOnlyCanonicalTeKaupapaManagedLoginAuthConfigChangeSet",
       "Effect": "Allow",
       "Action": "cloudformation:DeleteChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
       "Condition": {
         "StringEquals": {
           "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-branding-20260810",
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-auth-config-20260810",
           "aws:ResourceTag/Application": "te-kaupapa",
           "aws:ResourceTag/Environment": "staging",
           "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",

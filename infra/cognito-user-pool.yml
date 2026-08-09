@@ -88,6 +88,8 @@ Resources:
       GenerateSecret: true
       PreventUserExistenceErrors: ENABLED
       EnableTokenRevocation: true
+      SupportedIdentityProviders:
+        - COGNITO
       ExplicitAuthFlows:
         - ALLOW_USER_AUTH
       AllowedOAuthFlowsUserPoolClient: true
