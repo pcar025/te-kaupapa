@@ -92,12 +92,9 @@
       }
     },
     {
-      "Sid": "InspectAndRemoveOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
+      "Sid": "RemoveOnlyCanonicalTeKaupapaPasskeyRpIdChangeSet",
       "Effect": "Allow",
-      "Action": [
-        "cloudformation:DescribeChangeSet",
-        "cloudformation:DeleteChangeSet"
-      ],
+      "Action": "cloudformation:DeleteChangeSet",
       "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
       "Condition": {
         "StringEquals": {
@@ -110,6 +107,17 @@
           "aws:ResourceTag/Environment": "staging",
           "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
           "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "InspectOnlyCanonicalTeKaupapaPasskeyRpIdChangeSets",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
         }
       }
     },
