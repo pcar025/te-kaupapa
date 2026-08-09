@@ -56,7 +56,7 @@ Resources:
             # password, so EMAIL_OTP and WEB_AUTHN remain their usable flows.
             - PASSWORD
       WebAuthnRelyingPartyID: !Sub '${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
-      WebAuthnUserVerification: PREFERRED
+      WebAuthnUserVerification: preferred
       Schema:
         - Name: email
           AttributeDataType: String
