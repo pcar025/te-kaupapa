@@ -41,6 +41,7 @@
         "cognito-idp:DescribeUserPoolDomain",
         "cognito-idp:ListTagsForResource",
         "cognito-idp:ListUserPoolClients",
+        "cognito-idp:SetUserPoolMfaConfig",
         "cognito-idp:UpdateUserPool",
         "cognito-idp:UpdateUserPoolClient",
         "cognito-idp:UpdateUserPoolDomain"
