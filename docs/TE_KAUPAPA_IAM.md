@@ -30,6 +30,7 @@ Confirm the returned ARN identifies `te-kaupapa-dev` or its assumed session and 
 
 `TeKaupapaMilestone1CognitoSes` contains only:
 
+- `iam`: one `CreateServiceLinkedRole` exception, constrained to Cognito's `email.cognito-idp.amazonaws.com` service principal so Cognito can create its own SES email-delivery service-linked role when absent.
 - `cognito-idp`: create and apply the four required tags to the new user pool, then configure, inspect, and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools. It also permits read-only availability checking for the one requested Cognito domain prefix.
 - `ses`: read-only account/identity discovery to establish sandbox status and a suitable verified sender.
 
@@ -55,13 +56,14 @@ The following permissions use `Resource: "*"`:
 - `sts:GetCallerIdentity` in `TeKaupapaMilestone1CloudFormation`: STS identity verification is not a resource-owned operation.
 - `cloudformation:ValidateTemplate` in `TeKaupapaMilestone1CloudFormation`: AWS does not provide a stack resource for validation of an undeployed local template.
 - `cognito-idp:CreateUserPool` in `TeKaupapaMilestone1CognitoSes`: the pool ARN does not exist until creation. Required request tags and the requested region constrain it.
+- `iam:CreateServiceLinkedRole` in `TeKaupapaMilestone1CognitoSes`: the service-linked role does not exist before Cognito creates it. AWS requires `Resource: "*"` for this creation flow; `iam:AWSServiceName=email.cognito-idp.amazonaws.com` limits it to Cognito's SES email-delivery role.
 - `cognito-idp:ListUserPools`, `cognito-idp:DescribeUserPoolDomain`, `ses:GetAccount`, and `ses:ListEmailIdentities` in `TeKaupapaMilestone1CognitoSes`: these discovery APIs do not expose a resource type that can safely express an as-yet-uncreated pool/domain. They are read-only and constrained to `ap-southeast-2`; the operational procedure limits the domain query to the approved Te Kaupapa prefix.
 
 `ses:GetEmailIdentity` is scoped to identity ARNs in this account/region, but can read existing identity verification metadata. This is necessary to determine whether a demonstrably Te Kaupapa-owned sender exists; it grants no SES write or send capability. Read-only list/discovery can reveal metadata for other projects, including CareFlow, but grants no modification access.
 
 ## Deliberately excluded
 
-Neither replacement policy grants IAM administration, `iam:*`, `iam:PassRole`, RDS permissions, Secrets Manager permissions, SES identity/DNS/sending/production-access operations, stack-set operations, or broad service wildcards. They also exclude public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
+Neither replacement policy grants IAM administration, `iam:*`, `iam:PassRole`, RDS permissions, Secrets Manager permissions, SES identity/DNS/sending/production-access operations, stack-set operations, or broad service wildcards. The sole exception is the exact `iam:CreateServiceLinkedRole` action required by Cognito email configuration, constrained to `email.cognito-idp.amazonaws.com`; it cannot create a role for another service or modify/delete/attach any role. They also exclude public signup, password/SMS configuration work, deployment hosting, and all Milestone 2 application capabilities.
 
 It grants `cloudformation:DeleteStack` only for three immutable, tagged `ROLLBACK_COMPLETE` stack ARNs left by the failed 9 August 2026 activation attempts. The third ARN is the subsequently inspected canonical retry record, whose only user-pool resource is `DELETE_COMPLETE`. A separate read-only `DescribeStacks` statement is scoped to those same immutable ARNs so the deletion waiter can prove they are gone after their tags are no longer available for a tag condition. It does not permit deletion of a successful canonical stack, any future stack that reuses a name, or any non-Te-Kaupapa stack. CloudFormation may still need the narrowly scoped Cognito delete actions for automatic rollback of a failed stack operation. Deliberate teardown of a successful user pool remains a separate review/approval decision; the user pool has deletion protection enabled.
 

@@ -119,6 +119,8 @@ The cleanup policy was also tightened to use the two immutable failed stack ARNs
 
 The later canonical retry also rolled back with its sole user-pool resource `DELETE_COMPLETE`. Its immutable stack ARN is `arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd`. The split CloudFormation policy now adds only this approved, inspected rollback ARN to its delete and post-delete verification statements; no name wildcard or successful-stack delete permission is introduced.
 
+After the split Cognito/SES policy was applied, the next canonical retry passed Cognito tagging and failed because the account has no Cognito SES email service-linked role. Cognito requires the deploying principal to allow `iam:CreateServiceLinkedRole` with `iam:AWSServiceName=email.cognito-idp.amazonaws.com` when it first configures SES email delivery. The split Cognito/SES policy now grants only that action with that exact service-name condition; it grants no general IAM administration, role modification, role deletion, attachment, or `iam:PassRole`.
+
 RDS instance and cluster discovery was denied as expected because the current policy intentionally has no RDS permissions. No clearly Te Kaupapa-specific PostgreSQL service could therefore be confirmed, and no database, secret, pilot user, application identity, or live authentication test was created or performed.
 
 The CloudFormation template applies `Application=te-kaupapa`, `Environment=staging`, `ManagedBy=te-kaupapa-repository`, and `Purpose=authentication-pilot` to the Cognito user pool. Apply the same tags to the CloudFormation stack at deployment time; Cognito user-pool domains and app clients do not expose equivalent tag properties in this template.

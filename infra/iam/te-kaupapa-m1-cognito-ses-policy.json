@@ -2,6 +2,17 @@
   "Version": "2012-10-17",
   "Statement": [
     {
+      "Sid": "CreateOnlyCognitoEmailServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:CreateServiceLinkedRole",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "iam:AWSServiceName": "email.cognito-idp.amazonaws.com"
+        }
+      }
+    },
+    {
       "Sid": "CreateOnlyRequiredTaggedTeKaupapaUserPool",
       "Effect": "Allow",
       "Action": "cognito-idp:CreateUserPool",
