@@ -1,41 +1,634 @@
-# figma-make-app
+# Te Kaupapa — Repository Instructions
 
-React + Vite + Tailwind CSS project running inside Figma Make.
+## Purpose
 
-## Development Server
+Te Kaupapa is currently being developed as a standalone application and repository.
 
-A Vite development server is **already running** on `$PORT` (default 8443). You don't need to start it manually.
+It may ultimately become a workflow or capability within CareFlow, but it must remain independent during development and testing.
 
-- Preview URL: The user can access the running app through the preview panel
-- Hot reload: Changes to source files are reflected immediately
+Do not access, import from, modify, or create dependencies on the CareFlow repository unless explicitly instructed.
 
-## Project Structure
+Make architectural choices that preserve a clean future integration boundary without over-engineering for an integration that has not yet been defined.
 
-This is the canonical project structure. Start with task-relevant files below. Only follow imports or inspect other files when required, when a documented path is missing, or when the repository contradicts this guide.
+---
 
-- `src/main.tsx` - React entrypoint; imports `src/index.css` and mounts `src/App.tsx` into the `#root` element
-- `src/App.tsx` - Primary application component and the usual starting point for UI work
-- `src/index.css` - Global CSS entrypoint and Tailwind CSS v4 import
-- `index.html` - Vite HTML shell containing the `#root` element and loading `src/main.tsx`
-- `package.json` - Project dependencies and the Vite build, development, preview, and formatting scripts
-- `vite.config.ts` - Vite configuration with React, Tailwind CSS v4, and Figma Make plugins plus the `@` alias for `src`
-- `.mise.toml` - Toolchain versions for Node.js and pnpm
+## Approved UI baseline
 
-## Dependencies
+The existing Figma-generated Te Kaupapa UI is the approved visual and interaction baseline.
 
-- Runtime: React 19 and React DOM 19
-- Styling: Tailwind CSS v4 with the `@tailwindcss/vite` plugin
-- Build tooling: Vite 8, TypeScript 5.7, and `@vitejs/plugin-react`
-- Formatting: oxfmt
+Do not redesign, restyle, simplify, replace, or materially alter the approved UI unless explicitly instructed.
 
-## Styling
+Preserve:
 
-This project uses **Tailwind CSS v4** through the `@tailwindcss/vite` plugin configured in `vite.config.ts`. `src/index.css` imports Tailwind with `@import 'tailwindcss';`. Use Tailwind utility classes directly in JSX and put global CSS or Tailwind v4 theme customization in `src/index.css`. This scaffold does not need a Tailwind config file or PostCSS config.
+- visual hierarchy
+- colours
+- typography
+- spacing
+- navigation
+- page structure
+- interaction patterns
+- Te Kaupapa / Te Waharoa terminology
+- Kaimahi workflow
+- Supervisor workflow
+- mobile interaction intent
 
-`src/main.tsx` imports `src/index.css`, so global font wiring belongs in `src/index.css`. Keep CSS `@import` statements first, then add any `@font-face` rules and font-family defaults there.
+Engineering changes should wrap the existing UI in better architecture rather than redesigning it.
 
-## Code quality
+Structural refactoring is allowed when it does not alter the rendered UI or intended behaviour.
 
-- Use double quotes for strings containing apostrophes (`"We're here to help"`), or escape them in single-quoted strings. An unescaped apostrophe in a single-quoted string breaks the build.
-- Ensure JSX tags are closed and braces are balanced.
-- Export components as default exports.
+If an engineering requirement appears to require a visible UI change, stop and identify the proposed change and reason before implementing it.
+
+Do not silently change product wording, workflow behaviour, safety messaging, or user-facing claims.
+
+The approved UI baseline is preserved in Git and tagged:
+
+`ui-baseline-2026-08-09`
+
+Use that baseline when checking for unintended visual or behavioural change.
+
+---
+
+## Git and branch discipline
+
+`main` represents the stable/releasable application.
+
+`staging` represents the integrated testing version.
+
+Do not perform feature or milestone development directly on `main`.
+
+Do not perform substantial implementation directly on `staging`.
+
+For implementation work:
+
+1. Confirm the working tree is clean.
+2. Branch from `staging`.
+3. Use a clearly named milestone or feature branch.
+4. Implement and test the scoped change there.
+5. Do not merge into `staging` or `main` unless explicitly instructed.
+
+Keep milestones small enough to review, test, and revert independently.
+
+Never overwrite or delete the approved UI baseline tag.
+
+---
+
+## Package manager
+
+Use npm as the canonical package manager for Te Kaupapa.
+
+`package-lock.json` is the canonical dependency lockfile.
+
+Do not require pnpm for normal development.
+
+Do not install or introduce pnpm unless there is a demonstrated technical requirement and approval has been given.
+
+If existing Figma-generated tooling assumes pnpm, prefer adapting the relevant development command to npm where this can be done safely.
+
+Do not retain multiple competing lockfiles.
+
+Before adding a dependency:
+
+- check whether the repository already provides the capability
+- consider native browser or React functionality
+- consider bundle size if client-side
+- consider maintenance and security cost
+
+Do not add runtime dependencies merely for convenience.
+
+---
+
+## Architecture principle
+
+The mobile/browser client must remain lightweight.
+
+The backend is the authoritative application state and policy boundary.
+
+The browser should primarily:
+
+- render the UI
+- capture current interaction
+- connect to the conversational experience
+- submit small meaningful operations
+- receive authoritative state
+- display the next required state
+
+Do not make the browser responsible for:
+
+- authoritative workflow state
+- long-term persistence
+- large growing session state
+- LLM inference
+- expensive AI analysis
+- transcript safety classification
+- deterministic safety decisions
+- application secrets
+- unnecessary transcript or audio retention
+
+Prefer server-side processing and persistence where practical.
+
+---
+
+## Mobile and field-use requirements
+
+Te Kaupapa will frequently be used on mobile phones by frontline workers in field environments.
+
+Assume:
+
+- lower-powered devices may be used
+- mobile connectivity may be intermittent
+- connections may drop during submission
+- battery and device resources matter
+- refreshes or restarts can occur during workflows
+
+Avoid architecture that requires the phone to retain the complete workflow or conversation in memory.
+
+Keep network payloads small.
+
+Avoid unnecessary rerenders and large eager JavaScript bundles.
+
+Lazy-load functionality that is not required for the current user or workflow, particularly role-specific and voice-integration code.
+
+Always clean up:
+
+- microphone tracks
+- audio contexts
+- WebSockets/WebRTC connections
+- timers
+- event listeners
+- temporary media buffers
+
+when they are no longer required.
+
+---
+
+## Interaction and persistence model
+
+Te Kaupapa uses discrete meaningful interactions/posts.
+
+Persist meaningful user intent or completed workflow operations rather than every keystroke.
+
+Each meaningful operation should eventually be independently persistable.
+
+The intended model is:
+
+1. Client captures a meaningful operation.
+2. Client sends the minimum required payload.
+3. Backend authenticates and authorizes the request.
+4. Backend validates the operation.
+5. Backend persists required canonical state transactionally.
+6. Backend acknowledges successful persistence.
+7. Client receives the minimum authoritative state required to continue.
+8. Client releases information it no longer needs.
+
+Do not report an operation as saved until the authoritative backend has acknowledged it.
+
+Design write operations to support safe retry and idempotency.
+
+The browser must not need its previous complete in-memory state in order to resume an acknowledged workflow.
+
+---
+
+## Offline and pending data
+
+Do not introduce broad offline storage or a full offline-first/PWA architecture without explicit approval.
+
+A minimal queue for unacknowledged operations may be introduced when approved.
+
+If client-side pending persistence is used:
+
+- store only the minimum information required to retry
+- never store API secrets or authentication tokens there
+- distinguish clearly between acknowledged and unacknowledged work
+- delete pending data after authoritative acknowledgement
+- define expiry behaviour
+- re-authenticate before replaying after session expiry
+- assess privacy implications before storing sensitive payloads across browser restart
+
+Do not use `localStorage` for authentication tokens or sensitive workflow state.
+
+The exact permitted payload and retention period for temporary offline storage is a product/privacy decision and must not be invented.
+
+---
+
+## Conversational AI boundary
+
+ElevenLabs provides the conversational AI experience.
+
+The conversational agent and its primary conversational/system prompt are configured and maintained inside ElevenLabs.
+
+OpenAI is the LLM used by the ElevenLabs conversational agent.
+
+Do not duplicate or recreate the main conversational prompt inside Te Kaupapa.
+
+ElevenLabs owns:
+
+- conversational agent behaviour
+- voice interaction
+- primary conversational prompt
+- conversational orchestration
+- interaction with the underlying OpenAI LLM
+
+Te Kaupapa owns:
+
+- application workflow
+- persistent application state
+- users and permissions
+- business rules
+- safety-related application behaviour
+- structured application events
+- actions
+- referrals
+- escalations
+- auditability
+- database state
+
+Keep this boundary explicit.
+
+Any direct OpenAI integration added to Te Kaupapa in the future must have a separate approved purpose and must be server-side.
+
+---
+
+## Conversation-derived events
+
+Te Kaupapa must be able to respond to important information discovered during an ElevenLabs conversation.
+
+Examples include:
+
+- contraindications
+- escalations
+- safety or risk concerns
+- referral requirements
+- actions
+- required follow-up
+- workflow decisions
+- completion states
+
+Prefer structured, versioned events from the conversational layer rather than having the React frontend interpret free-form transcript text.
+
+Do not implement transcript classification in the frontend.
+
+Inbound conversation-derived data is untrusted input and must be:
+
+- authenticated where possible
+- schema validated
+- associated with the correct workflow/session
+- deduplicated
+- normalized
+- processed by application rules
+
+Malformed, unknown, or unsupported events must not silently trigger application consequences.
+
+---
+
+## Safety architecture
+
+AI output is an observation or candidate signal, not an autonomous safety decision.
+
+Keep three layers separate:
+
+1. Observation or candidate finding.
+2. Validation and association with application state.
+3. Deterministic application consequence.
+
+Safety-related application consequences must be implemented using explicit, testable, versioned backend rules.
+
+Examples of potential consequences may include alerts, acknowledgements, workflow blocks, referrals, supervisor review, or required actions.
+
+Do not invent the rules that determine those consequences.
+
+Do not invent:
+
+- safety categories
+- severity levels
+- contraindication definitions
+- emergency wording
+- escalation recipients
+- notification timeframes
+- workflow blocking rules
+- human-review requirements
+
+These are product/privacy/safety decisions requiring explicit approval.
+
+Where a rule exists, make it deterministic and testable.
+
+---
+
+## Data minimisation
+
+Do not assume Te Kaupapa needs to retain conversational data simply because ElevenLabs processes it.
+
+By default, do not design Te Kaupapa to persist:
+
+- raw audio
+- complete raw transcripts
+- unnecessary conversational metadata
+
+Prefer structured application state required for:
+
+- workflow continuity
+- actions
+- referrals
+- alerts
+- approved summaries
+- audit
+- reporting
+
+Treat audio, transcript, summary, structured event, workflow-data, and audit retention as separate decisions.
+
+Do not include raw transcript, audio, secrets, or unnecessary free text in operational logs.
+
+Provider retention settings are external configuration decisions and must be verified rather than assumed.
+
+---
+
+## Secrets and security boundaries
+
+Never place private API keys or confidential credentials in browser-delivered code.
+
+The browser must not contain:
+
+- ElevenLabs private API keys
+- OpenAI API keys
+- database credentials
+- confidential OAuth/OIDC client secrets
+- webhook signing secrets
+- email-provider credentials
+- infrastructure credentials
+
+Private credentials belong on trusted server infrastructure or in an approved secret store.
+
+Treat the browser as an untrusted/public environment.
+
+Perform authorization server-side for every protected query and mutation.
+
+Hidden controls or client-side role checks are not authorization.
+
+Use least privilege and data minimisation.
+
+Do not log secrets.
+
+---
+
+## Backend architecture
+
+Prefer one TypeScript modular-monolith backend unless requirements demonstrate a genuine need for additional services.
+
+Do not introduce microservices, Kafka, GraphQL, event sourcing, or a generalized workflow engine without explicit architectural justification and approval.
+
+Keep domain/business logic independent from:
+
+- React
+- HTTP transport
+- database implementation details
+- ElevenLabs-specific implementation details
+
+Use clear adapters at external-system boundaries.
+
+The backend should eventually own:
+
+- authentication session handling
+- authorization
+- runtime request validation
+- workflow state
+- persistence
+- idempotency
+- concurrency control
+- deterministic business rules
+- integration handling
+- structured conversational events
+- audit
+- operational error handling
+
+---
+
+## Database architecture
+
+PostgreSQL is the current recommended authoritative database unless subsequently changed by an approved architectural decision.
+
+Prefer explicit relational columns for:
+
+- identifiers
+- relationships
+- authorization
+- workflow status
+- timestamps
+- canonical state
+
+Versioned JSON may be used for genuinely variable event attributes, but do not turn unvalidated JSON into the main domain model.
+
+Keep canonical application data separate from:
+
+- temporary integration processing
+- provider conversational data
+- operational logs
+- audit records
+
+Use migrations for schema changes.
+
+---
+
+## Authentication and authorization
+
+Do not confuse role selection in the existing UI with authentication.
+
+Authentication answers who the user is.
+
+Authorization answers what that authenticated user may access or change.
+
+Server-side authorization must protect all protected resources.
+
+Do not choose an identity provider, tenancy model, organization structure, or final role model without explicit approval.
+
+Do not store bearer/access tokens in `localStorage`.
+
+---
+
+## Reliability
+
+Do not fabricate success.
+
+A database or backend failure must not result in the UI claiming information was saved.
+
+Design state-changing requests to support:
+
+- idempotency
+- timeout
+- retry
+- duplicate detection
+- stale-state detection
+- safe recovery
+
+External side effects such as notifications should not be performed in a way that can create duplicate or inconsistent canonical state.
+
+Prefer transactional persistence plus reliable asynchronous delivery where appropriate.
+
+---
+
+## Logging and audit
+
+Operational logs and business audit records are different.
+
+Operational logs should focus on:
+
+- request/correlation IDs
+- route
+- status
+- duration
+- error class
+- provider identifiers
+- retry/queue information
+
+Business audit records may include:
+
+- actor
+- role
+- workflow/session
+- affected entity
+- transition or operation
+- resulting state/version
+- relevant event/action IDs
+- rule version
+- acknowledgement/review outcome
+- timestamp
+
+Do not log full raw conversations merely for debugging.
+
+---
+
+## Testing and validation
+
+Protect the approved UI before substantial structural refactoring.
+
+When refactoring existing Figma-generated code:
+
+1. Establish a working baseline.
+2. Add proportionate smoke/regression protection first.
+3. Make changes incrementally.
+4. Re-run tests after each meaningful extraction.
+5. Compare behaviour and rendering with the approved baseline.
+
+Avoid large rewrites when small extractions can achieve the same result.
+
+For relevant changes, validate:
+
+- TypeScript
+- production build
+- tests
+- user-visible workflow
+- mobile viewport behaviour
+- bundle impact
+- authorization where applicable
+- retry/idempotency where applicable
+- safety rule behaviour where applicable
+
+Use sanitized/synthetic test data only.
+
+Do not add elaborate test infrastructure where a simpler test provides adequate protection.
+
+---
+
+## Figma-generated code
+
+The current Figma-generated code is a starting implementation, not a reason to preserve poor internal structure indefinitely.
+
+It is acceptable to:
+
+- split large components
+- extract clearly bounded workflow stages
+- consolidate exact duplicate metadata
+- lazy-load role-specific application code
+- remove genuinely unused code
+- fix build/configuration warnings
+- improve maintainability
+
+provided the approved rendered UI and intended behaviour remain unchanged.
+
+Do not perform aggressive abstraction merely to make the generated code look cleaner.
+
+Prefer clear feature/stage boundaries over generic abstractions.
+
+---
+
+## User-facing truthfulness
+
+Some prototype screens may currently simulate:
+
+- saved state
+- sent state
+- supervisor notification
+- security/storage behaviour
+- AI behaviour
+- referrals
+- record delivery
+
+Do not treat simulated prototype behaviour as implemented functionality.
+
+When replacing simulated behaviour with real application behaviour, ensure the UI only claims an operation succeeded after the real system has acknowledged success.
+
+Do not alter existing prototype wording outside the scope of an approved milestone unless instructed.
+
+---
+
+## Accessibility
+
+Do not reduce accessibility while preserving the visual design.
+
+New or refactored components should use appropriate semantic HTML, keyboard behaviour, labels, focus handling, status announcements, and reduced-motion support where these can be introduced without unauthorized redesign.
+
+Do not use visual appearance alone as a reason to remove semantic accessibility.
+
+---
+
+## Future CareFlow integration
+
+Do not integrate with CareFlow now.
+
+To reduce future migration difficulty:
+
+- keep domain rules framework-independent
+- keep external providers behind adapters
+- use versioned API/event contracts
+- separate UI presentation from workflow/business logic
+- avoid global assumptions about user, team, or organization
+- use explicit external-reference fields when needed
+- keep Te Kaupapa identifiers opaque
+- maintain clear module boundaries
+
+Do not create a generalized CareFlow abstraction before the actual integration requirements are known.
+
+---
+
+## Decision discipline
+
+Distinguish between:
+
+A. Existing repository fact.
+B. Engineering recommendation.
+C. Product/privacy/safety decision requiring approval.
+D. External integration behaviour requiring verification.
+
+Do not silently turn C or D items into assumptions.
+
+When an unresolved decision blocks safe implementation, stop and state the decision required.
+
+---
+
+## Milestone discipline
+
+Work on one approved milestone at a time.
+
+Do not implement future milestones opportunistically.
+
+Do not add authentication, backend infrastructure, database infrastructure, ElevenLabs integration, OpenAI integration, safety behaviour, notifications, or deployment infrastructure unless they are within the explicitly approved milestone.
+
+At the end of each milestone:
+
+- run the relevant validation
+- report files changed
+- report dependencies added/removed
+- report test/build results
+- report bundle impact when frontend code changed materially
+- identify unresolved issues
+- stop for review
+
+Do not merge into `staging` or `main` without explicit instruction.
