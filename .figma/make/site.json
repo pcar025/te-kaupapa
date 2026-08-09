@@ -1,0 +1,10 @@
+{
+  "description": "A reflective supervision and action-tracking platform designed for Māori frontline workers, enhancing support for whānau affected by mental illness and addictions.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
