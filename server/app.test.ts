@@ -73,6 +73,11 @@ function config(): AppConfiguration {
     cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough',
     sessionTtlHours: 12,
     sessionIdleTimeoutMinutes: 60,
+    cognito: {
+      clientId: 'test-client',
+      issuer: 'https://cognito-idp.test/user-pool',
+      managedLoginDomain: 'https://managed-login.test',
+    },
   }
 }
 
@@ -107,6 +112,8 @@ describe('authenticated application shell API', () => {
     })
     expect(callback.statusCode).toBe(302)
     expect(callback.headers.location).toBe('http://web.test')
+    expect(String(callback.headers['set-cookie'])).toContain('HttpOnly')
+    expect(String(callback.headers['set-cookie'])).toContain('SameSite=Lax')
 
     const sessionCookie = cookieFrom(callback, 'test_session')
     const me = await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })
@@ -129,7 +136,11 @@ describe('authenticated application shell API', () => {
       url: '/api/auth/logout',
       headers: { cookie: sessionCookie, origin: 'http://web.test' },
     })
-    expect(logout.statusCode).toBe(204)
+    expect(logout.statusCode).toBe(200)
+    expect(logout.json()).toEqual({
+      logoutUrl: 'https://managed-login.test/logout?client_id=test-client&logout_uri=http%3A%2F%2Fweb.test',
+    })
+    expect(String(logout.headers['set-cookie'])).toContain('test_session=;')
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })).statusCode).toBe(401)
     await app.close()
   })

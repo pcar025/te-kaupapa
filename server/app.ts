@@ -68,6 +68,16 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     return destination.toString()
   }
 
+  function cognitoLogoutUrl(): string | undefined {
+    if (!config.cognito) return undefined
+    const destination = new URL('/logout', config.cognito.managedLoginDomain)
+    destination.search = new URLSearchParams({
+      client_id: config.cognito.clientId,
+      logout_uri: config.frontendOrigin,
+    }).toString()
+    return destination.toString()
+  }
+
   async function authenticate(request: FastifyRequest): Promise<AuthenticatedUser | null> {
     if (request.authenticatedUser) return request.authenticatedUser
     const token = request.cookies[config.cookieName]
@@ -171,7 +181,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     const token = request.cookies[config.cookieName]
     if (token) await repository.invalidateSession(sha256(token), now())
     reply.clearCookie(config.cookieName, sessionCookie)
-    return reply.code(204).send()
+    return { logoutUrl: cognitoLogoutUrl() }
   })
 
   app.get('/api/entry/:role', async (request, reply) => {

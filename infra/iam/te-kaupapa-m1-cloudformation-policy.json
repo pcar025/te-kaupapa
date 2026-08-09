@@ -122,21 +122,6 @@
       }
     },
     {
-      "Sid": "ExecuteOnlyReviewedCanonicalTeKaupapaManagedLoginAuthConfigChangeSet",
-      "Effect": "Allow",
-      "Action": "cloudformation:ExecuteChangeSet",
-      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
-      "Condition": {
-        "StringEquals": {
-          "aws:RequestedRegion": "ap-southeast-2",
-          "cloudformation:ChangeSetName": [
-            "te-kaupapa-managed-login-auth-config-20260810",
-            "arn:aws:cloudformation:ap-southeast-2:905418481310:changeSet/te-kaupapa-managed-login-auth-config-20260810/6fccc268-d736-468d-a245-45de45d09e18"
-          ]
-        }
-      }
-    },
-    {
       "Sid": "InspectOnlyTaggedTeKaupapaStagingStacks",
       "Effect": "Allow",
       "Action": [

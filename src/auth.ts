@@ -59,6 +59,11 @@ export function useAuthState() {
     try {
       const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' })
       if (!response.ok) throw new Error('Unable to end session.')
+      const payload = await response.json() as { logoutUrl?: string }
+      if (payload.logoutUrl) {
+        window.location.assign(payload.logoutUrl)
+        return
+      }
       setState({ kind: 'unauthenticated' })
     } catch {
       setState({ kind: 'error' })

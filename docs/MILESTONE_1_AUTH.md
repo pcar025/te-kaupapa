@@ -30,7 +30,7 @@ State-changing routes currently validate `Origin` or `Referer` against a narrow 
 
 Local development uses Vite’s narrow `/api` proxy to `http://localhost:3011`; normal browser traffic needs no cross-origin CORS permission. Any direct browser origin must be explicitly listed in `CORS_ALLOWED_ORIGINS`.
 
-Application logout ends the Te Kaupapa session only. Cognito managed-login logout is a separate browser redirect endpoint and is intentionally not called automatically because its broader provider-session behaviour requires a product decision.
+Logout is complete and browser-visible: the same-origin, CSRF-protected `POST /api/auth/logout` invalidates the Te Kaupapa server-side session and clears its cookie. It returns the configured Cognito Managed Login `/logout` URL with only the public client ID and registered logout URI. The browser then performs a top-level navigation to Cognito, which clears its Managed Login browser session and redirects to the application entry URL. No Cognito or application token is placed in browser storage.
 
 ## PostgreSQL and migrations
 
@@ -63,18 +63,11 @@ npm run dev
 
 The app starts with a truthful sign-in state if no session exists. It will return a generic unavailable state for sign-in until all Cognito values are configured. Do not put `COGNITO_CLIENT_SECRET`, session secrets, AWS credentials, or database credentials in `VITE_*` variables.
 
-## Cognito staging activation required
+## Cognito staging configuration
 
-`infra/cognito-user-pool.yml` is a reproducible **template only**. It has not been deployed and no AWS resource was created by this milestone.
+`infra/cognito-user-pool.yml` is the reproducible source template for the dedicated Te Kaupapa staging authentication stack. The successful canonical deployment is isolated from CareFlow and has the approved prefix domain, exact local callback and logout URLs, SES sender, server-side confidential client secret, local PostgreSQL identity records, and synthetic pilot organisation.
 
-Before a designated Te Kaupapa staging deployment, an authorized AWS operator must provide and verify:
-
-1. A dedicated Te Kaupapa AWS account/environment and approved region; it must not reuse a CareFlow user pool.
-2. A unique Cognito domain prefix, exact HTTPS callback URL, and exact logout URL.
-3. An Amazon SES identity verified for the intended sender and the account’s production-access status if recipients extend beyond the SES sandbox. Cognito email OTP requires the Essentials plan and SES email configuration.
-4. Permission to deploy the CloudFormation stack and obtain the confidential app-client secret through approved server secret storage. Configure the server with the stack outputs for client ID, issuer, and managed-login domain; keep the client secret server-only.
-5. A staging PostgreSQL database, migration execution, and a server runtime identity with the least privilege needed for `cognito-idp:AdminCreateUser` and `cognito-idp:AdminGetUser` against this user pool.
-6. An approved initial organization and authorised people/roles, then a live email OTP, managed-login passkey enrollment, unprovisioned-user denial, inactive-user denial, and logout test.
+The remaining operator verification is limited to approved pilot users and their live authentication/logout behaviour; it must never create public signup, a password-based flow, or an application identity outside the Te Kaupapa database boundary.
 
 The template selects the Cognito Essentials tier, managed login version 2, email OTP and WebAuthn as usable first authentication factors, admin-only creation, no public sign-up, no SMS factor, and MFA off. Cognito also requires `PASSWORD` to be configured in this list; Te Kaupapa's pilot provisioning deliberately creates people without a temporary or permanent password, so password sign-in is not an intended or usable pilot flow. Email remains available as the universal passwordless/recovery path; passkey registration and sign-in are intentionally managed by Cognito’s managed-login experience.
 
@@ -97,7 +90,18 @@ Remove `--dry-run` only in the approved staging environment after setting `DATAB
 
 ## Cognito behavioural verification
 
-This implementation was based on AWS’s current documentation: Essentials or Plus is required for managed login/passwordless/passkeys; managed login version 2 is required for the current passkey experience; email OTP requires Cognito email delivery through SES; and admin-created passwordless users are created by omitting `TemporaryPassword`. Cognito’s managed login owns the passkey enrollment and recovery experience. The exact deployed user-pool behaviour, sender verification, and passkey relying-party domain must still be tested in the approved staging account.
+This implementation follows AWS’s current documentation: Essentials or Plus is required for managed login/passwordless/passkeys; managed login version 2 is required for the current passkey experience; email OTP requires Cognito email delivery through SES; and admin-created passwordless users are created by omitting `TemporaryPassword`. Cognito’s Managed Login owns passkey enrollment, sign-in, and recovery; Te Kaupapa does not implement WebAuthn cryptography.
+
+## Verified live authentication flow — 10 August 2026
+
+The dedicated staging user `peter@gettalkscape.com` completed both approved live browser tests against the configured Managed Login domain and returned to a Te Kaupapa application session.
+
+- **First login:** email address → email OTP → Te Kaupapa application session → optional passkey registration.
+- **Returning login with passkey:** email address → registered passkey → Te Kaupapa application session.
+- **Fallback:** email address → email OTP.
+- **Logout:** Te Kaupapa session invalidated → local cookie cleared → Cognito Managed Login logout → unauthenticated Te Kaupapa entry state.
+
+Managed Login is username/email-first: for an administrator-created user it asks for the email address before it offers that user’s registered passkey. The verified experience is not password-based. The effective pool configuration remains MFA `OFF`, `SINGLE_FACTOR`, WebAuthn user verification `preferred`, and relying-party ID `te-kaupapa-staging.auth.ap-southeast-2.amazoncognito.com`.
 
 ## Staging activation record — 9 August 2026
 
