@@ -8,6 +8,7 @@ import type {
   SessionAction,
   ActiveSessionData,
 } from './types'
+import { TE_WAHAROA_POU } from './pou'
 
 // ─── Status configuration ─────────────────────────────────────────────────────
 
@@ -23,15 +24,12 @@ export const STATUS_CONFIG: Record<
 
 // ─── The seven Te Waharoa Pou ─────────────────────────────────────────────────
 
-const POU_TEMPLATE = [
-  { id: 'whakapapa',     reo: 'Whakapapa',     english: 'Identity Safety',       description: 'Identity, whakapapa, whānau voice, cultural protective factors' },
-  { id: 'manaakitanga',  reo: 'Manaakitanga',  english: 'Duty of Care',          description: 'Respectful communication, responsiveness to distress, escalation' },
-  { id: 'tikanga',       reo: 'Tikanga',        english: 'Ethical Practice',      description: 'Consent, confidentiality, ethical decision-making, tikanga' },
-  { id: 'kaitiakitanga', reo: 'Kaitiakitanga', english: 'Risk Management',       description: 'Risk assessment, safety planning, escalations, cultural safety' },
-  { id: 'puukenga',      reo: 'Pūkenga',        english: 'Practitioner Capability', description: 'Training, supervision, reflective practice, scope of practice' },
-  { id: 'haepapa',       reo: 'Haepapa',        english: 'Accountability',        description: 'Timely notes, reporting obligations, follow-through, transparency' },
-  { id: 'oranga',        reo: 'Oranga',         english: 'Protective Factors',    description: 'Whānau strengths, cultural engagement, wellbeing, mana restoration' },
-]
+const POU_TEMPLATE = TE_WAHAROA_POU.map(({ id, reo, en, domain }) => ({
+  id,
+  reo,
+  english: en,
+  description: domain,
+}))
 
 const STABLE_NOTES: Record<string, string> = {
   whakapapa:     'Whakapapa information documented appropriately. Cultural identity discussed and whānau strengths identified alongside distress.',
