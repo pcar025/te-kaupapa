@@ -2,17 +2,6 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "CreateOnlyCognitoEmailServiceLinkedRole",
-      "Effect": "Allow",
-      "Action": "iam:CreateServiceLinkedRole",
-      "Resource": "*",
-      "Condition": {
-        "StringEquals": {
-          "iam:AWSServiceName": "email.cognito-idp.amazonaws.com"
-        }
-      }
-    },
-    {
       "Sid": "VerifyOnlyCognitoEmailServiceLinkedRole",
       "Effect": "Allow",
       "Action": "iam:GetRole",
