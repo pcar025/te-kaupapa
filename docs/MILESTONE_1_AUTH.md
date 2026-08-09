@@ -115,6 +115,8 @@ After the narrowly scoped delete permission was applied, deletion requests for b
 
 After cleanup was verified and the canonical stack was created, Cognito again denied `cognito-idp:TagResource`. AWS's Cognito CloudFormation guidance explains that CloudFormation propagates stack-level and `aws:cloudformation:*` system tags and requires `TagResource`, `UntagResource`, and `ListTagsForResource`. The former request-tag-key allow-list accepted only the four Te Kaupapa keys and therefore rejected the provider's system-tag request. The policy now allows only those four Te Kaupapa keys plus CloudFormation system keys for tagging, and permits untagging only CloudFormation system keys. An IAM administrator must apply this revision before the canonical deployment is retried.
 
+The cleanup policy was also tightened to use the two immutable failed stack ARNs rather than a stack-name pattern. This prevents its exceptional delete/read permissions from matching a later canonical stack that reuses the same name.
+
 RDS instance and cluster discovery was denied as expected because the current policy intentionally has no RDS permissions. No clearly Te Kaupapa-specific PostgreSQL service could therefore be confirmed, and no database, secret, pilot user, application identity, or live authentication test was created or performed.
 
 The CloudFormation template applies `Application=te-kaupapa`, `Environment=staging`, `ManagedBy=te-kaupapa-repository`, and `Purpose=authentication-pilot` to the Cognito user pool. Apply the same tags to the CloudFormation stack at deployment time; Cognito user-pool domains and app clients do not expose equivalent tag properties in this template.

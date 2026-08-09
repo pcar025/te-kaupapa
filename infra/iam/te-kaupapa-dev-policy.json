@@ -83,8 +83,8 @@
       "Effect": "Allow",
       "Action": "cloudformation:DeleteStack",
       "Resource": [
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/*"
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
       ],
       "Condition": {
         "StringEquals": {
@@ -101,8 +101,8 @@
       "Effect": "Allow",
       "Action": "cloudformation:DescribeStacks",
       "Resource": [
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/*"
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
       ],
       "Condition": {
         "StringEquals": {
