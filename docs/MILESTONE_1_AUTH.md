@@ -117,6 +117,8 @@ After cleanup was verified and the canonical stack was created, Cognito again de
 
 The cleanup policy was also tightened to use the two immutable failed stack ARNs rather than a stack-name pattern. This prevents its exceptional delete/read permissions from matching a later canonical stack that reuses the same name.
 
+The later canonical retry also rolled back with its sole user-pool resource `DELETE_COMPLETE`. Its immutable stack ARN is `arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd`. The split CloudFormation policy now adds only this approved, inspected rollback ARN to its delete and post-delete verification statements; no name wildcard or successful-stack delete permission is introduced.
+
 RDS instance and cluster discovery was denied as expected because the current policy intentionally has no RDS permissions. No clearly Te Kaupapa-specific PostgreSQL service could therefore be confirmed, and no database, secret, pilot user, application identity, or live authentication test was created or performed.
 
 The CloudFormation template applies `Application=te-kaupapa`, `Environment=staging`, `ManagedBy=te-kaupapa-repository`, and `Purpose=authentication-pilot` to the Cognito user pool. Apply the same tags to the CloudFormation stack at deployment time; Cognito user-pool domains and app clients do not expose equivalent tag properties in this template.

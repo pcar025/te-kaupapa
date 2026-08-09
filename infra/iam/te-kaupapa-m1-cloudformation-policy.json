@@ -79,12 +79,13 @@
       }
     },
     {
-      "Sid": "DeleteOnlyTheTwoInspectedFailedTeKaupapaStacks",
+      "Sid": "DeleteOnlyTheThreeInspectedFailedTeKaupapaStacks",
       "Effect": "Allow",
       "Action": "cloudformation:DeleteStack",
       "Resource": [
         "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd"
       ],
       "Condition": {
         "StringEquals": {
@@ -97,12 +98,13 @@
       }
     },
     {
-      "Sid": "VerifyOnlyTheTwoFailedStackRecordsAreGone",
+      "Sid": "VerifyOnlyTheThreeFailedStackRecordsAreGone",
       "Effect": "Allow",
       "Action": "cloudformation:DescribeStacks",
       "Resource": [
         "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/08c80bb0-93ce-11f1-afad-06c41b7e863d",
-        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f"
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication-v2/840c9840-93ce-11f1-87a3-06c16e3f093f",
+        "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/3472bac0-93d4-11f1-b8a1-025969771dbd"
       ],
       "Condition": {
         "StringEquals": {
