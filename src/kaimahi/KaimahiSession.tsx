@@ -32,10 +32,12 @@ function SetupStage({
   data,
   onChange,
   onNext,
+  displayName,
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
   onNext: () => void
+  displayName: string
 }) {
   const [immediateConcern, setImmediateConcern] = useState<ImmediateConcern>(null)
 
@@ -188,7 +190,7 @@ function SetupStage({
               className="text-sm"
               style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}
             >
-              Aroha Ngāti
+              {displayName}
             </span>
             <span
               className="text-xs ml-auto"
@@ -5259,8 +5261,10 @@ function CompleteStage({ data, onDone }: { data: ActiveSessionData; onDone: () =
 
 export function SessionShell({
   onDone,
+  displayName,
 }: {
   onDone: () => void
+  displayName: string
 }) {
   const [stage, setStage] = useState<SessionStageKey>('setup')
   const [currentPouIdx, setCurrentPouIdx] = useState(0)
@@ -5343,7 +5347,7 @@ export function SessionShell({
         pouReo={pouReo}
       />
       <div className="flex-1 overflow-y-auto">
-        {stage === 'setup'        && <SetupStage data={data} onChange={patch} onNext={advance} />}
+        {stage === 'setup'        && <SetupStage data={data} onChange={patch} onNext={advance} displayName={displayName} />}
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} />}
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} onNext={advance} />}

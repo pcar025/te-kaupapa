@@ -1,6 +1,7 @@
 import { lazy, Suspense, useState } from 'react'
 
 import EntryScreen from './EntryScreen'
+import { useAuthState } from './auth'
 
 const KaimahiApp = lazy(() => import('./KaimahiApp'))
 const SupervisorApp = lazy(() => import('./SupervisorApp'))
@@ -25,6 +26,28 @@ function RoleLoadingScreen() {
 
 export default function App() {
   const [view, setView] = useState<RootView>('entry')
+  const { state, beginSignIn, signOut } = useAuthState()
+
+  if (state.kind === 'checking') return <RoleLoadingScreen />
+
+  if (state.kind !== 'authenticated') {
+    const messages = {
+      unauthenticated: 'Please sign in to continue.',
+      unprovisioned: 'This sign-in is not yet provisioned for Te Kaupapa.',
+      inactive: 'This Te Kaupapa account is inactive.',
+      error: 'Te Kaupapa is unable to confirm your sign-in right now. Please try again.',
+    }
+    return (
+      <EntryScreen
+        onKaimahi={beginSignIn}
+        onSupervisor={beginSignIn}
+        onSignIn={beginSignIn}
+        authMessage={messages[state.kind]}
+      />
+    )
+  }
+
+  const profile = state.profile
 
   return (
     <>
@@ -32,12 +55,17 @@ export default function App() {
         <EntryScreen
           onKaimahi={() => setView('kaimahi')}
           onSupervisor={() => setView('supervisor')}
+          profile={profile}
+          onSignOut={() => {
+            setView('entry')
+            void signOut()
+          }}
         />
       )}
       {view !== 'entry' && (
         <Suspense fallback={<RoleLoadingScreen />}>
-          {view === 'kaimahi' && <KaimahiApp onBack={() => setView('entry')} />}
-          {view === 'supervisor' && <SupervisorApp onBack={() => setView('entry')} />}
+          {view === 'kaimahi' && <KaimahiApp profile={profile} onBack={() => setView('entry')} />}
+          {view === 'supervisor' && <SupervisorApp profile={profile} onBack={() => setView('entry')} />}
         </Suspense>
       )}
     </>

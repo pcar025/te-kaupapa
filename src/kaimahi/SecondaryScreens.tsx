@@ -2,6 +2,7 @@ import { useState } from 'react'
 
 import { REFERRAL_CATEGORIES, REFERRAL_SERVICES, WHANAU_RECORDS } from '../data'
 import { ActionBadge, EngagementLabel, PouStrip, SectionLabel } from '../shared'
+import type { AuthProfile } from '../auth'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // REFERRALS BROWSE (standalone — not within session)
@@ -271,7 +272,7 @@ export function RecordArchiveScreen() {
 // SETTINGS SCREEN
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function SettingsScreen() {
+export function SettingsScreen({ profile }: { profile: AuthProfile }) {
   const [reo, setReo] = useState(false)
   const [notifications, setNotifications] = useState(true)
 
@@ -350,10 +351,10 @@ export function SettingsScreen() {
         <div className="mb-5">
           <SectionLabel>Kaimahi profile</SectionLabel>
           <div className="mt-2 space-y-px">
-            <SettingRow label="Name" value="Aroha Ngāti" />
-            <SettingRow label="Role" value="Kaimahi Tautoko" />
-            <SettingRow label="Organisation" value="Te Kaupapa" />
-            <SettingRow label="Supervisor" value="Hemi Parata" />
+            <SettingRow label="Name" value={profile.displayName} />
+            <SettingRow label="Role" value="Kaimahi" />
+            <SettingRow label="Organisation" value={profile.organisation.name} />
+            <SettingRow label="Supervisor" value="Not available" />
           </div>
         </div>
 

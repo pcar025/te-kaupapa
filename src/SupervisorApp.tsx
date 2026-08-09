@@ -22,6 +22,7 @@ import {
   EngagementLabel,
 } from './shared'
 import { POU_ORDER, TE_WAHAROA_POU } from './pou'
+import type { AuthProfile } from './auth'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -97,11 +98,13 @@ function SupervisorSidebar({
   onNav,
   onBack,
   pendingReviews,
+  profile,
 }: {
   nav: NavState
   onNav: (patch: Partial<NavState>) => void
   onBack: () => void
   pendingReviews: number
+  profile: AuthProfile
 }) {
   const navItems: { view: SupervisorView; reo: string; en: string }[] = [
     { view: 'overview',   reo: 'Tirohanga',  en: 'Overview'     },
@@ -192,7 +195,7 @@ function SupervisorSidebar({
       {/* Supervisor profile */}
       <div className="px-6 py-4" style={{ borderTop: '1px solid var(--color-border)' }}>
         <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>
-          Hemi Parata
+          {profile.displayName}
         </p>
         <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>
           Kaiwhakahaere · Programme Supervisor
@@ -204,7 +207,7 @@ function SupervisorSidebar({
 
 // ─── Overview Screen ──────────────────────────────────────────────────────────
 
-function OverviewScreen({ onNav }: { onNav: (patch: Partial<NavState>) => void }) {
+function OverviewScreen({ onNav, profile }: { onNav: (patch: Partial<NavState>) => void; profile: AuthProfile }) {
   const allSessions = getAllSessions()
   const pendingReview = allSessions.filter((s) => s.flagged && !s.supervisorReviewed)
   const recentSessions = [...allSessions].sort((a, b) => b.ref.localeCompare(a.ref)).slice(0, 6)
@@ -249,7 +252,7 @@ function OverviewScreen({ onNav }: { onNav: (patch: Partial<NavState>) => void }
             className="text-3xl font-medium italic mb-2"
             style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}
           >
-            Ata mārie, Hemi
+            Ata mārie, {profile.displayName}
           </h1>
           <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
             {KAIMAHI_RECORDS.length} kaimahi · {WHANAU_RECORDS.length} whānau across the team ·{' '}
@@ -1471,13 +1474,15 @@ function SessionReviewScreen({
 function MainContent({
   nav,
   onNav,
+  profile,
 }: {
   nav: NavState
   onNav: (patch: Partial<NavState>) => void
+  profile: AuthProfile
 }) {
   return (
     <div className="flex flex-1 overflow-hidden">
-      {nav.view === 'overview'      && <OverviewScreen onNav={onNav} />}
+      {nav.view === 'overview'      && <OverviewScreen onNav={onNav} profile={profile} />}
       {nav.view === 'pou-matrix'    && <TeamMatrixScreen onNav={onNav} />}
       {nav.view === 'session-review' && <SessionReviewScreen nav={nav} onNav={onNav} />}
     </div>
@@ -1486,7 +1491,7 @@ function MainContent({
 
 // ─── Supervisor App root ──────────────────────────────────────────────────────
 
-export default function SupervisorApp({ onBack }: { onBack: () => void }) {
+export default function SupervisorApp({ onBack, profile }: { onBack: () => void; profile: AuthProfile }) {
   const [nav, setNav] = useState<NavState>({ view: 'pou-matrix', sessionId: null })
 
   const updateNav = (patch: Partial<NavState>) => setNav((prev) => ({ ...prev, ...patch }))
@@ -1519,8 +1524,9 @@ export default function SupervisorApp({ onBack }: { onBack: () => void }) {
           onNav={updateNav}
           onBack={onBack}
           pendingReviews={pendingReviews}
+          profile={profile}
         />
-        <MainContent nav={nav} onNav={updateNav} />
+        <MainContent nav={nav} onNav={updateNav} profile={profile} />
       </div>
     </div>
   )

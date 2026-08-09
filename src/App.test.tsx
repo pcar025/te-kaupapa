@@ -1,6 +1,6 @@
 import { cleanup, configure, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
 
@@ -8,11 +8,26 @@ configure({ asyncUtilTimeout: 5000 })
 
 afterEach(() => cleanup())
 
+beforeEach(() => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+    ok: true,
+    status: 200,
+    json: async () => ({
+      profile: {
+        id: 'test-user',
+        displayName: 'Test user',
+        organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' },
+        roles: ['KAIMAHI', 'SUPERVISOR'],
+      },
+    }),
+  }))
+})
+
 describe('approved application smoke paths', () => {
-  it('renders the application entry screen', () => {
+  it('renders authorized application entry choices after the profile is confirmed', async () => {
     render(<App />)
 
-    expect(screen.getByRole('heading', { name: /nau mai,\s*haere mai/i })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: /nau mai,\s*haere mai/i })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Mātāmua — Supervisor View' })).toBeTruthy()
   })
@@ -21,6 +36,7 @@ describe('approved application smoke paths', () => {
     const user = userEvent.setup()
     render(<App />)
 
+    await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })
     await user.click(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
     await screen.findByText('Begin a reflective session')
 
@@ -34,6 +50,7 @@ describe('approved application smoke paths', () => {
     const user = userEvent.setup()
     render(<App />)
 
+    await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })
     await user.click(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
     await screen.findByText('Begin a reflective session')
     await user.click(screen.getByRole('button', { name: 'Mahi' }))
@@ -53,6 +70,7 @@ describe('approved application smoke paths', () => {
       const user = userEvent.setup()
       render(<App />)
 
+      await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })
       await user.click(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
       await screen.findByText('Begin a reflective session')
       await user.click(screen.getByRole('button', { name: 'Kōrero' }))
@@ -70,13 +88,14 @@ describe('approved application smoke paths', () => {
     const user = userEvent.setup()
     render(<App />)
 
+    await screen.findByRole('button', { name: 'Mātāmua — Supervisor View' })
     await user.click(screen.getByRole('button', { name: 'Mātāmua — Supervisor View' }))
 
     expect(await screen.findByText('KAIMAHI / WHĀNAU')).toBeTruthy()
     expect(screen.getByText('Aroha Ngāti')).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Tirohanga/ }))
-    expect(await screen.findByRole('heading', { name: 'Ata mārie, Hemi' })).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Ata mārie, Test user' })).toBeTruthy()
 
     await user.click(screen.getByRole('button', { name: /Mātāmua Supervisor view/i }))
     expect(await screen.findByRole('heading', { name: /nau mai,\s*haere mai/i })).toBeTruthy()
