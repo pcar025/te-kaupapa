@@ -20,6 +20,13 @@ Parameters:
   EmailFrom:
     Type: String
     Description: From address that belongs to SesSourceArn.
+  WebAuthnRelyingPartyId:
+    Type: String
+    Default: ''
+    Description: Optional passkey RP ID. Supply the active managed-login domain only in a second stack update after the domain exists.
+
+Conditions:
+  HasWebAuthnRelyingPartyId: !Not [!Equals [!Ref WebAuthnRelyingPartyId, '']]
 
 Resources:
   TeKaupapaUserPool:
@@ -56,6 +63,10 @@ Resources:
             # password, so EMAIL_OTP and WEB_AUTHN remain their usable flows.
             - PASSWORD
       WebAuthnUserVerification: preferred
+      WebAuthnRelyingPartyID: !If
+        - HasWebAuthnRelyingPartyId
+        - !Ref WebAuthnRelyingPartyId
+        - !Ref AWS::NoValue
       Schema:
         - Name: email
           AttributeDataType: String
