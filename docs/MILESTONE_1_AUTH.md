@@ -76,7 +76,7 @@ Before a designated Te Kaupapa staging deployment, an authorized AWS operator mu
 5. A staging PostgreSQL database, migration execution, and a server runtime identity with the least privilege needed for `cognito-idp:AdminCreateUser` and `cognito-idp:AdminGetUser` against this user pool.
 6. An approved initial organization and authorised people/roles, then a live email OTP, managed-login passkey enrollment, unprovisioned-user denial, inactive-user denial, and logout test.
 
-The template selects the Cognito Essentials tier, managed login version 2, email OTP and WebAuthn as first authentication factors, admin-only creation, no public sign-up, no password sign-in factor, no SMS factor, and MFA off. Email remains available as the universal passwordless/recovery path; passkey registration and sign-in are intentionally managed by Cognito’s managed-login experience.
+The template selects the Cognito Essentials tier, managed login version 2, email OTP and WebAuthn as usable first authentication factors, admin-only creation, no public sign-up, no SMS factor, and MFA off. Cognito also requires `PASSWORD` to be configured in this list; Te Kaupapa's pilot provisioning deliberately creates people without a temporary or permanent password, so password sign-in is not an intended or usable pilot flow. Email remains available as the universal passwordless/recovery path; passkey registration and sign-in are intentionally managed by Cognito’s managed-login experience.
 
 ## Provisioning people
 
@@ -101,16 +101,24 @@ This implementation was based on AWS’s current documentation: Essentials or Pl
 
 ## Staging activation record — 9 August 2026
 
-The requested region is `ap-southeast-2`. No Te Kaupapa AWS resource has been created, modified, or deleted. The configured AWS credentials were rejected by the mandatory `sts:GetCallerIdentity` call with `InvalidClientTokenId`; consequently no account identity, Cognito collision discovery, SES status, RDS status, Secrets Manager state, or CloudFormation state could be trusted or inspected. This is an external credential issue, not a live-authentication implementation failure.
+The caller was verified as `arn:aws:iam::905418481310:user/te-kaupapa-dev` in account `905418481310`, region `ap-southeast-2`. SES read-only discovery confirmed `ProductionAccessEnabled=true`, `SendingEnabled=true`, and that `hello@talkscape.com` is verified for sending with DKIM `SUCCESS`. Cognito pool discovery returned no existing pools. The template validated successfully.
+
+The first isolated stack attempt, `te-kaupapa-staging-authentication`, rolled back before it created a pool because Cognito Essentials requires `PASSWORD` to be included in `AllowedFirstAuthFactors`. The template has been corrected: `PASSWORD` is configured as required by Cognito, but Te Kaupapa pilot users are still provisioned without a temporary or permanent password, leaving email OTP and WebAuthn as their usable flows.
+
+The corrected second attempt, `te-kaupapa-staging-authentication-v2`, also rolled back. CloudFormation created the user pool and then failed because the restricted IAM policy did not permit `cognito-idp:TagResource` to apply the four mandatory user-pool tags. Automatic rollback removed the user pool created in each failed attempt; no Cognito pool, domain, app client, pilot user, or application identity remains. The rollback-complete CloudFormation stack records remain because the deliberately least-privilege policy excludes `cloudformation:DeleteStack`.
+
+`infra/iam/te-kaupapa-dev-policy.json` now grants only the missing post-create `cognito-idp:TagResource` call, constrained to the four required tag keys and values, plus the read-only `DescribeUserPoolDomain` availability check that the former policy could not perform. An authorized IAM administrator must attach this corrected policy document to `te-kaupapa-dev` before a new deployment attempt. Re-run read-only domain availability discovery and deploy a new isolated stack name (for example, `te-kaupapa-staging-authentication-v3`) after that update. Do not delete the two rollback-complete records unless separately approved.
+
+RDS instance and cluster discovery was denied as expected because the current policy intentionally has no RDS permissions. No clearly Te Kaupapa-specific PostgreSQL service could therefore be confirmed, and no database, secret, pilot user, application identity, or live authentication test was created or performed.
 
 The CloudFormation template applies `Application=te-kaupapa`, `Environment=staging`, `ManagedBy=te-kaupapa-repository`, and `Purpose=authentication-pilot` to the Cognito user pool. Apply the same tags to the CloudFormation stack at deployment time; Cognito user-pool domains and app clients do not expose equivalent tag properties in this template.
 
-Once Peter supplies valid credentials for the intended existing account, deploy [the isolated template](../infra/cognito-user-pool.yml) with only these local development endpoints:
+Once an IAM administrator has applied the corrected policy, deploy [the isolated template](../infra/cognito-user-pool.yml) with only these local development endpoints:
 
 - callback: `http://localhost:3011/api/auth/callback`
 - managed-login logout destination: `http://localhost:8443`
 
-The template must use a dedicated available `te-kaupapa-staging` Cognito-domain prefix (or the smallest isolated suffix), SES sender identity owned by Te Kaupapa, and a separately approved Te Kaupapa PostgreSQL database. No sender identity, pilot email, database, secret, or runtime IAM role has been supplied or created. After credentials are repaired, perform the required read-only discovery before deployment; do not reuse any CareFlow or ambiguous resource.
+The template must use a dedicated available `te-kaupapa-staging` Cognito-domain prefix (or the smallest isolated suffix), the verified `hello@talkscape.com` SES sender identity, and a separately approved Te Kaupapa PostgreSQL database. No database, secret, runtime IAM role, pilot user, or application identity has been created. After the policy is updated, perform the required read-only discovery before deployment; do not reuse any CareFlow or ambiguous resource.
 
 For teardown after an approved pilot, first disable/delete pilot users and revoke their application sessions, then delete only the CloudFormation stack created for this task. Do not delete a protected user pool until deletion protection has been deliberately disabled by an authorized operator, and do not delete any shared or CareFlow resource.
 

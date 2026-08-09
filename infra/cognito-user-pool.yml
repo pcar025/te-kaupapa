@@ -51,6 +51,10 @@ Resources:
           AllowedFirstAuthFactors:
             - EMAIL_OTP
             - WEB_AUTHN
+            # Cognito Essentials requires PASSWORD to be configured alongside
+            # passwordless factors. Admin-created pilot users receive no
+            # password, so EMAIL_OTP and WEB_AUTHN remain their usable flows.
+            - PASSWORD
       WebAuthnRelyingPartyID: !Sub '${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'
       WebAuthnUserVerification: PREFERRED
       Schema:

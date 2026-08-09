@@ -26,7 +26,7 @@ The policy contains only these services:
 
 - `sts`: `GetCallerIdentity` for the required preflight verification.
 - `cloudformation`: validate, create, update, and inspect only `te-kaupapa-staging-*` stacks containing the three Cognito resource types in [the staging template](../infra/cognito-user-pool.yml).
-- `cognito-idp`: create the tagged user pool, then configure, inspect, and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools.
+- `cognito-idp`: create and apply the four required tags to the new user pool, then configure, inspect, and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools. It also permits read-only availability checking for the one requested Cognito domain prefix.
 - `ses`: read-only account/identity discovery to establish sandbox status and a suitable verified sender.
 
 The template has no IAM resources or service role. `iam:PassRole` is not required and is not granted.
@@ -42,7 +42,7 @@ Creation of a user pool must carry all four request tags:
 
 All existing-user-pool write, read, and pilot-user operations require those same resource tags on a Cognito user-pool ARN in account `905418481310`, region `ap-southeast-2`. The policy never grants Cognito writes to an untagged or other-product pool. CloudFormation stack operations are ARN-scoped to `te-kaupapa-staging-*`; stack updates/inspection also require the same stack tags and are restricted to the three Cognito resource types.
 
-The policy deliberately does not grant `cognito-idp:TagResource` or `UntagResource`: the current template sends the required tags when it creates the user pool. If a future deployment produces a Cognito tagging permission failure, review the exact CloudFormation call before adding any tag action—do not broaden this policy pre-emptively.
+CloudFormation performs `cognito-idp:TagResource` after `CreateUserPool` when it applies `UserPoolTags`. The policy permits that one action only for the four required tag keys and values in the approved account and region; it does not grant `UntagResource`. This is necessary because a new user pool has no resource tags until that call completes.
 
 ## Unavoidable wildcards
 
@@ -51,7 +51,7 @@ The following permissions use `Resource: "*"`:
 - `sts:GetCallerIdentity`: STS identity verification is not a resource-owned operation.
 - `cloudformation:ValidateTemplate`: AWS does not provide a stack resource for validation of an undeployed local template.
 - `cognito-idp:CreateUserPool`: the pool ARN does not exist until creation. Required request tags and the requested region constrain it.
-- `cognito-idp:ListUserPools`, `ses:GetAccount`, and `ses:ListEmailIdentities`: these account/list APIs do not expose a resource type for IAM scoping. They are read-only and constrained to `ap-southeast-2`.
+- `cognito-idp:ListUserPools`, `cognito-idp:DescribeUserPoolDomain`, `ses:GetAccount`, and `ses:ListEmailIdentities`: these discovery APIs do not expose a resource type that can safely express an as-yet-uncreated pool/domain. They are read-only and constrained to `ap-southeast-2`; the operational procedure limits the domain query to the approved Te Kaupapa prefix.
 
 `ses:GetEmailIdentity` is scoped to identity ARNs in this account/region, but can read existing identity verification metadata. This is necessary to determine whether a demonstrably Te Kaupapa-owned sender exists; it grants no SES write or send capability. Read-only list/discovery can reveal metadata for other projects, including CareFlow, but grants no modification access.
 
