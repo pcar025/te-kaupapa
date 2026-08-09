@@ -109,6 +109,13 @@ Resources:
       AccessTokenValidity: 30
       RefreshTokenValidity: 1
 
+  TeKaupapaManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref TeKaupapaUserPool
+      ClientId: !Ref TeKaupapaServerClient
+      UseCognitoProvidedValues: true
+
 Outputs:
   UserPoolId:
     Value: !Ref TeKaupapaUserPool
