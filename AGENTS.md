@@ -317,29 +317,174 @@ Where a rule exists, make it deterministic and testable.
 
 Do not assume Te Kaupapa needs to retain conversational data simply because ElevenLabs processes it.
 
-By default, do not design Te Kaupapa to persist:
-
-- raw audio
-- complete raw transcripts
-- unnecessary conversational metadata
-
-Prefer structured application state required for:
+Retain only information with an approved purpose supporting:
 
 - workflow continuity
 - actions
 - referrals
 - alerts
 - approved summaries
+- supervision
 - audit
 - reporting
+- approved transcript review
 
-Treat audio, transcript, summary, structured event, workflow-data, and audit retention as separate decisions.
+Treat the following as separate data classes with separate retention decisions:
 
-Do not include raw transcript, audio, secrets, or unnecessary free text in operational logs.
+- raw audio
+- full transcript
+- conversation summary
+- structured conversation-derived events
+- workflow/application data
+- audit data
 
-Provider retention settings are external configuration decisions and must be verified rather than assumed.
+Do not assume raw audio needs to be retained merely because a transcript or summary is retained.
+
+Do not assume full transcript retention is either prohibited or automatically enabled.
+
+The architecture must support optional, controlled transcript retention and retrieval according to the approved product/privacy policy.
+
+Do not include raw transcript, audio, secrets, or unnecessary conversational content in operational logs.
+
+Do not place transcript or audio content in URLs, analytics events, generic error telemetry, or client-side diagnostic logging.
+
+Provider-side retention settings, including ElevenLabs retention, are external configuration decisions and must be verified rather than assumed.
+
+Where structured application state is sufficient for normal workflow operation, prefer using that structured state rather than repeatedly transferring or loading the underlying transcript.
 
 ---
+## Transcript and conversation record
+
+The AI-generated summary should normally be the primary working representation of a completed conversation within the Te Kaupapa workflow.
+
+However, Te Kaupapa must be architected to support retaining and recalling the full transcript of an individual conversation where this is approved.
+
+A likely use case is controlled supervisor review of the underlying conversation when the summary, structured findings, risks, actions, or escalation state require additional context.
+
+Transcript retention is a product/privacy capability, not yet an automatic requirement.
+
+Do not design the application in a way that makes future controlled transcript recall unnecessarily difficult.
+
+### Transcript is supporting source material
+
+A retained transcript is supporting source material.
+
+It is not automatically the canonical workflow state.
+
+Canonical application state should continue to be represented through structured records such as:
+
+- Pou status
+- workflow state
+- confirmed findings
+- actions
+- referrals
+- alerts
+- acknowledgements
+- approved summaries
+- supervisor review outcomes
+
+Do not make application business rules depend on repeatedly parsing a stored transcript.
+
+### Transcript storage
+
+If transcript retention is implemented:
+
+- store transcripts server-side
+- do not retain complete historical transcripts as long-lived browser state
+- do not include transcripts in ordinary workflow/session API responses
+- do not include transcripts in normal supervisor dashboard payloads
+- retrieve a transcript only when an authorized user explicitly requests it
+- protect retrieval through server-side authorization
+- keep transcript content out of operational logs
+- do not place transcript content in URLs
+- define transcript retention and deletion independently from ordinary workflow records
+- retaining a transcript must not automatically imply retaining the audio recording
+
+Transcript storage should remain behind a clear application/storage boundary so the storage implementation can evolve without changing the workflow domain model.
+
+For early pilot volumes, storing transcript records through the normal backend/database architecture may be appropriate.
+
+Do not introduce specialist transcript/object-storage infrastructure until scale, lifecycle, cost, security, or retention requirements demonstrate a need.
+
+### Transcript association and provenance
+
+A retained transcript should remain associated with the relevant:
+
+- workflow session
+- interaction or Pou/stage
+- ElevenLabs conversation reference
+- conversation completion time
+- transcript status/version where relevant
+- generated summary or summary version
+- retention/deletion state
+
+This association should make it possible to determine which source conversation produced a summary or structured finding.
+
+### Supervisor transcript access
+
+The intended future supervisor pattern is:
+
+1. Show the AI-generated summary and structured application state by default.
+2. Show risks, actions, referrals, alerts, and other relevant outcomes.
+3. Provide an explicit action to open the underlying transcript where the supervisor has permission.
+4. Retrieve the transcript on demand.
+5. Release transcript data from the client when it is no longer required.
+
+Supervisor transcript access must be limited to sessions within the supervisor's authorized scope.
+
+Transcript access should be treated as sensitive access and may require its own audit event.
+
+Do not assume that general supervisor access automatically grants transcript access if future product/privacy rules define a narrower permission.
+
+### Kaimahi transcript access
+
+Whether kaimahi can reopen historical full transcripts has not yet been decided.
+
+Do not assume either access or prohibition.
+
+Possible future policies could include:
+
+- kaimahi and supervisor access
+- supervisor-only access
+- time-limited kaimahi review
+- transcript access only for quality, escalation, or review purposes
+
+Treat this as a product/privacy decision.
+
+### Mobile performance
+
+A complete transcript must not be automatically downloaded merely because a workflow/session is opened.
+
+On mobile devices:
+
+- fetch transcripts only when requested
+- fetch only the requested conversation
+- avoid keeping multiple transcripts resident in memory
+- release transcript state when leaving the review experience
+- consider pagination, chunking, or virtualized rendering only if real transcript size demonstrates a need
+
+The normal kaimahi workflow must remain usable without loading historical transcripts.
+
+### Decisions required before transcript retention is implemented
+
+Before implementing production transcript storage, explicitly determine:
+
+- whether transcripts are retained by default
+- which conversations are eligible for retention
+- who may access them
+- whether kaimahi may access them
+- whether transcript access is audited
+- retention period
+- deletion behaviour
+- consent/information requirements
+- export/download permissions
+- whether transcript content is considered formal evidence
+- whether transcripts require redaction or minimisation
+- whether audio is retained separately
+- ElevenLabs transcript/audio retention configuration
+- any organisation-specific transcript retention policy
+
+Do not silently make these decisions during implementation.
 
 ## Secrets and security boundaries
 
