@@ -39,6 +39,7 @@
         "cognito-idp:DescribeUserPool",
         "cognito-idp:DescribeUserPoolClient",
         "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:GetUserPoolMfaConfig",
         "cognito-idp:ListTagsForResource",
         "cognito-idp:ListUserPoolClients",
         "cognito-idp:ListUsers",

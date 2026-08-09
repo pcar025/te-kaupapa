@@ -31,7 +31,7 @@ Confirm the returned ARN identifies `te-kaupapa-dev` or its assumed session and 
 `TeKaupapaMilestone1CognitoSes` contains only:
 
 - `iam`: one `CreateServiceLinkedRole` exception, constrained to Cognito's `email.cognito-idp.amazonaws.com` service principal so Cognito can create its own SES email-delivery service-linked role when absent.
-- `cognito-idp`: create and apply the four required tags to the new user pool, then configure (including the template's explicit MFA-off setting), inspect (including the bounded user inventory required before approved cleanup), and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools. It also permits read-only availability checking for the one requested Cognito domain prefix.
+- `cognito-idp`: create and apply the four required tags to the new user pool, then configure (including the template's explicit MFA-off setting), inspect (including its bounded user inventory and effective MFA/WebAuthn configuration), and roll back only tagged Te Kaupapa user pools; create/get/delete pilot users only in those pools. It also permits read-only availability checking for the one requested Cognito domain prefix.
 - `ses`: read-only account/identity discovery to establish sandbox status and a suitable verified sender.
 
 The template has no IAM resources or service role. `iam:PassRole` is not required and is not granted.
