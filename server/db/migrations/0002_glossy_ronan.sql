@@ -61,6 +61,8 @@ CREATE TABLE "workflow_session" (
 	CONSTRAINT "workflow_session_whanau_reference_length" CHECK ("workflow_session"."whanau_reference" is null or length("workflow_session"."whanau_reference") <= 64)
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX "workflow_session_id_organisation_uq" ON "workflow_session" USING btree ("id","organisation_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "app_user_id_organisation_uq" ON "app_user" USING btree ("id","organisation_id");--> statement-breakpoint
 ALTER TABLE "workflow_interaction" ADD CONSTRAINT "workflow_interaction_session_organisation_fk" FOREIGN KEY ("workflow_session_id","organisation_id") REFERENCES "public"."workflow_session"("id","organisation_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_interaction" ADD CONSTRAINT "workflow_interaction_actor_organisation_fk" FOREIGN KEY ("actor_user_id","organisation_id") REFERENCES "public"."app_user"("id","organisation_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "workflow_pou_checkpoint" ADD CONSTRAINT "workflow_pou_checkpoint_session_organisation_fk" FOREIGN KEY ("workflow_session_id","organisation_id") REFERENCES "public"."workflow_session"("id","organisation_id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -71,8 +73,6 @@ CREATE UNIQUE INDEX "workflow_interaction_actor_idempotency_uq" ON "workflow_int
 CREATE INDEX "workflow_interaction_session_created_idx" ON "workflow_interaction" USING btree ("workflow_session_id","created_at");--> statement-breakpoint
 CREATE UNIQUE INDEX "workflow_pou_checkpoint_session_ordinal_uq" ON "workflow_pou_checkpoint" USING btree ("workflow_session_id","ordinal");--> statement-breakpoint
 CREATE UNIQUE INDEX "workflow_session_organisation_reference_uq" ON "workflow_session" USING btree ("organisation_id","reference");--> statement-breakpoint
-CREATE UNIQUE INDEX "workflow_session_id_organisation_uq" ON "workflow_session" USING btree ("id","organisation_id");--> statement-breakpoint
 CREATE UNIQUE INDEX "workflow_session_one_resumable_per_kaimahi_uq" ON "workflow_session" USING btree ("kaimahi_user_id") WHERE "workflow_session"."status" in ('draft', 'in_progress');--> statement-breakpoint
 CREATE INDEX "workflow_session_kaimahi_status_updated_idx" ON "workflow_session" USING btree ("kaimahi_user_id","status","updated_at");--> statement-breakpoint
 CREATE INDEX "workflow_session_organisation_whanau_updated_idx" ON "workflow_session" USING btree ("organisation_id","whanau_reference","updated_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "app_user_id_organisation_uq" ON "app_user" USING btree ("id","organisation_id");

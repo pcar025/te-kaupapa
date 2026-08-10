@@ -1,20 +1,15 @@
 import { randomUUID } from 'node:crypto'
-import path from 'node:path'
 
 import { eq } from 'drizzle-orm'
-import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { describe, expect, it } from 'vitest'
 
 import type { AuthenticatedUser } from '../domain/auth.js'
-import { createDatabaseConnection } from '../db/repository.js'
 import { appUsers, organisations, workflowInteractions, workflowPouCheckpoints, workflowSessions } from '../db/schema.js'
+import { hasTestDatabaseUrl, withMigratedTestDatabase } from '../db/test-harness.js'
 import { ActiveWorkflowError, IdempotencyKeyReuseError, PostgresWorkflowRepository, StaleWorkflowError } from './repository.js'
 
-const databaseUrl = process.env.TEST_DATABASE_URL
-
-describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () => {
+describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integration', () => {
   it('creates exactly one resumable workflow and preserves retry and stale-state guarantees', async () => {
-    const connection = createDatabaseConnection(databaseUrl!)
     const organisationId = randomUUID()
     const userId = randomUUID()
     const foreignOrganisationId = randomUUID()
@@ -27,8 +22,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
       roles: ['KAIMAHI'],
     }
     let workflowId: string | undefined
-    try {
-      await migrate(connection.db, { migrationsFolder: path.resolve(process.cwd(), 'server/db/migrations') })
+    await withMigratedTestDatabase(async (connection) => {
       await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
       await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
       const repository = new PostgresWorkflowRepository(
@@ -151,7 +145,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
           supervisorReviewSuggested: false,
         },
       })).rejects.toThrow(IdempotencyKeyReuseError)
-    } finally {
+    }, async (connection) => {
       if (workflowId) {
         await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
         await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
@@ -161,7 +155,6 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
       await connection.db.delete(appUsers).where(eq(appUsers.id, foreignUserId))
       await connection.db.delete(organisations).where(eq(organisations.id, foreignOrganisationId))
-      await connection.close()
-    }
+    })
   })
 })

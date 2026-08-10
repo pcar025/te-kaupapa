@@ -74,7 +74,7 @@ Formal retention, deletion, abandonment, and historical-value audit policy are d
 npm run db:migrate
 ```
 
-The database integration tests run only with an explicit disposable `TEST_DATABASE_URL`; normal test runs never mutate an unspecified database.
+The database integration tests run only with an explicit disposable `TEST_DATABASE_URL`; normal test runs never mutate an unspecified database. Their shared harness rejects the normal `te_kaupapa` and `te_kaupapa_dev` targets, rejects a target matching `DATABASE_URL`, serializes migration through a PostgreSQL advisory lock, and verifies the Drizzle migration journal before fixtures run. Fixture cleanup runs only after a successful migration and cannot hide an earlier migration or test failure.
 
 Validate with:
 
