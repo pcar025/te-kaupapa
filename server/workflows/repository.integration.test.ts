@@ -63,6 +63,21 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
       expect(setup).toMatchObject({ replayed: false, workflow: { version: 2, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
       expect(setup.workflow.setup?.whanauReference).toBe('TW-04')
 
+      const revisedSetup = await repository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'setup-confirmed',
+          idempotencyKey: randomUUID(),
+          expectedVersion: 2,
+          whanauReference: 'TW-04',
+          engagementType: 'home-visit',
+          sessionFocus: 'Updated whānau support discussion',
+          immediateConcern: 'none',
+        },
+      })
+      expect(revisedSetup).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
+
       await expect(repository.submitCommand({
         actor,
         workflowSessionId: workflowId,
@@ -85,7 +100,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 2,
+          expectedVersion: 3,
           pouId: 'whakapapa',
           userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
@@ -93,7 +108,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
           supervisorReviewSuggested: false,
         },
       })
-      expect(pou).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
+      expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
       expect(pou.workflow.checkpoints[0]).toMatchObject({ progress: 'confirmed', userSelectedConcern: 'watch' })
 
       const foreignActor: AuthenticatedUser = {
@@ -113,7 +128,7 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 2,
+          expectedVersion: 3,
           pouId: 'whakapapa',
           userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
@@ -121,14 +136,14 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
           supervisorReviewSuggested: false,
         },
       })
-      expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 3 } })
+      expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 4 } })
       await expect(repository.submitCommand({
         actor,
         workflowSessionId: workflowId,
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 3,
+          expectedVersion: 4,
           pouId: 'whakapapa',
           userSelectedConcern: 'low',
           note: 'Changed request using the same key.',

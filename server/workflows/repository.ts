@@ -274,8 +274,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         let interactionPouId: WorkflowPouId | undefined
 
         if (input.command.type === 'setup-confirmed') {
-          if (workflow.status !== 'draft' || workflow.currentStage !== 'setup') throw new WorkflowTransitionError()
-          const checkpoint = checkpointAfterSetup()
+          const isInitialSetup = workflow.status === 'draft' && workflow.currentStage === 'setup'
+          const isSetupRevision = workflow.status === 'in_progress' && workflow.currentStage === 'pou-overview'
+          if (!isInitialSetup && !isSetupRevision) throw new WorkflowTransitionError()
+          const checkpoint = isInitialSetup
+            ? checkpointAfterSetup()
+            : { stage: workflow.currentStage, currentPouId: workflow.currentPouId }
           await tx.update(schema.workflowSessions).set({
             whanauReference: input.command.whanauReference.trim(),
             engagementType: input.command.engagementType,
