@@ -103,6 +103,57 @@ describe('approved application smoke paths', () => {
     )
   })
 
+  it('loads and resumes the server-authoritative workflow checkpoint after entry', async () => {
+    const resumedWorkflow = {
+      id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb',
+      reference: 'TK-7K4M2P9Q',
+      status: 'in_progress',
+      currentStage: 'pou-overview',
+      currentPouId: 'whakapapa',
+      version: 2,
+      setup: {
+        whanauReference: 'TW-04',
+        engagementType: 'home-visit',
+        sessionFocus: 'Whānau support discussion',
+        additionalNotes: null,
+        immediateConcern: 'none',
+      },
+      checkpoints: [],
+      createdAt: '2026-08-10T00:00:00.000Z',
+      updatedAt: '2026-08-10T00:00:00.000Z',
+    }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/workflows?')) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: [{ ...resumedWorkflow, whanauReference: 'TW-04' }] }) })
+      }
+      if (url === `/api/workflows/${resumedWorkflow.id}`) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: resumedWorkflow }) })
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          profile: {
+            id: 'test-user',
+            displayName: 'Test user',
+            organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' },
+            roles: ['KAIMAHI'],
+          },
+        }),
+      })
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })
+    await user.click(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
+    expect(await screen.findByText('SESSION IN PROGRESS')).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: /continue your reflection/i }))
+    expect(await screen.findByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeTruthy()
+  })
+
   it('preserves core Kaimahi tab navigation', async () => {
     const user = userEvent.setup()
     render(<App />)

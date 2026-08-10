@@ -17,6 +17,8 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
     const connection = createDatabaseConnection(databaseUrl!)
     const organisationId = randomUUID()
     const userId = randomUUID()
+    const foreignOrganisationId = randomUUID()
+    const foreignUserId = randomUUID()
     const actor: AuthenticatedUser = {
       id: userId,
       displayName: 'Workflow test Kaimahi',
@@ -94,6 +96,17 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
       expect(pou).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
       expect(pou.workflow.checkpoints[0]).toMatchObject({ progress: 'confirmed', userSelectedConcern: 'watch' })
 
+      const foreignActor: AuthenticatedUser = {
+        id: foreignUserId,
+        displayName: 'Foreign organisation Kaimahi',
+        status: 'active',
+        organisation: { id: foreignOrganisationId, slug: `foreign-${foreignOrganisationId}`, name: 'Foreign organisation' },
+        roles: ['KAIMAHI'],
+      }
+      await connection.db.insert(organisations).values({ id: foreignOrganisationId, slug: foreignActor.organisation.slug, name: foreignActor.organisation.name })
+      await connection.db.insert(appUsers).values({ id: foreignUserId, organisationId: foreignOrganisationId, email: `${foreignUserId}@example.invalid`, displayName: foreignActor.displayName })
+      await expect(repository.findById(foreignActor, workflowId)).resolves.toBeNull()
+
       const replayedPou = await repository.submitCommand({
         actor,
         workflowSessionId: workflowId,
@@ -131,6 +144,8 @@ describe.skipIf(!databaseUrl)('PostgreSQL workflow repository integration', () =
       }
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
+      await connection.db.delete(appUsers).where(eq(appUsers.id, foreignUserId))
+      await connection.db.delete(organisations).where(eq(organisations.id, foreignOrganisationId))
       await connection.close()
     }
   })

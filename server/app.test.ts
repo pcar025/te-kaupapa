@@ -424,4 +424,26 @@ describe('authenticated application shell API', () => {
     expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
     await app.close()
   })
+
+  it('does not expose a Kaimahi workflow to a supervisor or another Kaimahi', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const supervisor: AuthenticatedUser = { ...activeKaimahi, id: '97f5c5ed-0244-4e4d-84e0-1c3e6288ee4d', roles: ['SUPERVISOR'] }
+    const anotherKaimahi: AuthenticatedUser = { ...activeKaimahi, id: 'acfea59b-a70d-4160-9a42-d6155031db0a', displayName: 'Another Kaimahi' }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:supervisor', supervisor)
+    repository.identities.set('cognito:another-kaimahi', anotherKaimahi)
+    await Promise.all([
+      repository.createSession({ id: '5c0b13a8-2d09-44a0-bd93-fcd80cce8a33', userId: activeKaimahi.id, tokenHash: sha256('owner-session'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'fa11d7e8-5800-4c3c-879f-2459d1215a06', userId: supervisor.id, tokenHash: sha256('supervisor-session'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'b0c2e2bf-6d89-4c50-a2a2-8b01f01f63cd', userId: anotherKaimahi.id, tokenHash: sha256('another-kaimahi-session'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'a65c619a-9f17-4e01-8b7e-64de443d7bca' })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+    const workflowPath = '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb'
+
+    expect((await app.inject({ method: 'GET', url: workflowPath, headers: { cookie: 'test_session=supervisor-session' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: workflowPath, headers: { cookie: 'test_session=another-kaimahi-session' } })).statusCode).toBe(404)
+    await app.close()
+  })
 })
