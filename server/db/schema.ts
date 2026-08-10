@@ -2,6 +2,7 @@ import { sql } from 'drizzle-orm'
 import {
   boolean,
   check,
+  date,
   foreignKey,
   index,
   integer,
@@ -17,7 +18,17 @@ import {
 export const userStatus = pgEnum('user_status', ['active', 'inactive'])
 export const applicationRole = pgEnum('application_role', ['KAIMAHI', 'SUPERVISOR'])
 export const workflowStatus = pgEnum('workflow_status', ['draft', 'in_progress', 'completed', 'abandoned'])
-export const workflowStage = pgEnum('workflow_stage', ['setup', 'pou-overview', 'pou-convo', 'pou-summary'])
+export const workflowStage = pgEnum('workflow_stage', [
+  'setup',
+  'pou-overview',
+  'pou-convo',
+  'pou-summary',
+  'action-planning',
+  'referral-planning',
+  'structured-review',
+  'record-review',
+  'complete',
+])
 export const workflowPouId = pgEnum('workflow_pou_id', [
   'whakapapa',
   'manaakitanga',
@@ -31,10 +42,18 @@ export const workflowEngagementType = pgEnum('workflow_engagement_type', ['home-
 export const workflowImmediateConcern = pgEnum('workflow_immediate_concern', ['none', 'unsure', 'urgent'])
 export const workflowPouConcern = pgEnum('workflow_pou_concern', ['low', 'watch', 'action', 'urgent'])
 export const workflowPouProgress = pgEnum('workflow_pou_progress', ['not_started', 'confirmed'])
+export const workflowActionType = pgEnum('workflow_action_type', ['follow-up', 'support', 'other'])
+export const workflowActionStatus = pgEnum('workflow_action_status', ['open', 'completed', 'withdrawn'])
+export const workflowReferralStatus = pgEnum('workflow_referral_status', ['draft', 'prepared', 'declined', 'withdrawn'])
 export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
   'pou_review_confirmed',
+  'pou_summary_confirmed',
+  'action_plan_confirmed',
+  'referral_plan_confirmed',
+  'structured_review_confirmed',
+  'workflow_completed',
 ])
 
 export const organisations = pgTable('organisation', {
@@ -127,6 +146,7 @@ export const workflowSessions = pgTable(
     version: integer('version').default(1).notNull(),
     setupConfirmedAt: timestamp('setup_confirmed_at', { withTimezone: true }),
     completedAt: timestamp('completed_at', { withTimezone: true }),
+    completedByUserId: uuid('completed_by_user_id'),
     abandonedAt: timestamp('abandoned_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
@@ -136,6 +156,11 @@ export const workflowSessions = pgTable(
       columns: [table.kaimahiUserId, table.organisationId],
       foreignColumns: [appUsers.id, appUsers.organisationId],
       name: 'workflow_session_kaimahi_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.completedByUserId, table.organisationId],
+      foreignColumns: [appUsers.id, appUsers.organisationId],
+      name: 'workflow_session_completed_by_organisation_fk',
     }),
     uniqueIndex('workflow_session_organisation_reference_uq').on(table.organisationId, table.reference),
     uniqueIndex('workflow_session_id_organisation_uq').on(table.id, table.organisationId),
@@ -178,7 +203,99 @@ export const workflowPouCheckpoints = pgTable(
       name: 'workflow_pou_checkpoint_confirming_user_organisation_fk',
     }),
     uniqueIndex('workflow_pou_checkpoint_session_ordinal_uq').on(table.workflowSessionId, table.ordinal),
+    uniqueIndex('workflow_pou_checkpoint_session_organisation_pou_uq').on(table.workflowSessionId, table.organisationId, table.pouId),
     check('workflow_pou_checkpoint_ordinal_range', sql`${table.ordinal} between 1 and 7`),
+  ],
+)
+
+export const workflowActions = pgTable(
+  'workflow_action',
+  {
+    id: uuid('id').primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id'),
+    title: text('title').notNull(),
+    type: workflowActionType('type').notNull(),
+    dueDate: date('due_date'),
+    status: workflowActionStatus('status').default('open').notNull(),
+    notes: text('notes'),
+    createdByUserId: uuid('created_by_user_id').notNull(),
+    ownerUserId: uuid('owner_user_id').notNull(),
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId],
+      foreignColumns: [workflowSessions.id, workflowSessions.organisationId],
+      name: 'workflow_action_session_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId, table.pouId],
+      foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId],
+      name: 'workflow_action_checkpoint_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.createdByUserId, table.organisationId],
+      foreignColumns: [appUsers.id, appUsers.organisationId],
+      name: 'workflow_action_created_by_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.ownerUserId, table.organisationId],
+      foreignColumns: [appUsers.id, appUsers.organisationId],
+      name: 'workflow_action_owner_organisation_fk',
+    }),
+    index('workflow_action_workflow_status_idx').on(table.workflowSessionId, table.status),
+    check('workflow_action_title_length', sql`length(${table.title}) between 1 and 300`),
+    check('workflow_action_notes_length', sql`${table.notes} is null or length(${table.notes}) <= 4000`),
+    check('workflow_action_owner_is_creator', sql`${table.ownerUserId} = ${table.createdByUserId}`),
+    check('workflow_action_withdrawn_state', sql`(${table.status} = 'withdrawn') = (${table.withdrawnAt} is not null)`),
+  ],
+)
+
+export const workflowReferrals = pgTable(
+  'workflow_referral',
+  {
+    id: uuid('id').primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id'),
+    destinationCode: text('destination_code'),
+    destinationName: text('destination_name').notNull(),
+    reason: text('reason').notNull(),
+    handoverNote: text('handover_note'),
+    notes: text('notes'),
+    status: workflowReferralStatus('status').default('draft').notNull(),
+    createdByUserId: uuid('created_by_user_id').notNull(),
+    withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId],
+      foreignColumns: [workflowSessions.id, workflowSessions.organisationId],
+      name: 'workflow_referral_session_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId, table.pouId],
+      foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId],
+      name: 'workflow_referral_checkpoint_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.createdByUserId, table.organisationId],
+      foreignColumns: [appUsers.id, appUsers.organisationId],
+      name: 'workflow_referral_created_by_organisation_fk',
+    }),
+    index('workflow_referral_workflow_status_idx').on(table.workflowSessionId, table.status),
+    check('workflow_referral_destination_code_length', sql`${table.destinationCode} is null or length(${table.destinationCode}) between 1 and 100`),
+    check('workflow_referral_destination_name_length', sql`length(${table.destinationName}) between 1 and 300`),
+    check('workflow_referral_reason_length', sql`length(${table.reason}) between 1 and 4000`),
+    check('workflow_referral_handover_note_length', sql`${table.handoverNote} is null or length(${table.handoverNote}) <= 4000`),
+    check('workflow_referral_notes_length', sql`${table.notes} is null or length(${table.notes}) <= 4000`),
+    check('workflow_referral_withdrawn_state', sql`(${table.status} = 'withdrawn') = (${table.withdrawnAt} is not null)`),
   ],
 )
 

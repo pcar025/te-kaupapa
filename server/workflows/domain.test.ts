@@ -1,8 +1,20 @@
 import { describe, expect, it } from 'vitest'
 
-import { checkpointAfterPouReview, checkpointAfterSetup, initialWorkflowCheckpoint, WorkflowTransitionError } from './domain.js'
+import type { WorkflowCheckpoint } from '../../shared/workflow.js'
 
-describe('Milestone 2 workflow checkpoints', () => {
+import {
+  checkpointAfterActionPlan,
+  checkpointAfterCompletion,
+  checkpointAfterPouReview,
+  checkpointAfterPouSummary,
+  checkpointAfterReferralPlan,
+  checkpointAfterSetup,
+  checkpointAfterStructuredReview,
+  initialWorkflowCheckpoint,
+  WorkflowTransitionError,
+} from './domain.js'
+
+describe('workflow checkpoints', () => {
   it('starts as a draft setup checkpoint and enters the first Pou after setup', () => {
     expect(initialWorkflowCheckpoint()).toEqual({ stage: 'setup', currentPouId: null })
     expect(checkpointAfterSetup()).toEqual({ stage: 'pou-overview', currentPouId: 'whakapapa' })
@@ -25,5 +37,23 @@ describe('Milestone 2 workflow checkpoints', () => {
   it('rejects skipped or out-of-order Pou confirmation', () => {
     expect(() => checkpointAfterPouReview(checkpointAfterSetup(), 'manaakitanga', false)).toThrow(WorkflowTransitionError)
     expect(() => checkpointAfterPouReview(initialWorkflowCheckpoint(), 'whakapapa', false)).toThrow(WorkflowTransitionError)
+  })
+
+  it('advances through the approved downstream review and completion checkpoints', () => {
+    let checkpoint: WorkflowCheckpoint = { stage: 'pou-summary', currentPouId: null }
+    checkpoint = checkpointAfterPouSummary(checkpoint)
+    expect(checkpoint).toEqual({ stage: 'action-planning', currentPouId: null })
+    checkpoint = checkpointAfterActionPlan(checkpoint)
+    expect(checkpoint).toEqual({ stage: 'referral-planning', currentPouId: null })
+    checkpoint = checkpointAfterReferralPlan(checkpoint)
+    expect(checkpoint).toEqual({ stage: 'structured-review', currentPouId: null })
+    checkpoint = checkpointAfterStructuredReview(checkpoint)
+    expect(checkpoint).toEqual({ stage: 'record-review', currentPouId: null })
+    expect(checkpointAfterCompletion(checkpoint)).toEqual({ stage: 'complete', currentPouId: null })
+  })
+
+  it('rejects skipped downstream transitions', () => {
+    expect(() => checkpointAfterActionPlan({ stage: 'pou-summary', currentPouId: null })).toThrow(WorkflowTransitionError)
+    expect(() => checkpointAfterCompletion({ stage: 'structured-review', currentPouId: null })).toThrow(WorkflowTransitionError)
   })
 })

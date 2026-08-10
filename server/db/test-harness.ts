@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 import { sql } from 'drizzle-orm'
@@ -9,7 +10,8 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan']
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster']
+const MILESTONE_2_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 3)
 
 interface MigrationJournal {
   entries: Array<{ tag: string }>
@@ -128,6 +130,55 @@ async function migrateTestDatabase(connection: DatabaseConnection): Promise<void
     } catch (error) {
       if (!migrationFailure) throw error
     }
+  }
+}
+
+function createMilestone2MigrationFolder(): string {
+  const { migrationsFolder } = migrationDetails()
+  const journal = JSON.parse(readFileSync(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as MigrationJournal
+  const folder = mkdtempSync(path.join(tmpdir(), 'te-kaupapa-m2-migrations-'))
+  mkdirSync(path.join(folder, 'meta'))
+  const entries = journal.entries.filter(({ tag }) => MILESTONE_2_MIGRATION_TAGS.includes(tag))
+  if (entries.length !== MILESTONE_2_MIGRATION_TAGS.length) throw new Error('The Milestone 2 migration chain is incomplete.')
+  writeFileSync(path.join(folder, 'meta', '_journal.json'), JSON.stringify({ version: '7', dialect: 'postgresql', entries }, null, 2))
+  for (const { tag } of entries) cpSync(path.join(migrationsFolder, `${tag}.sql`), path.join(folder, `${tag}.sql`))
+  return folder
+}
+
+async function recordedMigrationCount(connection: DatabaseConnection): Promise<number> {
+  const result = await connection.db.execute(sql`select count(*)::int as count from "drizzle"."__drizzle_migrations"`)
+  return Number((result.rows[0] as { count?: number | string } | undefined)?.count ?? 0)
+}
+
+export async function verifyUpgradeFromMilestone2TestDatabase(): Promise<void> {
+  const connection = createDatabaseConnection(getTestDatabaseUrl())
+  const temporaryMigrationsFolder = createMilestone2MigrationFolder()
+  let primaryFailure = false
+  try {
+    await connection.db.execute(sql`select pg_advisory_lock(${MIGRATION_LOCK_ID})`)
+    const journal = await connection.db.execute(sql`select to_regclass('drizzle.__drizzle_migrations') as journal`)
+    const existingJournal = (journal.rows[0] as { journal?: string | null } | undefined)?.journal
+    if (!existingJournal) {
+      await migrate(connection.db, { migrationsFolder: temporaryMigrationsFolder })
+      if (await recordedMigrationCount(connection) !== MILESTONE_2_MIGRATION_TAGS.length) {
+        throw new Error('The disposable database did not record the genuine Milestone 2 migration journal before upgrade.')
+      }
+      await migrate(connection.db, { migrationsFolder: migrationDetails().migrationsFolder })
+    }
+    if (await recordedMigrationCount(connection) !== REQUIRED_MIGRATION_TAGS.length) {
+      throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after upgrade.`)
+    }
+  } catch (error) {
+    primaryFailure = true
+    throw error
+  } finally {
+    try {
+      await connection.db.execute(sql`select pg_advisory_unlock(${MIGRATION_LOCK_ID})`)
+    } catch (error) {
+      if (!primaryFailure) throw error
+    }
+    rmSync(temporaryMigrationsFolder, { recursive: true, force: true })
+    await connection.close()
   }
 }
 

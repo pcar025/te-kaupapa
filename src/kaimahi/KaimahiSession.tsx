@@ -6,6 +6,7 @@ import type {
   PouStatus,
   ActionType,
 } from '../types'
+import type { WorkflowActionInput, WorkflowReferralInput, WorkflowStage } from '../../shared/workflow'
 import {
   STATUS_CONFIG,
   REFERRAL_SERVICES,
@@ -25,7 +26,9 @@ import {
   getWorkflow,
   submitWorkflowCommand,
   type Workflow,
+  type WorkflowAction,
   type WorkflowCheckpoint,
+  type WorkflowReferral,
   type WorkflowPersistenceState,
 } from '../workflows'
 
@@ -5322,6 +5325,165 @@ function CompleteStage({ data, onDone }: { data: ActiveSessionData; onDone: () =
 // SESSION SHELL — linear session flow, overlays the tab navigation
 // ─────────────────────────────────────────────────────────────────────────────
 
+function RealPouSummaryStage({
+  checkpoints,
+  onConfirm,
+  persistenceState,
+  onRetry,
+  onReload,
+}: {
+  checkpoints: WorkflowCheckpoint[]
+  onConfirm: () => void
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
+}) {
+  const byPou = new Map(checkpoints.map((checkpoint) => [checkpoint.pouId, checkpoint]))
+  return (
+    <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+      <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>
+          Whakarāpopoto — Confirmed Pou review
+        </p>
+        <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>
+          Ngā Pou o Te Waharoa — all seven reviewed
+        </h2>
+        <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>
+          Your confirmed Kaimahi attention selections and notes. These are not clinical or automated safety classifications.
+        </p>
+      </div>
+      <div className="px-5 pt-5 space-y-px">
+        {TE_WAHAROA_POU.map((pou) => {
+          const checkpoint = byPou.get(pou.id)
+          const concern = checkpoint?.userSelectedConcern ?? 'low'
+          const meta = CONCERN_META[concern]
+          return (
+            <div key={pou.id} className="px-4 py-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${meta.color}` }}>
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <p className="text-xs font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{pou.reo}</p>
+                <span className="text-xs px-2 py-0.5" style={{ fontFamily: 'var(--font-mono)', backgroundColor: meta.bg, color: meta.color, fontSize: '0.6rem' }}>{meta.label}</span>
+              </div>
+              {checkpoint?.note && <p className="text-xs italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{checkpoint.note}</p>}
+              {(checkpoint?.referralSuggested || checkpoint?.supervisorReviewSuggested) && (
+                <p className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>
+                  {checkpoint.referralSuggested ? 'Referral consideration marked' : 'Supervisor-review consideration marked'}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className="px-5 pt-8">
+        <button onClick={onConfirm} className="w-full transition-all active:opacity-85" style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}>
+          <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>Haere tonu — Concerns &amp; Actions</p>
+        </button>
+        <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
+      </div>
+    </div>
+  )
+}
+
+type ManualAction = WorkflowActionInput
+type ManualReferral = WorkflowReferralInput
+
+function RealActionsStage({
+  workflow,
+  onConfirm,
+  persistenceState,
+  onRetry,
+  onReload,
+}: {
+  workflow: Workflow
+  onConfirm: (actions: ManualAction[]) => void
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
+}) {
+  const [actions, setActions] = useState<ManualAction[]>(() => workflow.actions
+    .filter(({ status }) => status !== 'withdrawn')
+    .map((action) => ({
+      id: action.id, title: action.title, type: action.type, pouId: action.pouId ?? undefined,
+      dueDate: action.dueDate ?? undefined, status: action.status === 'completed' ? 'completed' : 'open', notes: action.notes ?? undefined,
+    })))
+  const update = (id: string, patch: Partial<ManualAction>) => setActions((items) => items.map((action) => action.id === id ? { ...action, ...patch } : action))
+  const add = () => setActions((items) => [...items, { id: crypto.randomUUID(), title: '', type: 'follow-up', status: 'open' }])
+  return (
+    <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+      <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+        <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)', letterSpacing: '0.14em' }}>Āwangawanga — Concerns &amp; Actions</p>
+        <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Name the actions you will carry forward</h2>
+        <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Actions are created only from your own confirmed input. No notification or escalation is sent from this screen.</p>
+      </div>
+      <div className="px-5 pt-5 space-y-3">
+        {actions.map((action, index) => (
+          <div key={action.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}>
+            <div className="flex items-center justify-between gap-3"><SectionLabel>Action {index + 1}</SectionLabel><button onClick={() => setActions((items) => items.filter((item) => item.id !== action.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div>
+            <input value={action.title} onChange={(event) => update(action.id, { title: event.target.value })} placeholder="Action title" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} />
+            <div className="grid grid-cols-2 gap-2">
+              <select value={action.type} onChange={(event) => update(action.id, { type: event.target.value as ManualAction['type'] })} className="px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="follow-up">Follow-up</option><option value="support">Support</option><option value="other">Other</option></select>
+              <select value={action.status} onChange={(event) => update(action.id, { status: event.target.value as ManualAction['status'] })} className="px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="open">Open</option><option value="completed">Completed</option></select>
+            </div>
+            <select value={action.pouId ?? ''} onChange={(event) => update(action.id, { pouId: event.target.value ? event.target.value as ManualAction['pouId'] : undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="">No linked Pou</option>{TE_WAHAROA_POU.map((pou) => <option key={pou.id} value={pou.id}>{pou.reo}</option>)}</select>
+            <input type="date" value={action.dueDate ?? ''} onChange={(event) => update(action.id, { dueDate: event.target.value || undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }} />
+            <textarea value={action.notes ?? ''} onChange={(event) => update(action.id, { notes: event.target.value || undefined })} placeholder="Notes (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} />
+          </div>
+        ))}
+        <button onClick={add} className="w-full px-4 py-3 text-left" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)', fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>+ Add action</button>
+      </div>
+      <div className="px-5 pt-6"><button onClick={() => onConfirm(actions)} disabled={actions.some((action) => !action.title.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Confirm actions</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+    </div>
+  )
+}
+
+function RealReferralsStage({
+  workflow,
+  onConfirm,
+  persistenceState,
+  onRetry,
+  onReload,
+}: {
+  workflow: Workflow
+  onConfirm: (referrals: ManualReferral[]) => void
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
+}) {
+  const [referrals, setReferrals] = useState<ManualReferral[]>(() => workflow.referrals
+    .filter(({ status }) => status !== 'withdrawn')
+    .map((referral) => ({ ...referral, pouId: referral.pouId ?? undefined, destinationCode: referral.destinationCode ?? undefined, handoverNote: referral.handoverNote ?? undefined, notes: referral.notes ?? undefined, status: referral.status as ManualReferral['status'] })))
+  const update = (id: string, patch: Partial<ManualReferral>) => setReferrals((items) => items.map((referral) => referral.id === id ? { ...referral, ...patch } : referral))
+  const add = () => setReferrals((items) => [...items, { id: crypto.randomUUID(), destinationName: '', reason: '', status: 'draft' }])
+  return (
+    <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+      <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.14em' }}>Ngā Ara Tautoko — Referrals</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Prepare the pathways you choose</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Prepared means recorded within Te Kaupapa only. Nothing is sent externally.</p></div>
+      <div className="px-5 pt-5 space-y-3">{referrals.map((referral, index) => <div key={referral.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><div className="flex items-center justify-between gap-3"><SectionLabel>Referral {index + 1}</SectionLabel><button onClick={() => setReferrals((items) => items.filter((item) => item.id !== referral.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div><input value={referral.destinationName} onChange={(event) => update(referral.id, { destinationName: event.target.value })} placeholder="Destination name" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /><input value={referral.destinationCode ?? ''} onChange={(event) => update(referral.id, { destinationCode: event.target.value || undefined })} placeholder="Destination code (optional)" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.reason} onChange={(event) => update(referral.id, { reason: event.target.value })} placeholder="Reason for referral" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><select value={referral.pouId ?? ''} onChange={(event) => update(referral.id, { pouId: event.target.value ? event.target.value as ManualReferral['pouId'] : undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="">No linked Pou</option>{TE_WAHAROA_POU.map((pou) => <option key={pou.id} value={pou.id}>{pou.reo}</option>)}</select><select value={referral.status} onChange={(event) => update(referral.id, { status: event.target.value as ManualReferral['status'] })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="draft">Draft</option><option value="prepared">Prepared in Te Kaupapa</option><option value="declined">Declined</option></select><textarea value={referral.handoverNote ?? ''} onChange={(event) => update(referral.id, { handoverNote: event.target.value || undefined })} placeholder="Handover note (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.notes ?? ''} onChange={(event) => update(referral.id, { notes: event.target.value || undefined })} placeholder="Notes (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></div>)}<button onClick={add} className="w-full px-4 py-3 text-left" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)', fontFamily: 'var(--font-mono)', color: 'var(--color-growth)' }}>+ Add referral</button></div>
+      <div className="px-5 pt-6"><button onClick={() => onConfirm(referrals)} disabled={referrals.some((referral) => !referral.destinationName.trim() || !referral.reason.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Haere tonu — Structured review</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+    </div>
+  )
+}
+
+function StructuredReviewStage({ workflow, onConfirm, persistenceState, onRetry, onReload }: { workflow: Workflow; onConfirm: () => void; persistenceState: WorkflowPersistenceState; onRetry: () => void; onReload: () => void }) {
+  const review = workflow.structuredReview
+  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}><div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>He Arotake Hanganga — Structured review</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Review the confirmed record</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>This review is assembled from confirmed Te Kaupapa information. It is not AI-generated.</p></div><div className="px-5 pt-5 space-y-4"><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}><SectionLabel>Session</SectionLabel><p className="text-sm mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{review.reference} · {review.setup?.whanauReference ?? 'Setup not confirmed'}</p><p className="text-xs mt-1" style={{ color: 'var(--color-ink-muted)' }}>{review.setup?.sessionFocus}</p></div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Confirmed Pou responses</SectionLabel>{review.checkpoints.map((checkpoint) => <p key={checkpoint.pouId} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === checkpoint.pouId)?.reo}: {checkpoint.userSelectedConcern ? CONCERN_META[checkpoint.userSelectedConcern as ConcernLevel].label : 'Not confirmed'}{checkpoint.note ? ` — ${checkpoint.note}` : ''}</p>)}</div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Actions</SectionLabel>{review.actions.length ? review.actions.map((action) => <p key={action.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{action.title} · {action.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No actions confirmed.</p>}</div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Referral drafts</SectionLabel>{review.referrals.length ? review.referrals.map((referral) => <p key={referral.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{referral.destinationName} · {referral.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No referrals confirmed.</p>}</div></div><div className="px-5 pt-6"><button onClick={onConfirm} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Review record</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div></div>
+}
+
+function RecordReviewStage({ workflow, onComplete, persistenceState, onRetry, onReload }: { workflow: Workflow; onComplete: () => void; persistenceState: WorkflowPersistenceState; onRetry: () => void; onReload: () => void }) {
+  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}><div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.14em' }}>Tohu — Record review</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Complete this Te Kaupapa record</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Completing saves the confirmed workflow record in Te Kaupapa. It does not send email, referrals, notifications, or escalation.</p></div><div className="px-5 pt-5"><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>Reference: {workflow.reference}</p><p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>{workflow.structuredReview.actions.length} acknowledged action(s) · {workflow.structuredReview.referrals.length} referral draft(s)</p></div></div><div className="px-5 pt-6"><button onClick={onComplete} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-growth)', color: 'white', fontFamily: 'var(--font-mono)' }}>Kua oti — Complete session</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div></div>
+}
+
+function MilestoneThreeCompleteStage({ workflow, onDone }: { workflow: Workflow; onDone: () => void }) {
+  const completed = workflow.completedAt ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(workflow.completedAt)) : ''
+  return <div className="flex flex-col items-center justify-center text-center" style={{ minHeight: '80vh', padding: '3rem 2rem', fontFamily: 'var(--font-body)' }}><div className="mb-8 flex items-center justify-center" style={{ width: 56, height: 56, backgroundColor: 'var(--color-growth-light)' }}>✓</div><p className="text-2xl font-medium mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Kua oti</p><p className="text-sm italic mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Session complete</p><p className="text-sm mb-2" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Saved in Te Kaupapa.</p><p className="text-xs mb-8" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Reference: {workflow.reference}<br />Completed: {completed}</p><div className="w-full text-left px-4 py-4 mb-6" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{workflow.structuredReview.actions.length} acknowledged action(s) · {workflow.structuredReview.referrals.length} referral draft(s)</p></div><button onClick={onDone} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', letterSpacing: '0.08em', fontFamily: 'var(--font-mono)' }}>Hoki ki te Kāinga</button></div>
+}
+
+function sessionStageForWorkflow(stage: WorkflowStage): SessionStageKey {
+  if (stage === 'action-planning') return 'risks'
+  if (stage === 'referral-planning') return 'referrals'
+  if (stage === 'structured-review') return 'synthesis'
+  if (stage === 'record-review') return 'record'
+  return stage
+}
+
 function workflowToSessionData(workflow: Workflow): ActiveSessionData {
   const initial = getInitialSessionData()
   return {
@@ -5350,7 +5512,7 @@ export function SessionShell({
   onWorkflowChange: (workflow: Workflow) => void
 }) {
   const initialPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
-  const [stage, setStage] = useState<SessionStageKey>(workflow.currentStage)
+  const [stage, setStage] = useState<SessionStageKey>(sessionStageForWorkflow(workflow.currentStage))
   const [currentPouIdx, setCurrentPouIdx] = useState(initialPouIdx)
   const [data, setData] = useState<ActiveSessionData>(() => workflowToSessionData(workflow))
   const [persistenceState, setPersistenceState] = useState<WorkflowPersistenceState>('idle')
@@ -5360,7 +5522,7 @@ export function SessionShell({
 
   useEffect(() => {
     const nextPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
-    setStage(workflow.currentStage)
+    setStage(sessionStageForWorkflow(workflow.currentStage))
     setCurrentPouIdx(nextPouIdx)
     setData((current) => ({
       ...current,
@@ -5439,9 +5601,23 @@ export function SessionShell({
     void persist(submit)
   }
 
+  const confirmDownstream = (
+    command:
+      | { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }
+      | { type: 'action-plan-confirmed'; actions: ManualAction[] }
+      | { type: 'referral-plan-confirmed'; referrals: ManualReferral[] },
+  ) => {
+    const submission = command.type === 'action-plan-confirmed' || command.type === 'referral-plan-confirmed'
+      ? { ...command, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
+      : { ...(command as { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }), idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
+    const submit = () => submitWorkflowCommand(workflow.id, submission)
+    retrySubmission.current = () => persist(submit, true)
+    void persist(submit)
+  }
+
   // Pou-by-pou flow:
   // setup → pou-overview → pou-convo(0) → pou-review(0) → pou-convo(1) → pou-review(1) → …
-  // → pou-convo(5) → pou-review(5) → pou-summary → synthesising → risks → referrals → synthesis → record → complete
+  // → pou-convo(5) → pou-review(5) → server-acknowledged downstream stages
   const advance = () => {
     setPersistenceState('idle')
     if (stage === 'setup') { return }
@@ -5456,14 +5632,7 @@ export function SessionShell({
       }
       return
     }
-    if (stage === 'pou-summary') {
-      setStage('synthesising')
-      setTimeout(() => setStage('risks'), 2800)
-      return
-    }
-    const linear: SessionStageKey[] = ['risks', 'referrals', 'synthesis', 'record', 'complete']
-    const li = linear.indexOf(stage)
-    if (li >= 0 && li < linear.length - 1) setStage(linear[li + 1])
+    // Downstream progress is advanced only by an acknowledged workflow command.
   }
 
   const back = () => {
@@ -5480,23 +5649,12 @@ export function SessionShell({
     onDone()
   }
 
-  if (stage === 'synthesising') {
-    return (
-      <WhareShell>
-        <div className="h-1 w-full" style={{ backgroundColor: 'var(--color-ridge)' }} />
-        <div className="flex-1 overflow-y-auto">
-          <SynthesisingStage />
-        </div>
-      </WhareShell>
-    )
-  }
-
   if (stage === 'complete') {
     return (
       <WhareShell>
         <SessionHeader stage="complete" sessionRef={data.ref} whanauCode={data.whanauCode} onBack={onDone} />
         <div className="flex-1 overflow-y-auto">
-          <CompleteStage data={data} onDone={onDone} />
+          <MilestoneThreeCompleteStage workflow={workflow} onDone={onDone} />
         </div>
       </WhareShell>
     )
@@ -5519,11 +5677,11 @@ export function SessionShell({
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} />}
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'pou-summary'  && <PouSummaryStage data={data} onNext={advance} />}
-        {stage === 'risks'        && <RisksActionsStage data={data} onChange={patch} onNext={advance} />}
-        {stage === 'referrals'    && <ReferralsStage data={data} onChange={patch} onNext={advance} />}
-        {stage === 'synthesis'    && <SynthesisStage data={data} onChange={patch} onNext={advance} />}
-        {stage === 'record'       && <RecordStage data={data} onNext={advance} />}
+        {stage === 'pou-summary'  && <RealPouSummaryStage checkpoints={workflow.checkpoints} onConfirm={() => confirmDownstream({ type: 'pou-summary-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'synthesis'    && <StructuredReviewStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'structured-review-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'record'       && <RecordReviewStage workflow={workflow} onComplete={() => confirmDownstream({ type: 'workflow-completed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
       </div>
     </WhareShell>
   )

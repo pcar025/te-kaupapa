@@ -1,4 +1,6 @@
 import type {
+  WorkflowActionStatus,
+  WorkflowActionType,
   WorkflowCommand,
   WorkflowEngagementType,
   WorkflowImmediateConcern,
@@ -6,6 +8,7 @@ import type {
   WorkflowPouId,
   WorkflowStage,
   WorkflowStatus,
+  WorkflowReferralStatus,
 } from '../shared/workflow'
 
 export interface WorkflowCheckpoint {
@@ -34,8 +37,50 @@ export interface Workflow {
     immediateConcern: WorkflowImmediateConcern
   } | null
   checkpoints: WorkflowCheckpoint[]
+  actions: WorkflowAction[]
+  referrals: WorkflowReferral[]
+  structuredReview: WorkflowStructuredReview
+  completedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface WorkflowAction {
+  id: string
+  pouId: WorkflowPouId | null
+  title: string
+  type: WorkflowActionType
+  dueDate: string | null
+  status: WorkflowActionStatus
+  notes: string | null
+  withdrawnAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowReferral {
+  id: string
+  pouId: WorkflowPouId | null
+  destinationCode: string | null
+  destinationName: string
+  reason: string
+  handoverNote: string | null
+  notes: string | null
+  status: WorkflowReferralStatus
+  withdrawnAt: string | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface WorkflowStructuredReview {
+  reference: string
+  setup: Workflow['setup']
+  checkpoints: WorkflowCheckpoint[]
+  actions: WorkflowAction[]
+  referrals: WorkflowReferral[]
+  createdAt: string
+  updatedAt: string
+  completedAt: string | null
 }
 
 export interface WorkflowListItem {
@@ -46,6 +91,14 @@ export interface WorkflowListItem {
   currentStage: WorkflowStage
   currentPouId: WorkflowPouId | null
   version: number
+  updatedAt: string
+}
+
+export interface CompletedWorkflowListItem {
+  id: string
+  reference: string
+  whanauReference: string | null
+  completedAt: string
   updatedAt: string
 }
 
@@ -83,6 +136,11 @@ export async function createWorkflow(idempotencyKey: string): Promise<{ workflow
 
 export async function listResumableWorkflows(): Promise<WorkflowListItem[]> {
   const payload = await requestJson<{ workflows: WorkflowListItem[] }>('/api/workflows?status=resumable')
+  return payload.workflows
+}
+
+export async function listCompletedWorkflows(): Promise<CompletedWorkflowListItem[]> {
+  const payload = await requestJson<{ workflows: CompletedWorkflowListItem[] }>('/api/workflows?status=completed')
   return payload.workflows
 }
 

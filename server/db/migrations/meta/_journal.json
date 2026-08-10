@@ -22,6 +22,13 @@
       "when": 1786322358419,
       "tag": "0002_glossy_ronan",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786333420188,
+      "tag": "0003_simple_grandmaster",
+      "breakpoints": true
     }
   ]
 }
