@@ -148,6 +148,27 @@ Avoid unnecessary rerenders and large eager JavaScript bundles.
 
 Lazy-load functionality that is not required for the current user or workflow, particularly role-specific and voice-integration code.
 
+### Mobile and poor-network performance baseline
+
+Mobile and poor-network performance is a first-class engineering requirement.
+
+Whenever a milestone materially changes frontend bundle size, request or response payloads, retry behaviour, or media use, establish or update a production-build baseline and validate the affected path under constrained and poor-network conditions.
+
+Report measured artefact sizes, request counts, payload sizes, and latency measurements separately from estimates.
+
+Do not allow a growing workflow, transcript, media buffer, or response shape to become an unbounded browser-memory or network-transfer cost.
+
+Prefer:
+
+- role- and media-specific lazy loading
+- small meaningful commands
+- bounded authoritative responses
+- progressive persistence
+- truthful saving/retry/failure/stale states
+- prompt cleanup of media, socket, and temporary resources
+
+Do not introduce browser persistence, offline-first architecture, transcript retention, or media retention merely for performance reasons without explicit approval.
+
 Always clean up:
 
 - microphone tracks
