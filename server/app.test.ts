@@ -8,6 +8,8 @@ import type { AuthRepository, CreateSessionInput } from './db/repository.js'
 import type { AuthenticatedUser } from './domain/auth.js'
 import {
   IdempotencyKeyReuseError,
+  SafetyObservationIdentifierReuseError,
+  StaleSafetyObservationError,
   StaleWorkflowError,
   WorkflowNotFoundError,
   type WorkflowMutationResult,
@@ -23,6 +25,7 @@ import {
   checkpointAfterReferralPlan,
   checkpointAfterSetup,
   checkpointAfterStructuredReview,
+  WorkflowTransitionError,
 } from './workflows/domain.js'
 import { WORKFLOW_POU_IDS, type WorkflowCommand } from '../shared/workflow.js'
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
@@ -109,6 +112,19 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       })),
       actions: [],
       referrals: [],
+      safety: {
+        observations: [],
+        requiredConsequences: [],
+        supervisorReviewRequests: [],
+        indicators: {
+          activeObservationCount: 0,
+          urgentObservationCount: 0,
+          supervisorReviewRequired: false,
+          supervisorNotificationRequired: false,
+          manualReviewRequestCount: 0,
+          hasRetractedHistory: false,
+        },
+      },
       completedAt: null,
       createdAt: new Date('2026-08-10T00:00:00.000Z'),
       updatedAt: new Date('2026-08-10T00:00:00.000Z'),
@@ -137,6 +153,7 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         currentPouId: workflow.currentPouId,
         version: workflow.version,
         updatedAt: workflow.updatedAt,
+        safetyIndicators: workflow.safety.indicators,
       }))
   }
 
@@ -149,6 +166,7 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         whanauReference: workflow.setup?.whanauReference ?? null,
         completedAt: workflow.completedAt!,
         updatedAt: workflow.updatedAt,
+        safetyIndicators: workflow.safety.indicators,
       }))
   }
 
@@ -163,8 +181,56 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       return { ...existing.result, replayed: true }
     }
     if (workflow.version !== input.command.expectedVersion) throw new StaleWorkflowError(workflow.version)
+    const command = input.command
 
-    if (input.command.type === 'setup-confirmed') {
+    if (command.type === 'safety-observation-confirmed') {
+      if (workflow.status === 'completed') throw new WorkflowTransitionError()
+      if (workflow.safety.observations.some(({ id }) => id === command.observationId)) throw new SafetyObservationIdentifierReuseError()
+      const observation = command.observation
+      workflow.safety.observations.push({
+        id: command.observationId,
+        assessmentContext: observation.assessmentContext,
+        pouId: observation.pouId ?? null,
+        broadClass: observation.broadClass,
+        concernLevel: observation.concernLevel,
+        contextNote: observation.contextNote ?? null,
+        status: 'active',
+        currentRevision: 1,
+        confirmedAt: new Date('2026-08-10T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-10T00:00:00.000Z'),
+        retractedAt: null,
+      })
+      this.recalculateSafety(workflow)
+    } else if (command.type === 'safety-observation-corrected' || command.type === 'safety-observation-retracted') {
+      const observationId = command.observationId
+      const expectedObservationRevision = command.expectedObservationRevision
+      const observation = workflow.safety.observations.find(({ id }) => id === observationId)
+      if (!observation) throw new WorkflowNotFoundError()
+      if (observation.currentRevision !== expectedObservationRevision) throw new StaleSafetyObservationError(observation.currentRevision)
+      if (observation.status === 'retracted') throw new WorkflowTransitionError()
+      if (input.command.type === 'safety-observation-corrected') {
+        observation.assessmentContext = input.command.replacement.assessmentContext
+        observation.pouId = input.command.replacement.pouId ?? null
+        observation.broadClass = input.command.replacement.broadClass
+        observation.concernLevel = input.command.replacement.concernLevel
+        observation.contextNote = input.command.replacement.contextNote ?? null
+      } else {
+        observation.status = 'retracted'
+        observation.retractedAt = new Date('2026-08-10T00:00:00.000Z')
+      }
+      observation.currentRevision += 1
+      observation.updatedAt = new Date('2026-08-10T00:00:00.000Z')
+      this.recalculateSafety(workflow)
+    } else if (input.command.type === 'supervisor-review-requested') {
+      if (workflow.status === 'completed') throw new WorkflowTransitionError()
+      workflow.safety.supervisorReviewRequests.push({
+        id: input.command.requestId,
+        pouId: input.command.pouId ?? null,
+        requestNote: input.command.requestNote ?? null,
+        requestedAt: new Date('2026-08-10T00:00:00.000Z'),
+      })
+      this.recalculateSafety(workflow)
+    } else if (input.command.type === 'setup-confirmed') {
       const next = checkpointAfterSetup()
       workflow.status = 'in_progress'
       workflow.currentStage = next.stage
@@ -243,6 +309,53 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     const result = { workflow: this.publicWorkflow(workflow), interactionId: 'c784a337-05de-4d22-838f-0338b2e45027', replayed: false }
     this.operations.set(key, { fingerprint, result })
     return result
+  }
+
+  async findSafetyObservationHistory(actor: AuthenticatedUser, workflowSessionId: string, observationId: string) {
+    const workflow = this.workflows.get(workflowSessionId)
+    const observation = workflow?.ownerId === actor.id ? workflow.safety.observations.find(({ id }) => id === observationId) : undefined
+    if (!workflow || !observation) return null
+    return {
+      observation,
+      revisions: [{
+        revision: observation.currentRevision,
+        assessmentContext: observation.assessmentContext,
+        pouId: observation.pouId,
+        broadClass: observation.broadClass,
+        concernLevel: observation.concernLevel,
+        resultingStatus: observation.status,
+        operation: 'confirmed' as const,
+        changeReason: null,
+        createdAt: observation.confirmedAt,
+      }],
+      evaluations: [{
+        observationRevision: observation.currentRevision,
+        ruleCode: 'te-kaupapa.safety.urgent-supervisor-attention',
+        ruleVersion: 1,
+        decisionCode: observation.concernLevel === 'urgent' && observation.status === 'active' ? 'urgent_supervisor_attention_required' as const : 'no_approved_consequence' as const,
+        evaluatedAt: observation.confirmedAt,
+      }],
+      consequenceEpisodes: workflow.safety.requiredConsequences
+        .filter(({ observationId: consequenceObservationId }) => consequenceObservationId === observationId)
+        .map((consequence) => ({ ...consequence, state: 'required' as const, ceasedAt: null, cessationReason: null })),
+    }
+  }
+
+  private recalculateSafety(workflow: Omit<WorkflowView, 'structuredReview'> & { ownerId: string }) {
+    const active = workflow.safety.observations.filter(({ status }) => status === 'active')
+    const urgent = active.filter(({ concernLevel }) => concernLevel === 'urgent')
+    workflow.safety.requiredConsequences = urgent.flatMap((observation) => [
+      { id: `${observation.id}:review`, observationId: observation.id, type: 'supervisor_review_required' as const, requiredAt: observation.confirmedAt },
+      { id: `${observation.id}:notification`, observationId: observation.id, type: 'supervisor_notification_required' as const, requiredAt: observation.confirmedAt },
+    ])
+    workflow.safety.indicators = {
+      activeObservationCount: active.length,
+      urgentObservationCount: urgent.length,
+      supervisorReviewRequired: urgent.length > 0,
+      supervisorNotificationRequired: urgent.length > 0,
+      manualReviewRequestCount: workflow.safety.supervisorReviewRequests.length,
+      hasRetractedHistory: workflow.safety.observations.some(({ status }) => status === 'retracted'),
+    }
   }
 
   private publicWorkflow({ ownerId: _ownerId, ...workflow }: Omit<WorkflowView, 'structuredReview'> & { ownerId: string }): WorkflowView {
@@ -524,6 +637,83 @@ describe('authenticated application shell API', () => {
 
     expect((await app.inject({ method: 'GET', url: workflowPath, headers: { cookie: 'test_session=supervisor-session' } })).statusCode).toBe(403)
     expect((await app.inject({ method: 'GET', url: workflowPath, headers: { cookie: 'test_session=another-kaimahi-session' } })).statusCode).toBe(404)
+    await app.close()
+  })
+
+  it('accepts only human-confirmed, strictly validated Kaimahi safety observations behind the existing CSRF boundary', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '46fceba8-6d4a-4a44-90ea-824367013ec7',
+      userId: activeKaimahi.id,
+      tokenHash: sha256('safety-session'),
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'e35dfb02-c7e7-42b2-92e5-6236eddfbe70' })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+    const url = `/api/workflows/${created.workflow.id}/interactions`
+    const headers = { cookie: 'test_session=safety-session', origin: 'http://web.test' }
+
+    expect((await app.inject({
+      method: 'POST', url, headers,
+      payload: {
+        type: 'safety-observation-confirmed', observationId: '8e1fde30-c4b6-492a-8862-32200b2661a9', idempotencyKey: '69ce5116-7c5b-48b3-bf55-c4649a6729df', expectedVersion: 1,
+        observation: { assessmentContext: 'setup', broadClass: 'whanau_safety', concernLevel: 'none' },
+      },
+    })).statusCode).toBe(400)
+
+    const command = {
+      type: 'safety-observation-confirmed', observationId: '8e1fde30-c4b6-492a-8862-32200b2661a9', idempotencyKey: '69ce5116-7c5b-48b3-bf55-c4649a6729df', expectedVersion: 1,
+      observation: { assessmentContext: 'setup', broadClass: 'whanau_safety', concernLevel: 'urgent', contextNote: 'Confirmed by the Kaimahi.' },
+    }
+    const accepted = await app.inject({ method: 'POST', url, headers, payload: command })
+    expect(accepted.statusCode).toBe(200)
+    expect(accepted.json()).toMatchObject({ workflow: { version: 2, safety: { indicators: { urgentObservationCount: 1, supervisorReviewRequired: true, supervisorNotificationRequired: true }, requiredConsequences: [{ type: 'supervisor_review_required' }, { type: 'supervisor_notification_required' }] } } })
+    expect((await app.inject({ method: 'POST', url, headers, payload: command })).json()).toMatchObject({ acknowledgement: { replayed: true } })
+    expect((await app.inject({
+      method: 'POST', url, headers,
+      payload: { ...command, idempotencyKey: '0d80839b-6c3d-4290-96df-ed5c2338fc7f', expectedVersion: 2, observationId: '79cc1da8-86d6-4ee7-893c-321141990b11', ignoredCategory: 'not approved' },
+    })).statusCode).toBe(400)
+    await app.close()
+  })
+
+  it('returns exact safety history only to the owning Kaimahi', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const supervisor: AuthenticatedUser = { ...activeKaimahi, id: '97f5c5ed-0244-4e4d-84e0-1c3e6288ee4d', roles: ['SUPERVISOR'] }
+    const anotherKaimahi: AuthenticatedUser = { ...activeKaimahi, id: 'acfea59b-a70d-4160-9a42-d6155031db0a', displayName: 'Another Kaimahi' }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:supervisor', supervisor)
+    repository.identities.set('cognito:another-kaimahi', anotherKaimahi)
+    await Promise.all([
+      repository.createSession({ id: '5c0b13a8-2d09-44a0-bd93-fcd80cce8a33', userId: activeKaimahi.id, tokenHash: sha256('owner-history-session'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'fa11d7e8-5800-4c3c-879f-2459d1215a06', userId: supervisor.id, tokenHash: sha256('supervisor-history-session'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'b0c2e2bf-6d89-4c50-a2a2-8b01f01f63cd', userId: anotherKaimahi.id, tokenHash: sha256('another-history-session'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'e35dfb02-c7e7-42b2-92e5-6236eddfbe70' })
+    const observationId = '8e1fde30-c4b6-492a-8862-32200b2661a9'
+    await workflows.submitCommand({
+      actor: activeKaimahi, workflowSessionId: created.workflow.id,
+      command: { type: 'safety-observation-confirmed', observationId, idempotencyKey: '69ce5116-7c5b-48b3-bf55-c4649a6729df', expectedVersion: 1, observation: { assessmentContext: 'setup', broadClass: 'whanau_safety', concernLevel: 'urgent' } },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+    const historyUrl = `/api/workflows/${created.workflow.id}/safety-observations/${observationId}/history`
+
+    expect((await app.inject({ method: 'GET', url: historyUrl })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: historyUrl, headers: { cookie: 'test_session=supervisor-history-session' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: historyUrl, headers: { cookie: 'test_session=another-history-session' } })).statusCode).toBe(404)
+    expect((await app.inject({ method: 'GET', url: historyUrl.replace(created.workflow.id, '22b1f80c-2c12-4f82-bdd9-65d7b30712b0'), headers: { cookie: 'test_session=owner-history-session' } })).statusCode).toBe(404)
+    const ownerResponse = await app.inject({ method: 'GET', url: historyUrl, headers: { cookie: 'test_session=owner-history-session' } })
+    expect(ownerResponse.statusCode).toBe(200)
+    expect(ownerResponse.json()).toMatchObject({
+      history: {
+        observation: { id: observationId, concernLevel: 'urgent', currentRevision: 1 },
+        revisions: [{ revision: 1, operation: 'confirmed' }],
+        evaluations: [{ ruleCode: 'te-kaupapa.safety.urgent-supervisor-attention', ruleVersion: 1, decisionCode: 'urgent_supervisor_attention_required' }],
+        consequenceEpisodes: [{ type: 'supervisor_review_required', state: 'required' }, { type: 'supervisor_notification_required', state: 'required' }],
+      },
+    })
     await app.close()
   })
 })

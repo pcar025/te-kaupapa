@@ -9,6 +9,9 @@ import type {
   WorkflowStage,
   WorkflowStatus,
   WorkflowReferralStatus,
+  SafetyBroadClass,
+  SafetyObservationContext,
+  SafetyObservationConcernLevel,
 } from '../shared/workflow'
 
 export interface WorkflowCheckpoint {
@@ -39,10 +42,55 @@ export interface Workflow {
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
+  safety: WorkflowSafetyState
   structuredReview: WorkflowStructuredReview
   completedAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+export interface SafetyObservationCurrentView {
+  id: string
+  assessmentContext: SafetyObservationContext
+  pouId: WorkflowPouId | null
+  broadClass: SafetyBroadClass
+  concernLevel: SafetyObservationConcernLevel
+  contextNote: string | null
+  status: 'active' | 'retracted'
+  currentRevision: number
+  confirmedAt: string
+  updatedAt: string
+  retractedAt: string | null
+}
+
+export interface SafetyConsequenceView {
+  id: string
+  observationId: string
+  type: 'supervisor_review_required' | 'supervisor_notification_required'
+  requiredAt: string
+}
+
+export interface SupervisorReviewRequestView {
+  id: string
+  pouId: WorkflowPouId | null
+  requestNote: string | null
+  requestedAt: string
+}
+
+export interface WorkflowSafetyIndicators {
+  activeObservationCount: number
+  urgentObservationCount: number
+  supervisorReviewRequired: boolean
+  supervisorNotificationRequired: boolean
+  manualReviewRequestCount: number
+  hasRetractedHistory: boolean
+}
+
+export interface WorkflowSafetyState {
+  observations: SafetyObservationCurrentView[]
+  requiredConsequences: SafetyConsequenceView[]
+  supervisorReviewRequests: SupervisorReviewRequestView[]
+  indicators: WorkflowSafetyIndicators
 }
 
 export interface WorkflowAction {
@@ -92,6 +140,7 @@ export interface WorkflowListItem {
   currentPouId: WorkflowPouId | null
   version: number
   updatedAt: string
+  safetyIndicators: WorkflowSafetyIndicators
 }
 
 export interface CompletedWorkflowListItem {
@@ -100,15 +149,17 @@ export interface CompletedWorkflowListItem {
   whanauReference: string | null
   completedAt: string
   updatedAt: string
+  safetyIndicators: WorkflowSafetyIndicators
 }
 
-export type WorkflowPersistenceState = 'idle' | 'saving' | 'retrying' | 'saved' | 'failed' | 'stale'
+export type WorkflowPersistenceState = 'idle' | 'saving' | 'retrying' | 'saved' | 'failed' | 'failed-safety' | 'stale' | 'stale-safety'
 
 export class WorkflowApiError extends Error {
   constructor(
     public readonly code: string,
     public readonly status: number,
     public readonly currentVersion?: number,
+    public readonly currentRevision?: number,
   ) {
     super(code)
     this.name = 'WorkflowApiError'
@@ -121,8 +172,8 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { accept: 'application/json', ...(init?.body ? { 'content-type': 'application/json' } : {}), ...init?.headers },
   })
-  const payload = await response.json().catch(() => ({})) as { error?: string; currentVersion?: number }
-  if (!response.ok) throw new WorkflowApiError(payload.error ?? 'request_failed', response.status, payload.currentVersion)
+  const payload = await response.json().catch(() => ({})) as { error?: string; currentVersion?: number; currentRevision?: number }
+  if (!response.ok) throw new WorkflowApiError(payload.error ?? 'request_failed', response.status, payload.currentVersion, payload.currentRevision)
   return payload as T
 }
 

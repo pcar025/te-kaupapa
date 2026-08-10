@@ -29,6 +29,13 @@
       "when": 1786333420188,
       "tag": "0003_simple_grandmaster",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786345738492,
+      "tag": "0004_nice_chamber",
+      "breakpoints": true
     }
   ]
 }

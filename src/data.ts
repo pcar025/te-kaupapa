@@ -109,11 +109,11 @@ export const REFERRAL_SERVICES: ReferralService[] = [
 // ─── Mock historical data ─────────────────────────────────────────────────────
 
 export const MY_ACTIONS: SessionAction[] = [
-  { id: 'a1', type: 'referral',          description: 'Referral to Kāinga Ora housing navigator submitted',               pouId: 'kaitiakitanga', completed: false, sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
-  { id: 'a2', type: 'supervisor-review', description: 'Supervisor review — risk indicators from session W-2831',           pouId: 'kaitiakitanga', completed: true,  sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
+  { id: 'a1', type: 'referral',          description: 'Referral preparation recorded for Kāinga Ora housing navigation',   pouId: 'kaitiakitanga', completed: false, sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
+  { id: 'a2', type: 'supervisor-review', description: 'Supervisor review consideration — session W-2831',                   pouId: 'kaitiakitanga', completed: true,  sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
   { id: 'a3', type: 'carry-forward',     description: 'Clarify whānau voice in notes from TW-04 contact',                pouId: 'whakapapa',     completed: false, sessionRef: 'W-2835', whanauCode: 'TW-04', date: '1 Aug 2026' },
   { id: 'a4', type: 'carry-forward',     description: 'Raise uncertainty in supervision — MH-07 engagement pattern',     pouId: 'puukenga',      completed: false, sessionRef: 'W-2832', whanauCode: 'MH-07', date: '25 Jul 2026' },
-  { id: 'a5', type: 'escalation',        description: 'Immediate escalation — safety risk identified',                    pouId: 'kaitiakitanga', completed: true,  sessionRef: 'W-2820', whanauCode: 'RK-02', date: '18 Jul 2026' },
+  { id: 'a5', type: 'escalation',        description: 'Immediate safety concern — demonstration record',                  pouId: 'kaitiakitanga', completed: true,  sessionRef: 'W-2820', whanauCode: 'RK-02', date: '18 Jul 2026' },
   { id: 'a6', type: 'referral',          description: 'Clinical referral to Te Ara Oranga — pending confirmation',        pouId: 'oranga',        completed: false, sessionRef: 'W-2838', whanauCode: 'NG-11', date: '3 Aug 2026' },
 ]
 
@@ -127,15 +127,15 @@ export const WHANAU_RECORDS: WhanauRecord[] = [
       {
         id: 's1', ref: 'W-2831', date: '24 Jul 2026', engagementType: 'home-visit',
         sessionFocus: 'Housing stability and benefit review',
-        synthesis: 'Whānau member navigating significant practical pressure. Risk assessment raised concerns — safety plan updated and supervisor notified. Strong therapeutic relationship and whānau voice were present. Cultural identity and protective factors documented. Referral to housing support actioned. Supervisor oversight of risk picture is in place.',
+        synthesis: 'Demonstration record — practical pressure and safety concerns were recorded for reflection. Cultural identity, protective factors, and possible referral follow-up are illustrative only; no delivery or review outcome is represented.',
         pou: makePou({ whakapapa: 'āta', manaakitanga: 'tōtika', tikanga: 'tōtika', kaitiakitanga: 'mataku', puukenga: 'tōtika', haepapa: 'āta', oranga: 'āta' }),
         actions: [
           { id: 'a1b', type: 'referral', description: 'Referral to Kāinga Ora housing navigator', pouId: 'kaitiakitanga', completed: false, sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
-          { id: 'a2b', type: 'supervisor-review', description: 'Supervisor review — risk and safety indicators', pouId: 'kaitiakitanga', completed: true, sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
+          { id: 'a2b', type: 'supervisor-review', description: 'Supervisor review consideration — demonstration record', pouId: 'kaitiakitanga', completed: true, sessionRef: 'W-2831', whanauCode: 'TW-04', date: '24 Jul 2026' },
         ],
         referralNames: ['Kāinga Ora'],
-        flagged: true, supervisorReviewed: true,
-        supervisorNotes: 'Housing referral actioned. Safety plan in place. Review in two weeks.',
+        flagged: true, supervisorReviewed: false,
+        supervisorNotes: 'Demonstration note only. No referral delivery or supervisor review outcome is represented.',
         kaimahiId: 'k1', kaimahiName: 'Aroha Ngāti',
       },
       {

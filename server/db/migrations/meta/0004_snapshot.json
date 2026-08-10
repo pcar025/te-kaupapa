@@ -1,0 +1,2768 @@
+{
+  "id": "4809a230-b21e-4311-a0a0-4f5436ea5b57",
+  "prevId": "ba667d8c-64e4-4d9b-bde6-0197a95dbaa2",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "public.app_user": {
+      "name": "app_user",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "display_name": {
+          "name": "display_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "email": {
+          "name": "email",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "user_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "app_user_organisation_email_uq": {
+          "name": "app_user_organisation_email_uq",
+          "columns": [
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "email",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "app_user_id_organisation_uq": {
+          "name": "app_user_id_organisation_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "app_user_organisation_id_organisation_id_fk": {
+          "name": "app_user_organisation_id_organisation_id_fk",
+          "tableFrom": "app_user",
+          "tableTo": "organisation",
+          "columnsFrom": [
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.application_session": {
+      "name": "application_session",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "token_hash": {
+          "name": "token_hash",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expires_at": {
+          "name": "expires_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "last_activity_at": {
+          "name": "last_activity_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "invalidated_at": {
+          "name": "invalidated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "application_session_user_id_app_user_id_fk": {
+          "name": "application_session_user_id_app_user_id_fk",
+          "tableFrom": "application_session",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "application_session_token_hash_unique": {
+          "name": "application_session_token_hash_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "token_hash"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.external_identity": {
+      "name": "external_identity",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "provider_subject": {
+          "name": "provider_subject",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "external_identity_provider_subject_uq": {
+          "name": "external_identity_provider_subject_uq",
+          "columns": [
+            {
+              "expression": "provider",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "provider_subject",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "external_identity_user_id_app_user_id_fk": {
+          "name": "external_identity_user_id_app_user_id_fk",
+          "tableFrom": "external_identity",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.organisation": {
+      "name": "organisation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "slug": {
+          "name": "slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {
+        "organisation_slug_unique": {
+          "name": "organisation_slug_unique",
+          "nullsNotDistinct": false,
+          "columns": [
+            "slug"
+          ]
+        }
+      },
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.role_assignment": {
+      "name": "role_assignment",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "role": {
+          "name": "role",
+          "type": "application_role",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "role_assignment_user_role_uq": {
+          "name": "role_assignment_user_role_uq",
+          "columns": [
+            {
+              "expression": "user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "role",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "role_assignment_user_id_app_user_id_fk": {
+          "name": "role_assignment_user_id_app_user_id_fk",
+          "tableFrom": "role_assignment",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.supervision": {
+      "name": "supervision",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "supervisor_user_id": {
+          "name": "supervisor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kaimahi_user_id": {
+          "name": "kaimahi_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "supervision_relation_uq": {
+          "name": "supervision_relation_uq",
+          "columns": [
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "supervisor_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "kaimahi_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "supervision_organisation_id_organisation_id_fk": {
+          "name": "supervision_organisation_id_organisation_id_fk",
+          "tableFrom": "supervision",
+          "tableTo": "organisation",
+          "columnsFrom": [
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "supervision_supervisor_user_id_app_user_id_fk": {
+          "name": "supervision_supervisor_user_id_app_user_id_fk",
+          "tableFrom": "supervision",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "supervisor_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "supervision_kaimahi_user_id_app_user_id_fk": {
+          "name": "supervision_kaimahi_user_id_app_user_id_fk",
+          "tableFrom": "supervision",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "kaimahi_user_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.workflow_action": {
+      "name": "workflow_action",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "title": {
+          "name": "title",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "workflow_action_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "due_date": {
+          "name": "due_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "workflow_action_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'open'"
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "owner_user_id": {
+          "name": "owner_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_action_workflow_status_idx": {
+          "name": "workflow_action_workflow_status_idx",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_action_session_organisation_fk": {
+          "name": "workflow_action_session_organisation_fk",
+          "tableFrom": "workflow_action",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_action_checkpoint_organisation_fk": {
+          "name": "workflow_action_checkpoint_organisation_fk",
+          "tableFrom": "workflow_action",
+          "tableTo": "workflow_pou_checkpoint",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "columnsTo": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_action_created_by_organisation_fk": {
+          "name": "workflow_action_created_by_organisation_fk",
+          "tableFrom": "workflow_action",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "created_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_action_owner_organisation_fk": {
+          "name": "workflow_action_owner_organisation_fk",
+          "tableFrom": "workflow_action",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "owner_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_action_title_length": {
+          "name": "workflow_action_title_length",
+          "value": "length(\"workflow_action\".\"title\") between 1 and 300"
+        },
+        "workflow_action_notes_length": {
+          "name": "workflow_action_notes_length",
+          "value": "\"workflow_action\".\"notes\" is null or length(\"workflow_action\".\"notes\") <= 4000"
+        },
+        "workflow_action_owner_is_creator": {
+          "name": "workflow_action_owner_is_creator",
+          "value": "\"workflow_action\".\"owner_user_id\" = \"workflow_action\".\"created_by_user_id\""
+        },
+        "workflow_action_withdrawn_state": {
+          "name": "workflow_action_withdrawn_state",
+          "value": "(\"workflow_action\".\"status\" = 'withdrawn') = (\"workflow_action\".\"withdrawn_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_interaction": {
+      "name": "workflow_interaction",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "workflow_interaction_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "idempotency_key": {
+          "name": "idempotency_key",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "request_fingerprint": {
+          "name": "request_fingerprint",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "expected_version": {
+          "name": "expected_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resulting_version": {
+          "name": "resulting_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_interaction_actor_idempotency_uq": {
+          "name": "workflow_interaction_actor_idempotency_uq",
+          "columns": [
+            {
+              "expression": "actor_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "idempotency_key",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_interaction_id_organisation_session_uq": {
+          "name": "workflow_interaction_id_organisation_session_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_interaction_session_created_idx": {
+          "name": "workflow_interaction_session_created_idx",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "created_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_interaction_session_organisation_fk": {
+          "name": "workflow_interaction_session_organisation_fk",
+          "tableFrom": "workflow_interaction",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_interaction_actor_organisation_fk": {
+          "name": "workflow_interaction_actor_organisation_fk",
+          "tableFrom": "workflow_interaction",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "actor_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_interaction_resulting_version_positive": {
+          "name": "workflow_interaction_resulting_version_positive",
+          "value": "\"workflow_interaction\".\"resulting_version\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_pou_checkpoint": {
+      "name": "workflow_pou_checkpoint",
+      "schema": "",
+      "columns": {
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "ordinal": {
+          "name": "ordinal",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "progress": {
+          "name": "progress",
+          "type": "workflow_pou_progress",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'not_started'"
+        },
+        "user_selected_concern": {
+          "name": "user_selected_concern",
+          "type": "workflow_pou_concern",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "note": {
+          "name": "note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "referral_suggested": {
+          "name": "referral_suggested",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "supervisor_review_suggested": {
+          "name": "supervisor_review_suggested",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
+        },
+        "confirmed_by_user_id": {
+          "name": "confirmed_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_pou_checkpoint_session_ordinal_uq": {
+          "name": "workflow_pou_checkpoint_session_ordinal_uq",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "ordinal",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_pou_checkpoint_session_organisation_pou_uq": {
+          "name": "workflow_pou_checkpoint_session_organisation_pou_uq",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "pou_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_pou_checkpoint_session_organisation_fk": {
+          "name": "workflow_pou_checkpoint_session_organisation_fk",
+          "tableFrom": "workflow_pou_checkpoint",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_pou_checkpoint_confirming_user_organisation_fk": {
+          "name": "workflow_pou_checkpoint_confirming_user_organisation_fk",
+          "tableFrom": "workflow_pou_checkpoint",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "confirmed_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "workflow_pou_checkpoint_pk": {
+          "name": "workflow_pou_checkpoint_pk",
+          "columns": [
+            "workflow_session_id",
+            "pou_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_pou_checkpoint_ordinal_range": {
+          "name": "workflow_pou_checkpoint_ordinal_range",
+          "value": "\"workflow_pou_checkpoint\".\"ordinal\" between 1 and 7"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_referral": {
+      "name": "workflow_referral",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_code": {
+          "name": "destination_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "destination_name": {
+          "name": "destination_name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reason": {
+          "name": "reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "handover_note": {
+          "name": "handover_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "notes": {
+          "name": "notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "workflow_referral_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'draft'"
+        },
+        "created_by_user_id": {
+          "name": "created_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "withdrawn_at": {
+          "name": "withdrawn_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_referral_workflow_status_idx": {
+          "name": "workflow_referral_workflow_status_idx",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_referral_session_organisation_fk": {
+          "name": "workflow_referral_session_organisation_fk",
+          "tableFrom": "workflow_referral",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_referral_checkpoint_organisation_fk": {
+          "name": "workflow_referral_checkpoint_organisation_fk",
+          "tableFrom": "workflow_referral",
+          "tableTo": "workflow_pou_checkpoint",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "columnsTo": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_referral_created_by_organisation_fk": {
+          "name": "workflow_referral_created_by_organisation_fk",
+          "tableFrom": "workflow_referral",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "created_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_referral_destination_code_length": {
+          "name": "workflow_referral_destination_code_length",
+          "value": "\"workflow_referral\".\"destination_code\" is null or length(\"workflow_referral\".\"destination_code\") between 1 and 100"
+        },
+        "workflow_referral_destination_name_length": {
+          "name": "workflow_referral_destination_name_length",
+          "value": "length(\"workflow_referral\".\"destination_name\") between 1 and 300"
+        },
+        "workflow_referral_reason_length": {
+          "name": "workflow_referral_reason_length",
+          "value": "length(\"workflow_referral\".\"reason\") between 1 and 4000"
+        },
+        "workflow_referral_handover_note_length": {
+          "name": "workflow_referral_handover_note_length",
+          "value": "\"workflow_referral\".\"handover_note\" is null or length(\"workflow_referral\".\"handover_note\") <= 4000"
+        },
+        "workflow_referral_notes_length": {
+          "name": "workflow_referral_notes_length",
+          "value": "\"workflow_referral\".\"notes\" is null or length(\"workflow_referral\".\"notes\") <= 4000"
+        },
+        "workflow_referral_withdrawn_state": {
+          "name": "workflow_referral_withdrawn_state",
+          "value": "(\"workflow_referral\".\"status\" = 'withdrawn') = (\"workflow_referral\".\"withdrawn_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_safety_consequence": {
+      "name": "workflow_safety_consequence",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "observation_id": {
+          "name": "observation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "type": {
+          "name": "type",
+          "type": "workflow_safety_consequence_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "state": {
+          "name": "state",
+          "type": "workflow_safety_consequence_state",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'required'"
+        },
+        "created_by_evaluation_id": {
+          "name": "created_by_evaluation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "required_at": {
+          "name": "required_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "ceased_by_evaluation_id": {
+          "name": "ceased_by_evaluation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "cessation_reason": {
+          "name": "cessation_reason",
+          "type": "workflow_safety_consequence_cessation_reason",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "ceased_at": {
+          "name": "ceased_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "workflow_safety_consequence_active_observation_type_uq": {
+          "name": "workflow_safety_consequence_active_observation_type_uq",
+          "columns": [
+            {
+              "expression": "observation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"workflow_safety_consequence\".\"state\" = 'required'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_safety_consequence_observation_state_idx": {
+          "name": "workflow_safety_consequence_observation_state_idx",
+          "columns": [
+            {
+              "expression": "observation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "state",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_safety_consequence_observation_organisation_fk": {
+          "name": "workflow_safety_consequence_observation_organisation_fk",
+          "tableFrom": "workflow_safety_consequence",
+          "tableTo": "workflow_safety_observation",
+          "columnsFrom": [
+            "observation_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_consequence_created_evaluation_observation_organisation_fk": {
+          "name": "workflow_safety_consequence_created_evaluation_observation_organisation_fk",
+          "tableFrom": "workflow_safety_consequence",
+          "tableTo": "workflow_safety_rule_evaluation",
+          "columnsFrom": [
+            "created_by_evaluation_id",
+            "observation_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "observation_id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_consequence_ceased_evaluation_observation_organisation_fk": {
+          "name": "workflow_safety_consequence_ceased_evaluation_observation_organisation_fk",
+          "tableFrom": "workflow_safety_consequence",
+          "tableTo": "workflow_safety_rule_evaluation",
+          "columnsFrom": [
+            "ceased_by_evaluation_id",
+            "observation_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "observation_id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_safety_consequence_state_fields": {
+          "name": "workflow_safety_consequence_state_fields",
+          "value": "(\"workflow_safety_consequence\".\"state\" = 'required' and \"workflow_safety_consequence\".\"ceased_by_evaluation_id\" is null and \"workflow_safety_consequence\".\"cessation_reason\" is null and \"workflow_safety_consequence\".\"ceased_at\" is null) or (\"workflow_safety_consequence\".\"state\" = 'ceased' and \"workflow_safety_consequence\".\"ceased_by_evaluation_id\" is not null and \"workflow_safety_consequence\".\"cessation_reason\" is not null and \"workflow_safety_consequence\".\"ceased_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_safety_observation_revision": {
+      "name": "workflow_safety_observation_revision",
+      "schema": "",
+      "columns": {
+        "observation_id": {
+          "name": "observation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "revision": {
+          "name": "revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assessment_context": {
+          "name": "assessment_context",
+          "type": "workflow_safety_assessment_context",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "broad_class": {
+          "name": "broad_class",
+          "type": "workflow_safety_broad_class",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "concern_level": {
+          "name": "concern_level",
+          "type": "workflow_safety_concern_level",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "context_note": {
+          "name": "context_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "resulting_status": {
+          "name": "resulting_status",
+          "type": "workflow_safety_observation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "operation": {
+          "name": "operation",
+          "type": "workflow_safety_revision_operation",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "change_reason": {
+          "name": "change_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "actor_user_id": {
+          "name": "actor_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_safety_observation_revision_organisation_uq": {
+          "name": "workflow_safety_observation_revision_organisation_uq",
+          "columns": [
+            {
+              "expression": "observation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_safety_observation_revision_observation_organisation_session_fk": {
+          "name": "workflow_safety_observation_revision_observation_organisation_session_fk",
+          "tableFrom": "workflow_safety_observation_revision",
+          "tableTo": "workflow_safety_observation",
+          "columnsFrom": [
+            "observation_id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_observation_revision_actor_organisation_fk": {
+          "name": "workflow_safety_observation_revision_actor_organisation_fk",
+          "tableFrom": "workflow_safety_observation_revision",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "actor_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_observation_revision_interaction_organisation_session_fk": {
+          "name": "workflow_safety_observation_revision_interaction_organisation_session_fk",
+          "tableFrom": "workflow_safety_observation_revision",
+          "tableTo": "workflow_interaction",
+          "columnsFrom": [
+            "interaction_id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "workflow_safety_observation_revision_pk": {
+          "name": "workflow_safety_observation_revision_pk",
+          "columns": [
+            "observation_id",
+            "revision"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_safety_observation_revision_positive": {
+          "name": "workflow_safety_observation_revision_positive",
+          "value": "\"workflow_safety_observation_revision\".\"revision\" > 0"
+        },
+        "workflow_safety_observation_revision_context_pou": {
+          "name": "workflow_safety_observation_revision_context_pou",
+          "value": "(\"workflow_safety_observation_revision\".\"assessment_context\" = 'setup' and \"workflow_safety_observation_revision\".\"pou_id\" is null) or (\"workflow_safety_observation_revision\".\"assessment_context\" = 'pou' and \"workflow_safety_observation_revision\".\"pou_id\" is not null)"
+        },
+        "workflow_safety_observation_revision_context_concern": {
+          "name": "workflow_safety_observation_revision_context_concern",
+          "value": "(\"workflow_safety_observation_revision\".\"assessment_context\" = 'setup' and \"workflow_safety_observation_revision\".\"concern_level\" in ('unsure', 'urgent')) or (\"workflow_safety_observation_revision\".\"assessment_context\" = 'pou' and \"workflow_safety_observation_revision\".\"concern_level\" in ('low', 'watch', 'action', 'urgent'))"
+        },
+        "workflow_safety_observation_revision_context_note_length": {
+          "name": "workflow_safety_observation_revision_context_note_length",
+          "value": "\"workflow_safety_observation_revision\".\"context_note\" is null or length(\"workflow_safety_observation_revision\".\"context_note\") <= 4000"
+        },
+        "workflow_safety_observation_revision_reason": {
+          "name": "workflow_safety_observation_revision_reason",
+          "value": "(\"workflow_safety_observation_revision\".\"operation\" = 'confirmed' and \"workflow_safety_observation_revision\".\"change_reason\" is null) or (\"workflow_safety_observation_revision\".\"operation\" in ('corrected', 'retracted') and length(\"workflow_safety_observation_revision\".\"change_reason\") between 1 and 4000)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_safety_observation": {
+      "name": "workflow_safety_observation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "assessment_context": {
+          "name": "assessment_context",
+          "type": "workflow_safety_assessment_context",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "broad_class": {
+          "name": "broad_class",
+          "type": "workflow_safety_broad_class",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "concern_level": {
+          "name": "concern_level",
+          "type": "workflow_safety_concern_level",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "context_note": {
+          "name": "context_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "workflow_safety_observation_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
+        },
+        "current_revision": {
+          "name": "current_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "confirmed_by_user_id": {
+          "name": "confirmed_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "confirmed_at": {
+          "name": "confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "retracted_at": {
+          "name": "retracted_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "indexes": {
+        "workflow_safety_observation_id_organisation_uq": {
+          "name": "workflow_safety_observation_id_organisation_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_safety_observation_id_organisation_session_uq": {
+          "name": "workflow_safety_observation_id_organisation_session_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_safety_observation_workflow_active_idx": {
+          "name": "workflow_safety_observation_workflow_active_idx",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_safety_observation_session_organisation_fk": {
+          "name": "workflow_safety_observation_session_organisation_fk",
+          "tableFrom": "workflow_safety_observation",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_observation_checkpoint_organisation_fk": {
+          "name": "workflow_safety_observation_checkpoint_organisation_fk",
+          "tableFrom": "workflow_safety_observation",
+          "tableTo": "workflow_pou_checkpoint",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "columnsTo": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_safety_observation_confirmed_by_organisation_fk": {
+          "name": "workflow_safety_observation_confirmed_by_organisation_fk",
+          "tableFrom": "workflow_safety_observation",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "confirmed_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_safety_observation_context_pou": {
+          "name": "workflow_safety_observation_context_pou",
+          "value": "(\"workflow_safety_observation\".\"assessment_context\" = 'setup' and \"workflow_safety_observation\".\"pou_id\" is null) or (\"workflow_safety_observation\".\"assessment_context\" = 'pou' and \"workflow_safety_observation\".\"pou_id\" is not null)"
+        },
+        "workflow_safety_observation_context_concern": {
+          "name": "workflow_safety_observation_context_concern",
+          "value": "(\"workflow_safety_observation\".\"assessment_context\" = 'setup' and \"workflow_safety_observation\".\"concern_level\" in ('unsure', 'urgent')) or (\"workflow_safety_observation\".\"assessment_context\" = 'pou' and \"workflow_safety_observation\".\"concern_level\" in ('low', 'watch', 'action', 'urgent'))"
+        },
+        "workflow_safety_observation_revision_positive": {
+          "name": "workflow_safety_observation_revision_positive",
+          "value": "\"workflow_safety_observation\".\"current_revision\" > 0"
+        },
+        "workflow_safety_observation_context_note_length": {
+          "name": "workflow_safety_observation_context_note_length",
+          "value": "\"workflow_safety_observation\".\"context_note\" is null or length(\"workflow_safety_observation\".\"context_note\") <= 4000"
+        },
+        "workflow_safety_observation_retracted_state": {
+          "name": "workflow_safety_observation_retracted_state",
+          "value": "(\"workflow_safety_observation\".\"status\" = 'retracted') = (\"workflow_safety_observation\".\"retracted_at\" is not null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_safety_rule_evaluation": {
+      "name": "workflow_safety_rule_evaluation",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "observation_id": {
+          "name": "observation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "observation_revision": {
+          "name": "observation_revision",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rule_code": {
+          "name": "rule_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "rule_version": {
+          "name": "rule_version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "decision_code": {
+          "name": "decision_code",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "evaluated_at": {
+          "name": "evaluated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_safety_rule_evaluation_observation_rule_uq": {
+          "name": "workflow_safety_rule_evaluation_observation_rule_uq",
+          "columns": [
+            {
+              "expression": "observation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "observation_revision",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "rule_code",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "rule_version",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_safety_rule_evaluation_id_observation_organisation_uq": {
+          "name": "workflow_safety_rule_evaluation_id_observation_organisation_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "observation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_safety_rule_evaluation_revision_organisation_fk": {
+          "name": "workflow_safety_rule_evaluation_revision_organisation_fk",
+          "tableFrom": "workflow_safety_rule_evaluation",
+          "tableTo": "workflow_safety_observation_revision",
+          "columnsFrom": [
+            "observation_id",
+            "organisation_id",
+            "observation_revision"
+          ],
+          "columnsTo": [
+            "observation_id",
+            "organisation_id",
+            "revision"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_safety_rule_evaluation_rule_code_length": {
+          "name": "workflow_safety_rule_evaluation_rule_code_length",
+          "value": "length(\"workflow_safety_rule_evaluation\".\"rule_code\") between 1 and 200"
+        },
+        "workflow_safety_rule_evaluation_rule_version_positive": {
+          "name": "workflow_safety_rule_evaluation_rule_version_positive",
+          "value": "\"workflow_safety_rule_evaluation\".\"rule_version\" > 0"
+        },
+        "workflow_safety_rule_evaluation_decision_code_length": {
+          "name": "workflow_safety_rule_evaluation_decision_code_length",
+          "value": "length(\"workflow_safety_rule_evaluation\".\"decision_code\") between 1 and 200"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_session": {
+      "name": "workflow_session",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "kaimahi_user_id": {
+          "name": "kaimahi_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "reference": {
+          "name": "reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "whanau_reference": {
+          "name": "whanau_reference",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "engagement_type": {
+          "name": "engagement_type",
+          "type": "workflow_engagement_type",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "session_focus": {
+          "name": "session_focus",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "additional_notes": {
+          "name": "additional_notes",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "immediate_concern": {
+          "name": "immediate_concern",
+          "type": "workflow_immediate_concern",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "status": {
+          "name": "status",
+          "type": "workflow_status",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'draft'"
+        },
+        "current_stage": {
+          "name": "current_stage",
+          "type": "workflow_stage",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'setup'"
+        },
+        "current_pou_id": {
+          "name": "current_pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "setup_confirmed_at": {
+          "name": "setup_confirmed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_at": {
+          "name": "completed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "completed_by_user_id": {
+          "name": "completed_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "abandoned_at": {
+          "name": "abandoned_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_session_organisation_reference_uq": {
+          "name": "workflow_session_organisation_reference_uq",
+          "columns": [
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "reference",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_session_id_organisation_uq": {
+          "name": "workflow_session_id_organisation_uq",
+          "columns": [
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_session_one_resumable_per_kaimahi_uq": {
+          "name": "workflow_session_one_resumable_per_kaimahi_uq",
+          "columns": [
+            {
+              "expression": "kaimahi_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"workflow_session\".\"status\" in ('draft', 'in_progress')",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_session_kaimahi_status_updated_idx": {
+          "name": "workflow_session_kaimahi_status_updated_idx",
+          "columns": [
+            {
+              "expression": "kaimahi_user_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "status",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "workflow_session_organisation_whanau_updated_idx": {
+          "name": "workflow_session_organisation_whanau_updated_idx",
+          "columns": [
+            {
+              "expression": "organisation_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "whanau_reference",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "updated_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_session_organisation_id_organisation_id_fk": {
+          "name": "workflow_session_organisation_id_organisation_id_fk",
+          "tableFrom": "workflow_session",
+          "tableTo": "organisation",
+          "columnsFrom": [
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_session_kaimahi_organisation_fk": {
+          "name": "workflow_session_kaimahi_organisation_fk",
+          "tableFrom": "workflow_session",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "kaimahi_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_session_completed_by_organisation_fk": {
+          "name": "workflow_session_completed_by_organisation_fk",
+          "tableFrom": "workflow_session",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "completed_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_session_version_positive": {
+          "name": "workflow_session_version_positive",
+          "value": "\"workflow_session\".\"version\" > 0"
+        },
+        "workflow_session_whanau_reference_length": {
+          "name": "workflow_session_whanau_reference_length",
+          "value": "\"workflow_session\".\"whanau_reference\" is null or length(\"workflow_session\".\"whanau_reference\") <= 64"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.workflow_supervisor_review_request": {
+      "name": "workflow_supervisor_review_request",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "workflow_session_id": {
+          "name": "workflow_session_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "organisation_id": {
+          "name": "organisation_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "pou_id": {
+          "name": "pou_id",
+          "type": "workflow_pou_id",
+          "typeSchema": "public",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "request_note": {
+          "name": "request_note",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "requested_by_user_id": {
+          "name": "requested_by_user_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "interaction_id": {
+          "name": "interaction_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "requested_at": {
+          "name": "requested_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "workflow_supervisor_review_request_workflow_requested_idx": {
+          "name": "workflow_supervisor_review_request_workflow_requested_idx",
+          "columns": [
+            {
+              "expression": "workflow_session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "requested_at",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "workflow_supervisor_review_request_session_organisation_fk": {
+          "name": "workflow_supervisor_review_request_session_organisation_fk",
+          "tableFrom": "workflow_supervisor_review_request",
+          "tableTo": "workflow_session",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_supervisor_review_request_checkpoint_organisation_fk": {
+          "name": "workflow_supervisor_review_request_checkpoint_organisation_fk",
+          "tableFrom": "workflow_supervisor_review_request",
+          "tableTo": "workflow_pou_checkpoint",
+          "columnsFrom": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "columnsTo": [
+            "workflow_session_id",
+            "organisation_id",
+            "pou_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_supervisor_review_request_requester_organisation_fk": {
+          "name": "workflow_supervisor_review_request_requester_organisation_fk",
+          "tableFrom": "workflow_supervisor_review_request",
+          "tableTo": "app_user",
+          "columnsFrom": [
+            "requested_by_user_id",
+            "organisation_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "workflow_supervisor_review_request_interaction_organisation_session_fk": {
+          "name": "workflow_supervisor_review_request_interaction_organisation_session_fk",
+          "tableFrom": "workflow_supervisor_review_request",
+          "tableTo": "workflow_interaction",
+          "columnsFrom": [
+            "interaction_id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "columnsTo": [
+            "id",
+            "organisation_id",
+            "workflow_session_id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "workflow_supervisor_review_request_note_length": {
+          "name": "workflow_supervisor_review_request_note_length",
+          "value": "\"workflow_supervisor_review_request\".\"request_note\" is null or length(\"workflow_supervisor_review_request\".\"request_note\") <= 4000"
+        }
+      },
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {
+    "public.application_role": {
+      "name": "application_role",
+      "schema": "public",
+      "values": [
+        "KAIMAHI",
+        "SUPERVISOR"
+      ]
+    },
+    "public.user_status": {
+      "name": "user_status",
+      "schema": "public",
+      "values": [
+        "active",
+        "inactive"
+      ]
+    },
+    "public.workflow_action_status": {
+      "name": "workflow_action_status",
+      "schema": "public",
+      "values": [
+        "open",
+        "completed",
+        "withdrawn"
+      ]
+    },
+    "public.workflow_action_type": {
+      "name": "workflow_action_type",
+      "schema": "public",
+      "values": [
+        "follow-up",
+        "support",
+        "other"
+      ]
+    },
+    "public.workflow_engagement_type": {
+      "name": "workflow_engagement_type",
+      "schema": "public",
+      "values": [
+        "home-visit",
+        "phone",
+        "office",
+        "hui",
+        "outreach"
+      ]
+    },
+    "public.workflow_immediate_concern": {
+      "name": "workflow_immediate_concern",
+      "schema": "public",
+      "values": [
+        "none",
+        "unsure",
+        "urgent"
+      ]
+    },
+    "public.workflow_interaction_type": {
+      "name": "workflow_interaction_type",
+      "schema": "public",
+      "values": [
+        "workflow_created",
+        "setup_confirmed",
+        "pou_review_confirmed",
+        "pou_summary_confirmed",
+        "action_plan_confirmed",
+        "referral_plan_confirmed",
+        "structured_review_confirmed",
+        "workflow_completed",
+        "safety_observation_confirmed",
+        "safety_observation_corrected",
+        "safety_observation_retracted",
+        "supervisor_review_requested"
+      ]
+    },
+    "public.workflow_pou_concern": {
+      "name": "workflow_pou_concern",
+      "schema": "public",
+      "values": [
+        "low",
+        "watch",
+        "action",
+        "urgent"
+      ]
+    },
+    "public.workflow_pou_id": {
+      "name": "workflow_pou_id",
+      "schema": "public",
+      "values": [
+        "whakapapa",
+        "manaakitanga",
+        "tikanga",
+        "kaitiakitanga",
+        "puukenga",
+        "haepapa",
+        "oranga"
+      ]
+    },
+    "public.workflow_pou_progress": {
+      "name": "workflow_pou_progress",
+      "schema": "public",
+      "values": [
+        "not_started",
+        "confirmed"
+      ]
+    },
+    "public.workflow_referral_status": {
+      "name": "workflow_referral_status",
+      "schema": "public",
+      "values": [
+        "draft",
+        "prepared",
+        "declined",
+        "withdrawn"
+      ]
+    },
+    "public.workflow_safety_assessment_context": {
+      "name": "workflow_safety_assessment_context",
+      "schema": "public",
+      "values": [
+        "setup",
+        "pou"
+      ]
+    },
+    "public.workflow_safety_broad_class": {
+      "name": "workflow_safety_broad_class",
+      "schema": "public",
+      "values": [
+        "whanau_safety",
+        "practice_quality",
+        "practitioner_wellbeing"
+      ]
+    },
+    "public.workflow_safety_concern_level": {
+      "name": "workflow_safety_concern_level",
+      "schema": "public",
+      "values": [
+        "unsure",
+        "low",
+        "watch",
+        "action",
+        "urgent"
+      ]
+    },
+    "public.workflow_safety_consequence_cessation_reason": {
+      "name": "workflow_safety_consequence_cessation_reason",
+      "schema": "public",
+      "values": [
+        "observation_corrected",
+        "observation_retracted"
+      ]
+    },
+    "public.workflow_safety_consequence_state": {
+      "name": "workflow_safety_consequence_state",
+      "schema": "public",
+      "values": [
+        "required",
+        "ceased"
+      ]
+    },
+    "public.workflow_safety_consequence_type": {
+      "name": "workflow_safety_consequence_type",
+      "schema": "public",
+      "values": [
+        "supervisor_review_required",
+        "supervisor_notification_required"
+      ]
+    },
+    "public.workflow_safety_observation_status": {
+      "name": "workflow_safety_observation_status",
+      "schema": "public",
+      "values": [
+        "active",
+        "retracted"
+      ]
+    },
+    "public.workflow_safety_revision_operation": {
+      "name": "workflow_safety_revision_operation",
+      "schema": "public",
+      "values": [
+        "confirmed",
+        "corrected",
+        "retracted"
+      ]
+    },
+    "public.workflow_stage": {
+      "name": "workflow_stage",
+      "schema": "public",
+      "values": [
+        "setup",
+        "pou-overview",
+        "pou-convo",
+        "pou-summary",
+        "action-planning",
+        "referral-planning",
+        "structured-review",
+        "record-review",
+        "complete"
+      ]
+    },
+    "public.workflow_status": {
+      "name": "workflow_status",
+      "schema": "public",
+      "values": [
+        "draft",
+        "in_progress",
+        "completed",
+        "abandoned"
+      ]
+    }
+  },
+  "schemas": {},
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {},
+  "_meta": {
+    "columns": {},
+    "schemas": {},
+    "tables": {}
+  }
+}

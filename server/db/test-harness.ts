@@ -10,8 +10,8 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster']
-const MILESTONE_2_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 3)
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber']
+const PRE_MILESTONE_4_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 4)
 
 interface MigrationJournal {
   entries: Array<{ tag: string }>
@@ -133,13 +133,13 @@ async function migrateTestDatabase(connection: DatabaseConnection): Promise<void
   }
 }
 
-function createMilestone2MigrationFolder(): string {
+function createPreMilestone4MigrationFolder(): string {
   const { migrationsFolder } = migrationDetails()
   const journal = JSON.parse(readFileSync(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as MigrationJournal
-  const folder = mkdtempSync(path.join(tmpdir(), 'te-kaupapa-m2-migrations-'))
+  const folder = mkdtempSync(path.join(tmpdir(), 'te-kaupapa-pre-m4-migrations-'))
   mkdirSync(path.join(folder, 'meta'))
-  const entries = journal.entries.filter(({ tag }) => MILESTONE_2_MIGRATION_TAGS.includes(tag))
-  if (entries.length !== MILESTONE_2_MIGRATION_TAGS.length) throw new Error('The Milestone 2 migration chain is incomplete.')
+  const entries = journal.entries.filter(({ tag }) => PRE_MILESTONE_4_MIGRATION_TAGS.includes(tag))
+  if (entries.length !== PRE_MILESTONE_4_MIGRATION_TAGS.length) throw new Error('The pre-Milestone 4 migration chain is incomplete.')
   writeFileSync(path.join(folder, 'meta', '_journal.json'), JSON.stringify({ version: '7', dialect: 'postgresql', entries }, null, 2))
   for (const { tag } of entries) cpSync(path.join(migrationsFolder, `${tag}.sql`), path.join(folder, `${tag}.sql`))
   return folder
@@ -150,23 +150,39 @@ async function recordedMigrationCount(connection: DatabaseConnection): Promise<n
   return Number((result.rows[0] as { count?: number | string } | undefined)?.count ?? 0)
 }
 
-export async function verifyUpgradeFromMilestone2TestDatabase(): Promise<void> {
+async function resetDisposableSchemaForUpgradeTest(connection: DatabaseConnection): Promise<void> {
+  // This function is called only after getTestDatabaseUrl() has rejected normal
+  // development targets and the migration advisory lock has been acquired.
+  await connection.db.execute(sql`drop schema if exists "drizzle" cascade`)
+  await connection.db.execute(sql`drop schema if exists "public" cascade`)
+  await connection.db.execute(sql`create schema "public"`)
+}
+
+export async function verifyUpgradeFromPreMilestone4TestDatabase(): Promise<void> {
   const connection = createDatabaseConnection(getTestDatabaseUrl())
-  const temporaryMigrationsFolder = createMilestone2MigrationFolder()
+  const temporaryMigrationsFolder = createPreMilestone4MigrationFolder()
   let primaryFailure = false
   try {
     await connection.db.execute(sql`select pg_advisory_lock(${MIGRATION_LOCK_ID})`)
-    const journal = await connection.db.execute(sql`select to_regclass('drizzle.__drizzle_migrations') as journal`)
-    const existingJournal = (journal.rows[0] as { journal?: string | null } | undefined)?.journal
-    if (!existingJournal) {
-      await migrate(connection.db, { migrationsFolder: temporaryMigrationsFolder })
-      if (await recordedMigrationCount(connection) !== MILESTONE_2_MIGRATION_TAGS.length) {
-        throw new Error('The disposable database did not record the genuine Milestone 2 migration journal before upgrade.')
-      }
-      await migrate(connection.db, { migrationsFolder: migrationDetails().migrationsFolder })
+    await resetDisposableSchemaForUpgradeTest(connection)
+    await migrate(connection.db, { migrationsFolder: temporaryMigrationsFolder })
+    if (await recordedMigrationCount(connection) !== PRE_MILESTONE_4_MIGRATION_TAGS.length) {
+      throw new Error('The disposable database did not record the genuine pre-Milestone 4 migration journal before upgrade.')
     }
+
+    const markerSlug = `upgrade-check-${Date.now()}`
+    await connection.db.execute(sql`insert into "organisation" ("slug", "name") values (${markerSlug}, 'Pre-Milestone 4 fixture')`)
+    await migrate(connection.db, { migrationsFolder: migrationDetails().migrationsFolder })
     if (await recordedMigrationCount(connection) !== REQUIRED_MIGRATION_TAGS.length) {
       throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after upgrade.`)
+    }
+    const preservedFixture = await connection.db.execute(sql`select "id" from "organisation" where "slug" = ${markerSlug}`)
+    if (preservedFixture.rows.length !== 1) {
+      throw new Error('Pre-Milestone 4 fixture data was not preserved by the 0004 upgrade.')
+    }
+    const safetyTable = await connection.db.execute(sql`select to_regclass('public.workflow_safety_observation') as relation`)
+    if (!(safetyTable.rows[0] as { relation?: string | null } | undefined)?.relation) {
+      throw new Error('The 0004 safety schema was not created by the genuine upgrade.')
     }
   } catch (error) {
     primaryFailure = true

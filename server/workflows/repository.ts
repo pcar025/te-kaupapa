@@ -15,6 +15,10 @@ import {
   type WorkflowPouId,
   type WorkflowReferralInput,
   type WorkflowReferralStatus,
+  type SafetyBroadClass,
+  type SafetyObservationConcernLevel,
+  type SafetyObservationContext,
+  type SafetyObservationSnapshotInput,
   type WorkflowStage,
   type WorkflowStatus,
 } from '../../shared/workflow.js'
@@ -30,6 +34,11 @@ import {
   checkpointAfterStructuredReview,
   WorkflowTransitionError,
 } from './domain.js'
+import {
+  evaluateConfirmedSafetyObservation,
+  type SafetyConsequenceType,
+  type SafetyDecisionCode,
+} from '../safety/domain.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -82,6 +91,80 @@ export interface WorkflowStructuredReview {
   completedAt: Date | null
 }
 
+export interface SafetyObservationCurrentView {
+  id: string
+  assessmentContext: SafetyObservationContext
+  pouId: WorkflowPouId | null
+  broadClass: SafetyBroadClass
+  concernLevel: SafetyObservationConcernLevel
+  contextNote: string | null
+  status: 'active' | 'retracted'
+  currentRevision: number
+  confirmedAt: Date
+  updatedAt: Date
+  retractedAt: Date | null
+}
+
+export interface SafetyConsequenceView {
+  id: string
+  observationId: string
+  type: SafetyConsequenceType
+  requiredAt: Date
+}
+
+export interface SupervisorReviewRequestView {
+  id: string
+  pouId: WorkflowPouId | null
+  requestNote: string | null
+  requestedAt: Date
+}
+
+export interface WorkflowSafetyIndicators {
+  activeObservationCount: number
+  urgentObservationCount: number
+  supervisorReviewRequired: boolean
+  supervisorNotificationRequired: boolean
+  manualReviewRequestCount: number
+  hasRetractedHistory: boolean
+}
+
+export interface WorkflowSafetyState {
+  observations: SafetyObservationCurrentView[]
+  requiredConsequences: SafetyConsequenceView[]
+  supervisorReviewRequests: SupervisorReviewRequestView[]
+  indicators: WorkflowSafetyIndicators
+}
+
+export interface WorkflowSafetyObservationHistory {
+  observation: SafetyObservationCurrentView
+  revisions: Array<{
+    revision: number
+    assessmentContext: SafetyObservationContext
+    pouId: WorkflowPouId | null
+    broadClass: SafetyBroadClass
+    concernLevel: SafetyObservationConcernLevel
+    resultingStatus: 'active' | 'retracted'
+    operation: 'confirmed' | 'corrected' | 'retracted'
+    changeReason: string | null
+    createdAt: Date
+  }>
+  evaluations: Array<{
+    observationRevision: number
+    ruleCode: string
+    ruleVersion: number
+    decisionCode: SafetyDecisionCode
+    evaluatedAt: Date
+  }>
+  consequenceEpisodes: Array<{
+    id: string
+    type: SafetyConsequenceType
+    state: 'required' | 'ceased'
+    requiredAt: Date
+    ceasedAt: Date | null
+    cessationReason: 'observation_corrected' | 'observation_retracted' | null
+  }>
+}
+
 export interface WorkflowView {
   id: string
   reference: string
@@ -99,6 +182,7 @@ export interface WorkflowView {
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
+  safety: WorkflowSafetyState
   structuredReview: WorkflowStructuredReview
   completedAt: Date | null
   createdAt: Date
@@ -114,6 +198,7 @@ export interface WorkflowListItem {
   currentPouId: WorkflowPouId | null
   version: number
   updatedAt: Date
+  safetyIndicators: WorkflowSafetyIndicators
 }
 
 export interface CompletedWorkflowListItem {
@@ -122,6 +207,7 @@ export interface CompletedWorkflowListItem {
   whanauReference: string | null
   completedAt: Date
   updatedAt: Date
+  safetyIndicators: WorkflowSafetyIndicators
 }
 
 export interface WorkflowMutationResult {
@@ -147,6 +233,7 @@ export interface WorkflowRepository {
   listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]>
   listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]>
   submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult>
+  findSafetyObservationHistory(actor: AuthenticatedUser, workflowSessionId: string, observationId: string): Promise<WorkflowSafetyObservationHistory | null>
 }
 
 export class ActiveWorkflowError extends Error {
@@ -167,6 +254,20 @@ export class StaleWorkflowError extends Error {
   constructor(public readonly currentVersion: number) {
     super('The workflow has changed since it was loaded.')
     this.name = 'StaleWorkflowError'
+  }
+}
+
+export class StaleSafetyObservationError extends Error {
+  constructor(public readonly currentRevision: number) {
+    super('The safety observation has changed since it was loaded.')
+    this.name = 'StaleSafetyObservationError'
+  }
+}
+
+export class SafetyObservationIdentifierReuseError extends Error {
+  constructor() {
+    super('The safety observation identifier is already in use.')
+    this.name = 'SafetyObservationIdentifierReuseError'
   }
 }
 
@@ -306,12 +407,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       ))
       .orderBy(desc(schema.workflowSessions.updatedAt))
 
-    return rows.map((row) => ({
+    return Promise.all(rows.map(async (row) => ({
       ...row,
       status: row.status as 'draft' | 'in_progress',
       currentStage: row.currentStage as WorkflowStage,
       currentPouId: row.currentPouId as WorkflowPouId | null,
-    }))
+      safetyIndicators: await this.findSafetyIndicators(row.id, this.db),
+    })))
   }
 
   async listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]> {
@@ -332,7 +434,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .orderBy(desc(schema.workflowSessions.completedAt))
       .limit(50)
 
-    return rows.flatMap((row) => row.completedAt ? [{ ...row, completedAt: row.completedAt }] : [])
+    return Promise.all(rows.flatMap((row) => row.completedAt ? [row] : []).map(async (row) => ({
+      ...row,
+      completedAt: row.completedAt!,
+      safetyIndicators: await this.findSafetyIndicators(row.id, this.db),
+    })))
   }
 
   async submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult> {
@@ -354,6 +460,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         `)
         if (locked.rows.length === 0) throw new WorkflowNotFoundError()
 
+        const replayAfterLock = await this.findReplay(input.actor, input.command.idempotencyKey, fingerprint, tx)
+        if (replayAfterLock) return replayAfterLock
+
         const [workflow] = await tx
           .select()
           .from(schema.workflowSessions)
@@ -366,8 +475,129 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         const resultingVersion = workflow.version + 1
         let interactionType: WorkflowInteractionType
         let interactionPouId: WorkflowPouId | undefined
+        let recordedInteractionId: string | undefined
 
-        if (input.command.type === 'setup-confirmed') {
+        if (input.command.type === 'safety-observation-confirmed') {
+          this.assertSafetyObservationSnapshot(input.command.observation)
+          if (workflow.status === 'completed' || workflow.status === 'abandoned') throw new WorkflowTransitionError()
+          const [existing] = await tx
+            .select({ id: schema.workflowSafetyObservations.id })
+            .from(schema.workflowSafetyObservations)
+            .where(eq(schema.workflowSafetyObservations.id, input.command.observationId))
+            .limit(1)
+          if (existing) throw new SafetyObservationIdentifierReuseError()
+          interactionType = 'safety_observation_confirmed'
+          interactionPouId = input.command.observation.pouId
+          recordedInteractionId = await this.recordInteraction(tx, {
+            workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+            idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+          })
+          const observation = this.normaliseSafetyObservation(input.command.observation)
+          await tx.insert(schema.workflowSafetyObservations).values({
+            id: input.command.observationId,
+            workflowSessionId: workflow.id,
+            organisationId: input.actor.organisation.id,
+            ...observation,
+            status: 'active',
+            currentRevision: 1,
+            confirmedByUserId: input.actor.id,
+            confirmedAt: timestamp,
+            updatedAt: timestamp,
+          })
+          await tx.insert(schema.workflowSafetyObservationRevisions).values({
+            observationId: input.command.observationId,
+            organisationId: input.actor.organisation.id,
+            workflowSessionId: workflow.id,
+            revision: 1,
+            ...observation,
+            resultingStatus: 'active',
+            operation: 'confirmed',
+            actorUserId: input.actor.id,
+            interactionId: recordedInteractionId,
+            createdAt: timestamp,
+          })
+          await this.evaluateAndReconcileSafetyObservation(tx, {
+            observationId: input.command.observationId, organisationId: input.actor.organisation.id,
+            revision: 1, concernLevel: observation.concernLevel, status: 'active', operation: 'confirmed', timestamp,
+          })
+          await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
+        } else if (input.command.type === 'safety-observation-corrected' || input.command.type === 'safety-observation-retracted') {
+          if (workflow.status === 'abandoned') throw new WorkflowTransitionError()
+          const [current] = await tx.select().from(schema.workflowSafetyObservations).where(and(
+            eq(schema.workflowSafetyObservations.id, input.command.observationId),
+            eq(schema.workflowSafetyObservations.workflowSessionId, workflow.id),
+            eq(schema.workflowSafetyObservations.organisationId, input.actor.organisation.id),
+          )).limit(1)
+          if (!current) throw new WorkflowNotFoundError()
+          if (current.currentRevision !== input.command.expectedObservationRevision) throw new StaleSafetyObservationError(current.currentRevision)
+          if (current.status === 'retracted') throw new WorkflowValidationError('A retracted safety observation cannot be changed.')
+          const reason = input.command.reason.trim()
+          if (!reason) throw new WorkflowValidationError('A correction or retraction reason is required.')
+          const isCorrection = input.command.type === 'safety-observation-corrected'
+          const replacement = input.command.type === 'safety-observation-corrected' ? input.command.replacement : undefined
+          if (replacement) this.assertSafetyObservationSnapshot(replacement)
+          const revision = current.currentRevision + 1
+          const observation = replacement
+            ? this.normaliseSafetyObservation(replacement)
+            : {
+                assessmentContext: current.assessmentContext as SafetyObservationContext,
+                pouId: current.pouId as WorkflowPouId | null,
+                broadClass: current.broadClass as SafetyBroadClass,
+                concernLevel: current.concernLevel as SafetyObservationConcernLevel,
+                contextNote: current.contextNote,
+              }
+          interactionType = isCorrection ? 'safety_observation_corrected' : 'safety_observation_retracted'
+          interactionPouId = observation.pouId ?? undefined
+          recordedInteractionId = await this.recordInteraction(tx, {
+            workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+            idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+          })
+          const status = isCorrection ? 'active' as const : 'retracted' as const
+          await tx.update(schema.workflowSafetyObservations).set({
+            ...observation,
+            status,
+            currentRevision: revision,
+            updatedAt: timestamp,
+            retractedAt: isCorrection ? null : timestamp,
+          }).where(eq(schema.workflowSafetyObservations.id, current.id))
+          await tx.insert(schema.workflowSafetyObservationRevisions).values({
+            observationId: current.id,
+            organisationId: input.actor.organisation.id,
+            workflowSessionId: workflow.id,
+            revision,
+            ...observation,
+            resultingStatus: status,
+            operation: isCorrection ? 'corrected' : 'retracted',
+            changeReason: reason,
+            actorUserId: input.actor.id,
+            interactionId: recordedInteractionId,
+            createdAt: timestamp,
+          })
+          await this.evaluateAndReconcileSafetyObservation(tx, {
+            observationId: current.id, organisationId: input.actor.organisation.id, revision,
+            concernLevel: observation.concernLevel, status, operation: isCorrection ? 'corrected' : 'retracted', timestamp,
+          })
+          await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
+        } else if (input.command.type === 'supervisor-review-requested') {
+          if (workflow.status === 'completed' || workflow.status === 'abandoned') throw new WorkflowTransitionError()
+          interactionType = 'supervisor_review_requested'
+          interactionPouId = input.command.pouId
+          recordedInteractionId = await this.recordInteraction(tx, {
+            workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+            idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+          })
+          await tx.insert(schema.workflowSupervisorReviewRequests).values({
+            id: input.command.requestId,
+            workflowSessionId: workflow.id,
+            organisationId: input.actor.organisation.id,
+            pouId: input.command.pouId ?? null,
+            requestNote: input.command.requestNote?.trim() || null,
+            requestedByUserId: input.actor.id,
+            interactionId: recordedInteractionId,
+            requestedAt: timestamp,
+          })
+          await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
+        } else if (input.command.type === 'setup-confirmed') {
           const isInitialSetup = workflow.status === 'draft' && workflow.currentStage === 'setup'
           const isSetupRevision = workflow.status === 'in_progress' && workflow.currentStage === 'pou-overview'
           if (!isInitialSetup && !isSetupRevision) throw new WorkflowTransitionError()
@@ -475,20 +705,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           }
         }
 
-        const [interaction] = await tx.insert(schema.workflowInteractions).values({
-          workflowSessionId: workflow.id,
-          organisationId: input.actor.organisation.id,
-          actorUserId: input.actor.id,
-          type: interactionType,
-          pouId: interactionPouId,
-          idempotencyKey: input.command.idempotencyKey,
-          requestFingerprint: fingerprint,
-          expectedVersion: input.command.expectedVersion,
-          resultingVersion,
-          createdAt: timestamp,
-        }).returning({ id: schema.workflowInteractions.id })
-        if (!interaction) throw new Error('The workflow interaction was not recorded.')
-        return { workflowId: workflow.id, interactionId: interaction.id, replayed: false }
+        const interactionId = recordedInteractionId ?? await this.recordInteraction(tx, {
+          workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+          idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+        })
+        return { workflowId: workflow.id, interactionId, replayed: false }
       })
 
       if ('workflow' in accepted) return accepted
@@ -500,6 +721,64 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const repeated = await this.findReplay(input.actor, input.command.idempotencyKey, fingerprint)
       if (repeated) return repeated
       throw error
+    }
+  }
+
+  async findSafetyObservationHistory(
+    actor: AuthenticatedUser,
+    workflowSessionId: string,
+    observationId: string,
+  ): Promise<WorkflowSafetyObservationHistory | null> {
+    const workflow = await this.findByIdWithExecutor(actor, workflowSessionId, this.db)
+    if (!workflow) return null
+    const [observation] = await this.db.select().from(schema.workflowSafetyObservations).where(and(
+      eq(schema.workflowSafetyObservations.id, observationId),
+      eq(schema.workflowSafetyObservations.workflowSessionId, workflowSessionId),
+      eq(schema.workflowSafetyObservations.organisationId, actor.organisation.id),
+    )).limit(1)
+    if (!observation) return null
+    const [revisions, evaluations, consequences] = await Promise.all([
+      this.db.select().from(schema.workflowSafetyObservationRevisions).where(and(
+        eq(schema.workflowSafetyObservationRevisions.observationId, observation.id),
+        eq(schema.workflowSafetyObservationRevisions.organisationId, actor.organisation.id),
+      )).orderBy(schema.workflowSafetyObservationRevisions.revision),
+      this.db.select().from(schema.workflowSafetyRuleEvaluations).where(and(
+        eq(schema.workflowSafetyRuleEvaluations.observationId, observation.id),
+        eq(schema.workflowSafetyRuleEvaluations.organisationId, actor.organisation.id),
+      )).orderBy(schema.workflowSafetyRuleEvaluations.observationRevision),
+      this.db.select().from(schema.workflowSafetyConsequences).where(and(
+        eq(schema.workflowSafetyConsequences.observationId, observation.id),
+        eq(schema.workflowSafetyConsequences.organisationId, actor.organisation.id),
+      )).orderBy(schema.workflowSafetyConsequences.requiredAt),
+    ])
+    return {
+      observation: this.toSafetyObservationView(observation),
+      revisions: revisions.map((revision) => ({
+        revision: revision.revision,
+        assessmentContext: revision.assessmentContext as SafetyObservationContext,
+        pouId: revision.pouId as WorkflowPouId | null,
+        broadClass: revision.broadClass as SafetyBroadClass,
+        concernLevel: revision.concernLevel as SafetyObservationConcernLevel,
+        resultingStatus: revision.resultingStatus as 'active' | 'retracted',
+        operation: revision.operation as 'confirmed' | 'corrected' | 'retracted',
+        changeReason: revision.changeReason,
+        createdAt: revision.createdAt,
+      })),
+      evaluations: evaluations.map((evaluation) => ({
+        observationRevision: evaluation.observationRevision,
+        ruleCode: evaluation.ruleCode,
+        ruleVersion: evaluation.ruleVersion,
+        decisionCode: evaluation.decisionCode as SafetyDecisionCode,
+        evaluatedAt: evaluation.evaluatedAt,
+      })),
+      consequenceEpisodes: consequences.map((consequence) => ({
+        id: consequence.id,
+        type: consequence.type as SafetyConsequenceType,
+        state: consequence.state as 'required' | 'ceased',
+        requiredAt: consequence.requiredAt,
+        ceasedAt: consequence.ceasedAt,
+        cessationReason: consequence.cessationReason as 'observation_corrected' | 'observation_retracted' | null,
+      })),
     }
   }
 
@@ -644,6 +923,141 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     }
   }
 
+  private assertSafetyObservationSnapshot(snapshot: SafetyObservationSnapshotInput) {
+    const hasPou = snapshot.pouId !== undefined
+    if ((snapshot.assessmentContext === 'setup' && hasPou) || (snapshot.assessmentContext === 'pou' && !hasPou)) {
+      throw new WorkflowValidationError('Safety observation context and Pou must be consistent.')
+    }
+    if ((snapshot.assessmentContext === 'setup' && !['unsure', 'urgent'].includes(snapshot.concernLevel))
+      || (snapshot.assessmentContext === 'pou' && !['low', 'watch', 'action', 'urgent'].includes(snapshot.concernLevel))) {
+      throw new WorkflowValidationError('Safety observation concern level is not permitted for its context.')
+    }
+    if (snapshot.contextNote !== undefined && snapshot.contextNote.trim().length > 4_000) {
+      throw new WorkflowValidationError('Safety observation context note is too long.')
+    }
+  }
+
+  private normaliseSafetyObservation(snapshot: SafetyObservationSnapshotInput) {
+    return {
+      assessmentContext: snapshot.assessmentContext,
+      pouId: snapshot.pouId ?? null,
+      broadClass: snapshot.broadClass,
+      concernLevel: snapshot.concernLevel,
+      contextNote: snapshot.contextNote?.trim() || null,
+    }
+  }
+
+  private async recordInteraction(
+    executor: WorkflowDatabase,
+    input: {
+      workflowId: string
+      actor: AuthenticatedUser
+      interactionType: WorkflowInteractionType
+      interactionPouId?: WorkflowPouId
+      idempotencyKey: string
+      fingerprint: string
+      expectedVersion: number
+      resultingVersion: number
+      timestamp: Date
+    },
+  ): Promise<string> {
+    const [interaction] = await executor.insert(schema.workflowInteractions).values({
+      workflowSessionId: input.workflowId,
+      organisationId: input.actor.organisation.id,
+      actorUserId: input.actor.id,
+      type: input.interactionType,
+      pouId: input.interactionPouId,
+      idempotencyKey: input.idempotencyKey,
+      requestFingerprint: input.fingerprint,
+      expectedVersion: input.expectedVersion,
+      resultingVersion: input.resultingVersion,
+      createdAt: input.timestamp,
+    }).returning({ id: schema.workflowInteractions.id })
+    if (!interaction) throw new Error('The workflow interaction was not recorded.')
+    return interaction.id
+  }
+
+  private async updateSafetyOnlyWorkflow(executor: WorkflowDatabase, workflowId: string, version: number, timestamp: Date) {
+    await executor.update(schema.workflowSessions).set({ version, updatedAt: timestamp }).where(eq(schema.workflowSessions.id, workflowId))
+  }
+
+  private async evaluateAndReconcileSafetyObservation(
+    executor: WorkflowDatabase,
+    input: {
+      observationId: string
+      organisationId: string
+      revision: number
+      concernLevel: SafetyObservationConcernLevel
+      status: 'active' | 'retracted'
+      operation: 'confirmed' | 'corrected' | 'retracted'
+      timestamp: Date
+    },
+  ) {
+    const policy = evaluateConfirmedSafetyObservation({ concernLevel: input.concernLevel, status: input.status })
+    const evaluationId = crypto.randomUUID()
+    await executor.insert(schema.workflowSafetyRuleEvaluations).values({
+      id: evaluationId,
+      observationId: input.observationId,
+      organisationId: input.organisationId,
+      observationRevision: input.revision,
+      ruleCode: policy.ruleCode,
+      ruleVersion: policy.ruleVersion,
+      decisionCode: policy.decisionCode,
+      evaluatedAt: input.timestamp,
+    })
+    const active = await executor.select().from(schema.workflowSafetyConsequences).where(and(
+      eq(schema.workflowSafetyConsequences.observationId, input.observationId),
+      eq(schema.workflowSafetyConsequences.organisationId, input.organisationId),
+      eq(schema.workflowSafetyConsequences.state, 'required'),
+    ))
+    const activeTypes = new Set(active.map(({ type }) => type as SafetyConsequenceType))
+    for (const type of policy.consequenceTypes) {
+      if (activeTypes.has(type)) continue
+      await executor.insert(schema.workflowSafetyConsequences).values({
+        id: crypto.randomUUID(),
+        observationId: input.observationId,
+        organisationId: input.organisationId,
+        type,
+        state: 'required',
+        createdByEvaluationId: evaluationId,
+        requiredAt: input.timestamp,
+      })
+    }
+    if (policy.consequenceTypes.length === 0 && active.length > 0) {
+      const cessationReason = input.operation === 'retracted' ? 'observation_retracted' : 'observation_corrected'
+      await executor.update(schema.workflowSafetyConsequences).set({
+        state: 'ceased',
+        ceasedByEvaluationId: evaluationId,
+        cessationReason,
+        ceasedAt: input.timestamp,
+      }).where(and(
+        eq(schema.workflowSafetyConsequences.observationId, input.observationId),
+        eq(schema.workflowSafetyConsequences.organisationId, input.organisationId),
+        eq(schema.workflowSafetyConsequences.state, 'required'),
+      ))
+    }
+  }
+
+  private async findSafetyIndicators(workflowSessionId: string, executor: WorkflowDatabase): Promise<WorkflowSafetyIndicators> {
+    const observations = await executor.select().from(schema.workflowSafetyObservations)
+      .where(eq(schema.workflowSafetyObservations.workflowSessionId, workflowSessionId))
+    const consequences = await executor.select({ type: schema.workflowSafetyConsequences.type }).from(schema.workflowSafetyConsequences)
+      .innerJoin(schema.workflowSafetyObservations, eq(schema.workflowSafetyConsequences.observationId, schema.workflowSafetyObservations.id))
+      .where(and(eq(schema.workflowSafetyObservations.workflowSessionId, workflowSessionId), eq(schema.workflowSafetyConsequences.state, 'required')))
+    const requests = await executor.select({ id: schema.workflowSupervisorReviewRequests.id }).from(schema.workflowSupervisorReviewRequests)
+      .where(eq(schema.workflowSupervisorReviewRequests.workflowSessionId, workflowSessionId))
+    const active = observations.filter(({ status }) => status === 'active')
+    const requiredTypes = new Set(consequences.map(({ type }) => type))
+    return {
+      activeObservationCount: active.length,
+      urgentObservationCount: active.filter(({ concernLevel }) => concernLevel === 'urgent').length,
+      supervisorReviewRequired: requiredTypes.has('supervisor_review_required'),
+      supervisorNotificationRequired: requiredTypes.has('supervisor_notification_required'),
+      manualReviewRequestCount: requests.length,
+      hasRetractedHistory: observations.some(({ status }) => status === 'retracted'),
+    }
+  }
+
   private async findReplay(
     actor: AuthenticatedUser,
     idempotencyKey: string,
@@ -691,18 +1105,17 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
       .orderBy(schema.workflowPouCheckpoints.ordinal)
 
-    const [actions, referrals] = await Promise.all([
-      executor
-        .select()
-        .from(schema.workflowActions)
-        .where(eq(schema.workflowActions.workflowSessionId, workflow.id))
-        .orderBy(schema.workflowActions.createdAt),
-      executor
-        .select()
-        .from(schema.workflowReferrals)
-        .where(eq(schema.workflowReferrals.workflowSessionId, workflow.id))
-        .orderBy(schema.workflowReferrals.createdAt),
-    ])
+    const actions = await executor
+      .select()
+      .from(schema.workflowActions)
+      .where(eq(schema.workflowActions.workflowSessionId, workflow.id))
+      .orderBy(schema.workflowActions.createdAt)
+    const referrals = await executor
+      .select()
+      .from(schema.workflowReferrals)
+      .where(eq(schema.workflowReferrals.workflowSessionId, workflow.id))
+      .orderBy(schema.workflowReferrals.createdAt)
+    const safety = await this.findSafetyState(workflow.id, executor)
 
     const setup = workflow.whanauReference && workflow.engagementType && workflow.sessionFocus && workflow.immediateConcern
       ? {
@@ -761,6 +1174,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       checkpoints: checkpointViews,
       actions: actionViews,
       referrals: referralViews,
+      safety,
       completedAt: workflow.completedAt,
       createdAt: workflow.createdAt,
       updatedAt: workflow.updatedAt,
@@ -777,6 +1191,55 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         updatedAt: view.updatedAt,
         completedAt: view.completedAt,
       },
+    }
+  }
+
+  private toSafetyObservationView(observation: typeof schema.workflowSafetyObservations.$inferSelect): SafetyObservationCurrentView {
+    return {
+      id: observation.id,
+      assessmentContext: observation.assessmentContext as SafetyObservationContext,
+      pouId: observation.pouId as WorkflowPouId | null,
+      broadClass: observation.broadClass as SafetyBroadClass,
+      concernLevel: observation.concernLevel as SafetyObservationConcernLevel,
+      contextNote: observation.contextNote,
+      status: observation.status as 'active' | 'retracted',
+      currentRevision: observation.currentRevision,
+      confirmedAt: observation.confirmedAt,
+      updatedAt: observation.updatedAt,
+      retractedAt: observation.retractedAt,
+    }
+  }
+
+  private async findSafetyState(workflowSessionId: string, executor: WorkflowDatabase): Promise<WorkflowSafetyState> {
+    const observations = await executor.select().from(schema.workflowSafetyObservations)
+      .where(eq(schema.workflowSafetyObservations.workflowSessionId, workflowSessionId))
+      .orderBy(schema.workflowSafetyObservations.confirmedAt)
+    const requiredConsequences = await executor.select({
+      id: schema.workflowSafetyConsequences.id,
+      observationId: schema.workflowSafetyConsequences.observationId,
+      type: schema.workflowSafetyConsequences.type,
+      requiredAt: schema.workflowSafetyConsequences.requiredAt,
+    }).from(schema.workflowSafetyConsequences)
+      .innerJoin(schema.workflowSafetyObservations, eq(schema.workflowSafetyConsequences.observationId, schema.workflowSafetyObservations.id))
+      .where(and(eq(schema.workflowSafetyObservations.workflowSessionId, workflowSessionId), eq(schema.workflowSafetyConsequences.state, 'required')))
+      .orderBy(schema.workflowSafetyConsequences.requiredAt)
+    const requests = await executor.select().from(schema.workflowSupervisorReviewRequests)
+      .where(eq(schema.workflowSupervisorReviewRequests.workflowSessionId, workflowSessionId))
+      .orderBy(schema.workflowSupervisorReviewRequests.requestedAt)
+    const indicators = await this.findSafetyIndicators(workflowSessionId, executor)
+    return {
+      observations: observations.map((observation) => this.toSafetyObservationView(observation)),
+      requiredConsequences: requiredConsequences.map((consequence) => ({
+        ...consequence,
+        type: consequence.type as SafetyConsequenceType,
+      })),
+      supervisorReviewRequests: requests.map((request) => ({
+        id: request.id,
+        pouId: request.pouId as WorkflowPouId | null,
+        requestNote: request.requestNote,
+        requestedAt: request.requestedAt,
+      })),
+      indicators,
     }
   }
 
