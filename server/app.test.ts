@@ -6,6 +6,18 @@ import type { OidcProvider } from './auth/oidc.js'
 import type { AppConfiguration } from './config.js'
 import type { AuthRepository, CreateSessionInput } from './db/repository.js'
 import type { AuthenticatedUser } from './domain/auth.js'
+import {
+  IdempotencyKeyReuseError,
+  StaleWorkflowError,
+  WorkflowNotFoundError,
+  type WorkflowMutationResult,
+  type WorkflowRepository,
+  type WorkflowView,
+} from './workflows/repository.js'
+import type { CreateWorkflowInput, SubmitWorkflowCommandInput } from './workflows/repository.js'
+import { checkpointAfterPouReview, checkpointAfterSetup } from './workflows/domain.js'
+import { WORKFLOW_POU_IDS, type WorkflowCommand } from '../shared/workflow.js'
+import type { WorkflowListItem } from './workflows/repository.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -58,6 +70,115 @@ class FakeOidcProvider implements OidcProvider {
 
   async exchangeCode() {
     return { provider: 'cognito' as const, subject: 'cognito-subject', email: 'test@example.invalid', displayName: 'Test Kaimahi' }
+  }
+}
+
+class MemoryWorkflowRepository implements WorkflowRepository {
+  private readonly workflows = new Map<string, WorkflowView & { ownerId: string }>()
+  private readonly operations = new Map<string, { fingerprint: string; result: WorkflowMutationResult }>()
+
+  async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
+    const key = `${input.actor.id}:${input.idempotencyKey}`
+    const existing = this.operations.get(key)
+    if (existing) return { ...existing.result, replayed: true }
+    const workflow: WorkflowView & { ownerId: string } = {
+      id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb',
+      reference: 'TK-7K4M2P9Q',
+      status: 'draft',
+      currentStage: 'setup',
+      currentPouId: null,
+      version: 1,
+      setup: null,
+      checkpoints: WORKFLOW_POU_IDS.map((pouId, ordinal) => ({
+        pouId,
+        ordinal: ordinal + 1,
+        progress: 'not_started',
+        userSelectedConcern: null,
+        note: null,
+        referralSuggested: false,
+        supervisorReviewSuggested: false,
+        confirmedAt: null,
+      })),
+      createdAt: new Date('2026-08-10T00:00:00.000Z'),
+      updatedAt: new Date('2026-08-10T00:00:00.000Z'),
+      ownerId: input.actor.id,
+    }
+    this.workflows.set(workflow.id, workflow)
+    const result = { workflow: this.publicWorkflow(workflow), interactionId: '630d8188-c67d-4c65-a8ef-505254c819d5', replayed: false }
+    this.operations.set(key, { fingerprint: 'create', result })
+    return result
+  }
+
+  async findById(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowView | null> {
+    const workflow = this.workflows.get(workflowSessionId)
+    return workflow?.ownerId === actor.id ? this.publicWorkflow(workflow) : null
+  }
+
+  async listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]> {
+    return [...this.workflows.values()]
+      .filter((workflow) => workflow.ownerId === actor.id && (workflow.status === 'draft' || workflow.status === 'in_progress'))
+      .map((workflow) => ({
+        id: workflow.id,
+        reference: workflow.reference,
+        whanauReference: workflow.setup?.whanauReference ?? null,
+        status: workflow.status as 'draft' | 'in_progress',
+        currentStage: workflow.currentStage,
+        currentPouId: workflow.currentPouId,
+        version: workflow.version,
+        updatedAt: workflow.updatedAt,
+      }))
+  }
+
+  async submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult> {
+    const workflow = this.workflows.get(input.workflowSessionId)
+    if (!workflow || workflow.ownerId !== input.actor.id) throw new WorkflowNotFoundError()
+    const key = `${input.actor.id}:${input.command.idempotencyKey}`
+    const fingerprint = JSON.stringify(input.command)
+    const existing = this.operations.get(key)
+    if (existing) {
+      if (existing.fingerprint !== fingerprint) throw new IdempotencyKeyReuseError()
+      return { ...existing.result, replayed: true }
+    }
+    if (workflow.version !== input.command.expectedVersion) throw new StaleWorkflowError(workflow.version)
+
+    if (input.command.type === 'setup-confirmed') {
+      const next = checkpointAfterSetup()
+      workflow.status = 'in_progress'
+      workflow.currentStage = next.stage
+      workflow.currentPouId = next.currentPouId
+      workflow.setup = {
+        whanauReference: input.command.whanauReference.trim(),
+        engagementType: input.command.engagementType,
+        sessionFocus: input.command.sessionFocus,
+        additionalNotes: input.command.additionalNotes || null,
+        immediateConcern: input.command.immediateConcern,
+      }
+    } else {
+      const command = input.command as Extract<WorkflowCommand, { type: 'pou-review-confirmed' }>
+      const checkpoint = workflow.checkpoints.find((item) => item.pouId === command.pouId)
+      if (!checkpoint) throw new WorkflowNotFoundError()
+      const next = checkpointAfterPouReview(
+        { stage: workflow.currentStage, currentPouId: workflow.currentPouId },
+        command.pouId,
+        checkpoint.progress === 'confirmed',
+      )
+      checkpoint.progress = 'confirmed'
+      checkpoint.userSelectedConcern = command.userSelectedConcern
+      checkpoint.note = command.note || null
+      checkpoint.referralSuggested = command.referralSuggested
+      checkpoint.supervisorReviewSuggested = command.supervisorReviewSuggested
+      checkpoint.confirmedAt = new Date('2026-08-10T00:00:00.000Z')
+      workflow.currentStage = next.stage
+      workflow.currentPouId = next.currentPouId
+    }
+    workflow.version += 1
+    const result = { workflow: this.publicWorkflow(workflow), interactionId: 'c784a337-05de-4d22-838f-0338b2e45027', replayed: false }
+    this.operations.set(key, { fingerprint, result })
+    return result
+  }
+
+  private publicWorkflow({ ownerId: _ownerId, ...workflow }: WorkflowView & { ownerId: string }): WorkflowView {
+    return structuredClone(workflow)
   }
 }
 
@@ -229,5 +350,78 @@ describe('authenticated application shell API', () => {
     expect((await expiredApp.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
     await app.close()
     await expiredApp.close()
+  })
+
+  it('persists Kaimahi workflow commands behind the existing session and CSRF boundaries', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '0ff258d3-3ca5-4cdd-bf5e-1dfe425b4624',
+      userId: activeKaimahi.id,
+      tokenHash: sha256('workflow-session'),
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+    const sessionCookie = 'test_session=workflow-session'
+
+    expect((await app.inject({ method: 'GET', url: '/api/workflows' })).statusCode).toBe(401)
+    expect((await app.inject({
+      method: 'POST',
+      url: '/api/workflows',
+      headers: { cookie: sessionCookie },
+      payload: { idempotencyKey: '4aa3c038-b5da-46e7-b11c-3f549416fcf4' },
+    })).statusCode).toBe(403)
+
+    const create = await app.inject({
+      method: 'POST',
+      url: '/api/workflows',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: { idempotencyKey: '4aa3c038-b5da-46e7-b11c-3f549416fcf4' },
+    })
+    expect(create.statusCode).toBe(201)
+    expect(create.json()).toMatchObject({ workflow: { reference: 'TK-7K4M2P9Q', status: 'draft', version: 1 } })
+    expect((await app.inject({
+      method: 'POST',
+      url: '/api/workflows',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: { idempotencyKey: '4aa3c038-b5da-46e7-b11c-3f549416fcf4' },
+    })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/workflows', headers: { cookie: sessionCookie } })).json()).toMatchObject({ workflows: [{ status: 'draft' }] })
+
+    const setup = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'setup-confirmed',
+        idempotencyKey: 'db82d548-b703-4e0e-a5f7-f2d99c69c84a',
+        expectedVersion: 1,
+        whanauReference: ' TW-04 ',
+        engagementType: 'home-visit',
+        sessionFocus: 'Whānau support discussion',
+        immediateConcern: 'none',
+      },
+    })
+    expect(setup.statusCode).toBe(200)
+    expect(setup.json()).toMatchObject({ workflow: { status: 'in_progress', currentStage: 'pou-overview', version: 2 } })
+
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'pou-review-confirmed',
+        idempotencyKey: '99bd1f2c-4528-4fab-8bfa-96c4a11b0c07',
+        expectedVersion: 1,
+        pouId: 'whakapapa',
+        userSelectedConcern: 'watch',
+        referralSuggested: false,
+        supervisorReviewSuggested: false,
+      },
+    })
+    expect(stale.statusCode).toBe(409)
+    expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
+    await app.close()
   })
 })
