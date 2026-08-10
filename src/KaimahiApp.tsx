@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type {
   Pou,
   PouStatus,
@@ -33,6 +33,14 @@ import {
 } from './kaimahi/KaimahiShell'
 import { SessionShell } from './kaimahi/KaimahiSession'
 import type { AuthProfile } from './auth'
+import {
+  WorkflowApiError,
+  createWorkflow,
+  getWorkflow,
+  listResumableWorkflows,
+  type Workflow,
+  type WorkflowPersistenceState,
+} from './workflows'
 
 // ─── Navigation types ─────────────────────────────────────────────────────────
 
@@ -282,12 +290,14 @@ function HomeScreen({
   sessionRef,
   sessionStage,
   displayName,
+  persistenceState,
 }: {
   onBeginSession: () => void
   sessionActive: boolean
   sessionRef: string
   sessionStage: SessionStageKey
   displayName: string
+  persistenceState: WorkflowPersistenceState
 }) {
   const greeting = getGreeting()
   const stageMeta = SESSION_STAGE_LABELS[sessionStage]
@@ -503,7 +513,13 @@ function HomeScreen({
                   color: 'rgba(255,255,255,0.6)',
                 }}
               >
-                Reflect through the Pou of Te Waharoa →
+                {persistenceState === 'saving'
+                  ? 'Saving…'
+                  : persistenceState === 'retrying'
+                    ? 'Retrying…'
+                    : persistenceState === 'failed'
+                      ? "Couldn’t save. Try again."
+                      : 'Reflect through the Pou of Te Waharoa →'}
               </p>
             </div>
           )}
@@ -2023,9 +2039,62 @@ function WhanauReflectionsScreen() {
 export default function KaimahiApp({ onBack, profile }: { onBack: () => void; profile: AuthProfile }) {
   const [tab, setTab] = useState<KaimahiTab>('home')
   const [moreOpen, setMoreOpen] = useState(false)
-  const [sessionActive, setSessionActive] = useState(false)
-  const [sessionStage] = useState<SessionStageKey>('pou-overview')
-  const [sessionRef] = useState('W-2845')
+  const [sessionOpen, setSessionOpen] = useState(false)
+  const [workflow, setWorkflow] = useState<Workflow | null>(null)
+  const [startPersistenceState, setStartPersistenceState] = useState<WorkflowPersistenceState>('idle')
+  const pendingStartKey = useRef<string | null>(null)
+  const startedAttempt = useRef(false)
+
+  useEffect(() => {
+    let active = true
+    void (async () => {
+      try {
+        const [resumable] = await listResumableWorkflows()
+        if (!resumable) return
+        const current = await getWorkflow(resumable.id)
+        if (active) setWorkflow(current)
+      } catch {
+        // The existing session remains usable; persistence feedback appears only when a workflow action is attempted.
+      }
+    })()
+    return () => { active = false }
+  }, [])
+
+  const beginOrResumeSession = async () => {
+    if (workflow) {
+      setSessionOpen(true)
+      return
+    }
+    const retrying = startedAttempt.current
+    startedAttempt.current = true
+    const idempotencyKey = pendingStartKey.current ?? crypto.randomUUID()
+    pendingStartKey.current = idempotencyKey
+    setStartPersistenceState(retrying ? 'retrying' : 'saving')
+    try {
+      const result = await createWorkflow(idempotencyKey)
+      pendingStartKey.current = null
+      setWorkflow(result.workflow)
+      setStartPersistenceState('saved')
+      setSessionOpen(true)
+    } catch (error) {
+      if (error instanceof WorkflowApiError && error.code === 'active_workflow_exists') {
+        try {
+          const [resumable] = await listResumableWorkflows()
+          if (resumable) {
+            const current = await getWorkflow(resumable.id)
+            pendingStartKey.current = null
+            setWorkflow(current)
+            setStartPersistenceState('saved')
+            setSessionOpen(true)
+            return
+          }
+        } catch {
+          // Preserve the original failure state below.
+        }
+      }
+      setStartPersistenceState('failed')
+    }
+  }
 
   const handleTab = (t: KaimahiTab) => {
     setTab(t)
@@ -2038,12 +2107,14 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
   }
 
   // Session overlays the whole app
-  if (sessionActive) {
+  if (sessionOpen && workflow) {
     return (
       <SessionShell
         displayName={profile.displayName}
+        workflow={workflow}
+        onWorkflowChange={setWorkflow}
         onDone={() => {
-          setSessionActive(false)
+          setSessionOpen(false)
           setTab('home')
         }}
       />
@@ -2052,14 +2123,14 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
 
   const renderContent = () => {
     switch (tab) {
-      case 'home':             return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} displayName={profile.displayName} />
+      case 'home':             return <HomeScreen onBeginSession={() => { void beginOrResumeSession() }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} displayName={profile.displayName} persistenceState={startPersistenceState} />
       case 'actions':          return <MyActionsScreen />
       case 'reflections':      return <WhanauReflectionsScreen />
       case 'referrals-browse': return <ReferralsBrowseScreen />
       case 'synthesis-archive':return <SynthesisArchiveScreen />
       case 'record-archive':   return <RecordArchiveScreen />
       case 'settings':         return <SettingsScreen profile={profile} />
-      default:                 return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} displayName={profile.displayName} />
+      default:                 return <HomeScreen onBeginSession={() => { void beginOrResumeSession() }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} displayName={profile.displayName} persistenceState={startPersistenceState} />
     }
   }
 
@@ -2082,9 +2153,9 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
       <BottomNav
         active={tab}
         moreOpen={moreOpen}
-        sessionActive={sessionActive}
+        sessionActive={Boolean(workflow)}
         onTab={handleTab}
-        onSession={() => setSessionActive(true)}
+        onSession={() => { void beginOrResumeSession() }}
         onMore={() => setMoreOpen(!moreOpen)}
       />
     </WhareShell>

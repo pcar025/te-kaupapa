@@ -1,24 +1,19 @@
 import { randomUUID } from 'node:crypto'
-import path from 'node:path'
 
 import { eq } from 'drizzle-orm'
-import { migrate } from 'drizzle-orm/node-postgres/migrator'
 import { describe, expect, it } from 'vitest'
 
-import { createDatabaseConnection, PostgresAuthRepository } from './repository.js'
+import { PostgresAuthRepository } from './repository.js'
 import { appUsers, applicationSessions, externalIdentities, organisations, roleAssignments, supervision } from './schema.js'
+import { hasTestDatabaseUrl, withMigratedTestDatabase } from './test-harness.js'
 
-const databaseUrl = process.env.TEST_DATABASE_URL
-
-describe.skipIf(!databaseUrl)('PostgreSQL auth repository integration', () => {
+describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL auth repository integration', () => {
   it('returns an organization-scoped dual-role user after running the real migration', async () => {
-    const connection = createDatabaseConnection(databaseUrl!)
     const userId = randomUUID()
     const organisationId = randomUUID()
     const sessionId = randomUUID()
     const tokenHash = `test-${randomUUID()}`
-    try {
-      await migrate(connection.db, { migrationsFolder: path.resolve(process.cwd(), 'server/db/migrations') })
+    await withMigratedTestDatabase(async (connection) => {
       await connection.db.insert(organisations).values({ id: organisationId, slug: `test-${userId}`, name: 'Integration test organisation' })
       await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: 'Integration test user' })
       await connection.db.insert(externalIdentities).values({ userId, provider: 'cognito', providerSubject: `subject-${userId}` })
@@ -46,13 +41,12 @@ describe.skipIf(!databaseUrl)('PostgreSQL auth repository integration', () => {
         organisation: { id: organisationId },
         roles: ['KAIMAHI', 'SUPERVISOR'],
       })
-    } finally {
+    }, async (connection) => {
       await connection.db.delete(applicationSessions).where(eq(applicationSessions.userId, userId))
       await connection.db.delete(externalIdentities).where(eq(externalIdentities.userId, userId))
       await connection.db.delete(roleAssignments).where(eq(roleAssignments.userId, userId))
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
-      await connection.close()
-    }
+    })
   })
 })

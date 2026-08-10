@@ -2,12 +2,14 @@ import { CognitoOidcProvider } from './auth/oidc.js'
 import { createApplication } from './app.js'
 import { loadConfiguration } from './config.js'
 import { createDatabaseConnection, PostgresAuthRepository } from './db/repository.js'
+import { PostgresWorkflowRepository } from './workflows/repository.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
 const app = await createApplication({
   config,
   repository: new PostgresAuthRepository(database.db),
+  workflowRepository: new PostgresWorkflowRepository(database.db),
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,
 })
 

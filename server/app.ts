@@ -10,6 +10,20 @@ import type { OidcProvider } from './auth/oidc.js'
 import type { AppConfiguration } from './config.js'
 import { AuthorizationError, requireRole, toPublicProfile, type ApplicationRole, type AuthenticatedUser } from './domain/auth.js'
 import type { AuthRepository } from './db/repository.js'
+import {
+  ActiveWorkflowError,
+  IdempotencyKeyReuseError,
+  StaleWorkflowError,
+  WorkflowNotFoundError,
+  type WorkflowRepository,
+} from './workflows/repository.js'
+import { WorkflowTransitionError } from './workflows/domain.js'
+import {
+  WORKFLOW_ENGAGEMENT_TYPES,
+  WORKFLOW_IMMEDIATE_CONCERNS,
+  WORKFLOW_POU_CONCERNS,
+  WORKFLOW_POU_IDS,
+} from '../shared/workflow.js'
 
 const transactionCookieName = 'te_kaupapa_oidc_transaction'
 const transactionSchema = z.object({
@@ -22,6 +36,7 @@ const transactionSchema = z.object({
 export interface AppDependencies {
   config: AppConfiguration
   repository: AuthRepository
+  workflowRepository?: WorkflowRepository
   oidcProvider?: OidcProvider
   now?: () => Date
 }
@@ -33,7 +48,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -212,6 +227,116 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     } catch (error) {
       if (error instanceof AuthorizationError) return reply.code(403).send({ error: 'forbidden' })
       throw error
+    }
+  })
+
+  async function requireKaimahi(request: FastifyRequest, reply: FastifyReply): Promise<AuthenticatedUser | null> {
+    const user = await authenticate(request)
+    if (!user) {
+      reply.code(401).send({ error: 'unauthenticated' })
+      return null
+    }
+    try {
+      requireRole(user, 'KAIMAHI')
+      return user
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        reply.code(403).send({ error: 'forbidden' })
+        return null
+      }
+      throw error
+    }
+  }
+
+  function workflowFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+    if (error instanceof ActiveWorkflowError) return reply.code(409).send({ error: 'active_workflow_exists' })
+    if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
+    if (error instanceof StaleWorkflowError) return reply.code(409).send({ error: 'stale_workflow', currentVersion: error.currentVersion })
+    if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
+    if (error instanceof WorkflowNotFoundError) return reply.code(404).send({ error: 'not_found' })
+    request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Workflow persistence unavailable')
+    return reply.code(503).send({ error: 'persistence_unavailable' })
+  }
+
+  const idempotencySchema = z.object({ idempotencyKey: z.string().uuid() })
+  const setupCommandSchema = z.object({
+    type: z.literal('setup-confirmed'),
+    idempotencyKey: z.string().uuid(),
+    expectedVersion: z.number().int().positive(),
+    whanauReference: z.string().trim().min(1).max(64),
+    engagementType: z.enum(WORKFLOW_ENGAGEMENT_TYPES),
+    sessionFocus: z.string().trim().min(3).max(4_000),
+    additionalNotes: z.string().trim().max(4_000).optional(),
+    immediateConcern: z.enum(WORKFLOW_IMMEDIATE_CONCERNS),
+  })
+  const pouReviewCommandSchema = z.object({
+    type: z.literal('pou-review-confirmed'),
+    idempotencyKey: z.string().uuid(),
+    expectedVersion: z.number().int().positive(),
+    pouId: z.enum(WORKFLOW_POU_IDS),
+    userSelectedConcern: z.enum(WORKFLOW_POU_CONCERNS),
+    note: z.string().trim().max(4_000).optional(),
+    referralSuggested: z.boolean(),
+    supervisorReviewSuggested: z.boolean(),
+  })
+  const workflowCommandSchema = z.discriminatedUnion('type', [setupCommandSchema, pouReviewCommandSchema])
+
+  app.post('/api/workflows', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = idempotencySchema.safeParse(request.body)
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const result = await workflowRepository.createDraft({ actor: user, idempotencyKey: parsed.data.idempotencyKey })
+      return reply.code(result.replayed ? 200 : 201).send({ workflow: result.workflow, acknowledgement: { interactionId: result.interactionId, replayed: result.replayed } })
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/workflows', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = z.object({ status: z.literal('resumable').optional() }).safeParse(request.query)
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      return { workflows: await workflowRepository.listResumable(user) }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/workflows/:workflowSessionId', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      const workflow = await workflowRepository.findById(user, parsed.data.workflowSessionId)
+      if (!workflow) return reply.code(404).send({ error: 'not_found' })
+      return { workflow }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.post('/api/workflows/:workflowSessionId/interactions', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const command = workflowCommandSchema.safeParse(request.body)
+    if (!params.success || !command.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const result = await workflowRepository.submitCommand({ actor: user, workflowSessionId: params.data.workflowSessionId, command: command.data })
+      return { workflow: result.workflow, acknowledgement: { interactionId: result.interactionId, replayed: result.replayed } }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
     }
   })
 

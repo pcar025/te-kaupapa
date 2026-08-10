@@ -20,6 +20,14 @@ import {
 } from '../shared'
 import { TE_WAHAROA_POU } from '../pou'
 import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
+import {
+  WorkflowApiError,
+  getWorkflow,
+  submitWorkflowCommand,
+  type Workflow,
+  type WorkflowCheckpoint,
+  type WorkflowPersistenceState,
+} from '../workflows'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION STAGES
@@ -28,16 +36,58 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 // Stage 1 — Setup (entering the whare)
 type ImmediateConcern = 'none' | 'unsure' | 'urgent' | null
 
+function PersistenceFeedback({
+  state,
+  onRetry,
+  onReload,
+}: {
+  state: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
+}) {
+  if (state === 'idle' || state === 'saved') return null
+  const stale = state === 'stale'
+  const message = stale
+    ? 'This session was updated elsewhere. Reload the latest version to continue.'
+    : state === 'saving'
+      ? 'Saving…'
+      : state === 'retrying'
+        ? 'Retrying…'
+        : 'Couldn’t save. Try again.'
+  return (
+    <div className="mt-3 flex items-center justify-between gap-3" aria-live="polite">
+      <p className="text-xs italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: stale ? 'var(--color-caution)' : 'var(--color-concern)' }}>
+        {message}
+      </p>
+      {(state === 'failed' || state === 'stale') && (
+        <button
+          onClick={stale ? onReload : onRetry}
+          className="flex-shrink-0 text-xs transition-opacity hover:opacity-70"
+          style={{ fontFamily: 'var(--font-mono)', color: stale ? 'var(--color-caution)' : 'var(--color-concern)' }}
+        >
+          {stale ? 'Reload latest' : 'Try again'}
+        </button>
+      )}
+    </div>
+  )
+}
+
 function SetupStage({
   data,
   onChange,
-  onNext,
+  onConfirm,
   displayName,
+  persistenceState,
+  onRetry,
+  onReload,
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
-  onNext: () => void
+  onConfirm: (immediateConcern: Exclude<ImmediateConcern, null>) => void
   displayName: string
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
 }) {
   const [immediateConcern, setImmediateConcern] = useState<ImmediateConcern>(null)
 
@@ -443,8 +493,8 @@ function SetupStage({
       {/* ── Enter — the crossing ── */}
       <div className="px-5 pt-4 pb-8">
         <button
-          onClick={onNext}
-          disabled={!canEnter}
+          onClick={() => immediateConcern && onConfirm(immediateConcern)}
+          disabled={!canEnter || persistenceState === 'saving' || persistenceState === 'retrying'}
           className="w-full text-left transition-all active:opacity-85"
           style={{ cursor: canEnter ? 'pointer' : 'default' }}
         >
@@ -473,7 +523,7 @@ function SetupStage({
                   className="text-xs mt-1.5"
                   style={{ fontFamily: 'var(--font-mono)', color: 'rgba(255,255,255,0.55)', letterSpacing: '0.06em' }}
                 >
-                  BEGIN GUIDED REFLECTION →
+                  {persistenceState === 'saving' ? 'Saving…' : persistenceState === 'retrying' ? 'Retrying…' : 'BEGIN GUIDED REFLECTION →'}
                 </p>
               </>
             ) : (
@@ -486,6 +536,7 @@ function SetupStage({
             )}
           </div>
         </button>
+        <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
       </div>
 
     </div>
@@ -1528,27 +1579,38 @@ const CONCERN_META: Record<ConcernLevel, { label: string; color: string; bg: str
 
 function SinglePouReviewStage({
   pouIdx,
-  onNext,
+  checkpoint,
+  onConfirm,
+  persistenceState,
+  onRetry,
+  onReload,
 }: {
   pouIdx: number
-  onNext: () => void
+  checkpoint?: WorkflowCheckpoint
+  onConfirm: (review: {
+    userSelectedConcern: ConcernLevel
+    note: string
+    referralSuggested: boolean
+    supervisorReviewSuggested: boolean
+  }) => void
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
 }) {
   const ext = POU_EXTENDED[pouIdx]
-  const [concern, setConcern] = useState<ConcernLevel>('watch')
-  const [referralFlag, setReferralFlag] = useState(false)
-  const [supervisorFlag, setSupervisorFlag] = useState(false)
-  const [notes, setNotes] = useState('')
-  const [preparing, setPreparing] = useState(false)
+  const [concern, setConcern] = useState<ConcernLevel>(checkpoint?.userSelectedConcern ?? 'watch')
+  const [referralFlag, setReferralFlag] = useState(checkpoint?.referralSuggested ?? false)
+  const [supervisorFlag, setSupervisorFlag] = useState(checkpoint?.supervisorReviewSuggested ?? false)
+  const [notes, setNotes] = useState(checkpoint?.note ?? '')
 
-  const handleConfirm = () => {
-    setPreparing(true)
-    setTimeout(() => {
-      setPreparing(false)
-      onNext()
-    }, 1600)
-  }
+  const handleConfirm = () => onConfirm({
+    userSelectedConcern: concern,
+    note: notes,
+    referralSuggested: referralFlag,
+    supervisorReviewSuggested: supervisorFlag,
+  })
 
-  if (preparing) {
+  if (persistenceState === 'saving' || persistenceState === 'retrying') {
     return (
       <div className="flex flex-col items-center justify-center" style={{ minHeight: '70vh', fontFamily: 'var(--font-body)' }}>
         <div className="flex gap-1 mb-6">
@@ -1565,7 +1627,7 @@ function SinglePouReviewStage({
           ))}
         </div>
         <p className="text-sm italic mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>
-          {pouIdx < 6 ? 'Preparing the next Pou…' : 'Gathering all seven Pou…'}
+          {persistenceState === 'retrying' ? 'Retrying…' : 'Saving…'}
         </p>
         <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>
           {pouIdx < 6 ? POU_EXTENDED[pouIdx + 1]?.full : 'Final Pou Summary'}
@@ -1775,6 +1837,7 @@ function SinglePouReviewStage({
             {pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
           </p>
         </button>
+        <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
       </div>
     </div>
   )
@@ -5259,24 +5322,129 @@ function CompleteStage({ data, onDone }: { data: ActiveSessionData; onDone: () =
 // SESSION SHELL — linear session flow, overlays the tab navigation
 // ─────────────────────────────────────────────────────────────────────────────
 
+function workflowToSessionData(workflow: Workflow): ActiveSessionData {
+  const initial = getInitialSessionData()
+  return {
+    ...initial,
+    ref: workflow.reference,
+    ...(workflow.setup
+      ? {
+          whanauCode: workflow.setup.whanauReference,
+          engagementType: workflow.setup.engagementType,
+          sessionFocus: workflow.setup.sessionFocus,
+          notes: workflow.setup.additionalNotes ?? '',
+        }
+      : {}),
+  }
+}
+
 export function SessionShell({
   onDone,
   displayName,
+  workflow,
+  onWorkflowChange,
 }: {
   onDone: () => void
   displayName: string
+  workflow: Workflow
+  onWorkflowChange: (workflow: Workflow) => void
 }) {
-  const [stage, setStage] = useState<SessionStageKey>('setup')
-  const [currentPouIdx, setCurrentPouIdx] = useState(0)
-  const [data, setData] = useState<ActiveSessionData>(getInitialSessionData())
+  const initialPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
+  const [stage, setStage] = useState<SessionStageKey>(workflow.currentStage)
+  const [currentPouIdx, setCurrentPouIdx] = useState(initialPouIdx)
+  const [data, setData] = useState<ActiveSessionData>(() => workflowToSessionData(workflow))
+  const [persistenceState, setPersistenceState] = useState<WorkflowPersistenceState>('idle')
+  const retrySubmission = useRef<(() => Promise<void>) | null>(null)
 
   const patch = (update: Partial<ActiveSessionData>) => setData((p) => ({ ...p, ...update }))
+
+  useEffect(() => {
+    const nextPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
+    setStage(workflow.currentStage)
+    setCurrentPouIdx(nextPouIdx)
+    setData((current) => ({
+      ...current,
+      ref: workflow.reference,
+      ...(workflow.setup
+        ? {
+            whanauCode: workflow.setup.whanauReference,
+            engagementType: workflow.setup.engagementType,
+            sessionFocus: workflow.setup.sessionFocus,
+            notes: workflow.setup.additionalNotes ?? '',
+          }
+        : {}),
+    }))
+  }, [workflow])
+
+  const reloadLatest = () => {
+    void getWorkflow(workflow.id)
+      .then((latest) => {
+        onWorkflowChange(latest)
+        setPersistenceState('idle')
+        retrySubmission.current = null
+      })
+      .catch(() => setPersistenceState('stale'))
+  }
+
+  const persist = async (
+    submit: () => Promise<{ workflow: Workflow }>,
+    retrying = false,
+  ) => {
+    setPersistenceState(retrying ? 'retrying' : 'saving')
+    try {
+      const result = await submit()
+      retrySubmission.current = null
+      setPersistenceState('saved')
+      onWorkflowChange(result.workflow)
+    } catch (error) {
+      setPersistenceState(error instanceof WorkflowApiError && error.code === 'stale_workflow' ? 'stale' : 'failed')
+    }
+  }
+
+  const retryLatestSubmission = () => {
+    if (retrySubmission.current) void retrySubmission.current()
+  }
+
+  const confirmSetup = (immediateConcern: Exclude<ImmediateConcern, null>) => {
+    const command = {
+      type: 'setup-confirmed' as const,
+      idempotencyKey: crypto.randomUUID(),
+      expectedVersion: workflow.version,
+      whanauReference: data.whanauCode,
+      engagementType: data.engagementType,
+      sessionFocus: data.sessionFocus,
+      additionalNotes: data.notes || undefined,
+      immediateConcern,
+    }
+    const submit = () => submitWorkflowCommand(workflow.id, command)
+    retrySubmission.current = () => persist(submit, true)
+    void persist(submit)
+  }
+
+  const confirmPouReview = (review: {
+    userSelectedConcern: ConcernLevel
+    note: string
+    referralSuggested: boolean
+    supervisorReviewSuggested: boolean
+  }) => {
+    const command = {
+      type: 'pou-review-confirmed' as const,
+      idempotencyKey: crypto.randomUUID(),
+      expectedVersion: workflow.version,
+      pouId: TE_WAHAROA_POU[currentPouIdx]!.id,
+      ...review,
+    }
+    const submit = () => submitWorkflowCommand(workflow.id, command)
+    retrySubmission.current = () => persist(submit, true)
+    void persist(submit)
+  }
 
   // Pou-by-pou flow:
   // setup → pou-overview → pou-convo(0) → pou-review(0) → pou-convo(1) → pou-review(1) → …
   // → pou-convo(5) → pou-review(5) → pou-summary → synthesising → risks → referrals → synthesis → record → complete
   const advance = () => {
-    if (stage === 'setup') { setStage('pou-overview'); return }
+    setPersistenceState('idle')
+    if (stage === 'setup') { return }
     if (stage === 'pou-overview') { setCurrentPouIdx(0); setStage('pou-convo'); return }
     if (stage === 'pou-convo') { setStage('pou-review'); return }
     if (stage === 'pou-review') {
@@ -5347,10 +5515,10 @@ export function SessionShell({
         pouReo={pouReo}
       />
       <div className="flex-1 overflow-y-auto">
-        {stage === 'setup'        && <SetupStage data={data} onChange={patch} onNext={advance} displayName={displayName} />}
+        {stage === 'setup'        && <SetupStage data={data} onChange={patch} onConfirm={confirmSetup} displayName={displayName} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} />}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} onNext={advance} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <PouSummaryStage data={data} onNext={advance} />}
         {stage === 'risks'        && <RisksActionsStage data={data} onChange={patch} onNext={advance} />}
         {stage === 'referrals'    && <ReferralsStage data={data} onChange={patch} onNext={advance} />}
