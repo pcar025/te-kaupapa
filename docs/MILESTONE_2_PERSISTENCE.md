@@ -27,6 +27,8 @@ The application does not mark the workflow completed in Milestone 2. The prototy
 
 Milestone 2 permits one `draft` or `in_progress` workflow per Kaimahi. A PostgreSQL partial unique index enforces this rule, and returning with Hoki preserves the durable draft for resume.
 
+The existing Hoki path may return from Pou overview to setup. In that case, setup confirmation is revised in place with a new acknowledged interaction; it does not create a second workflow or reset the Pou checkpoint.
+
 This is a provisional product rule. Reassess it before pilot use if a frontline Kaimahi must hold multiple unfinished whānau sessions concurrently. Milestone 2 intentionally has no workflow picker, abandon action, cancel action, expiry, or hard-delete endpoint.
 
 ## API and authorization
