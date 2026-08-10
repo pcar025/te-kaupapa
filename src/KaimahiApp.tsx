@@ -37,7 +37,9 @@ import {
   WorkflowApiError,
   createWorkflow,
   getWorkflow,
+  listCompletedWorkflows,
   listResumableWorkflows,
+  type CompletedWorkflowListItem,
   type Workflow,
   type WorkflowPersistenceState,
 } from './workflows'
@@ -2036,11 +2038,33 @@ function WhanauReflectionsScreen() {
 // KAIMAHI APP ROOT
 // ─────────────────────────────────────────────────────────────────────────────
 
+function CompletedRecordsScreen({
+  records,
+  onOpen,
+}: {
+  records: CompletedWorkflowListItem[]
+  onOpen: (workflowId: string) => void
+}) {
+  return (
+    <div className="flex flex-col h-full" style={{ fontFamily: 'var(--font-body)' }}>
+      <div className="px-5 pt-7 pb-4 flex-shrink-0">
+        <h2 className="text-xl font-medium mb-1" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Ngā Tohu</h2>
+        <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Completed records saved in Te Kaupapa</p>
+      </div>
+      <div className="flex-1 overflow-y-auto px-5 pb-4 space-y-1.5">
+        {records.length === 0 && <p className="text-sm italic py-8 text-center" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>No completed records yet.</p>}
+        {records.map((record) => <button key={record.id} onClick={() => onOpen(record.id)} className="w-full text-left py-3.5 px-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><p className="font-medium text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{record.reference}</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>{record.whanauReference ?? 'No whānau reference'} · {new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(record.completedAt))}</p></button>)}
+      </div>
+    </div>
+  )
+}
+
 export default function KaimahiApp({ onBack, profile }: { onBack: () => void; profile: AuthProfile }) {
   const [tab, setTab] = useState<KaimahiTab>('home')
   const [moreOpen, setMoreOpen] = useState(false)
   const [sessionOpen, setSessionOpen] = useState(false)
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
+  const [completedRecords, setCompletedRecords] = useState<CompletedWorkflowListItem[]>([])
   const [startPersistenceState, setStartPersistenceState] = useState<WorkflowPersistenceState>('idle')
   const pendingStartKey = useRef<string | null>(null)
   const startedAttempt = useRef(false)
@@ -2059,6 +2083,16 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
     })()
     return () => { active = false }
   }, [])
+
+  const refreshCompletedRecords = async () => {
+    try {
+      setCompletedRecords(await listCompletedWorkflows())
+    } catch {
+      // The record archive remains empty until the authoritative list can be loaded.
+    }
+  }
+
+  useEffect(() => { void refreshCompletedRecords() }, [])
 
   const beginOrResumeSession = async () => {
     if (workflow) {
@@ -2115,6 +2149,10 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
         onWorkflowChange={setWorkflow}
         onDone={() => {
           setSessionOpen(false)
+          if (workflow.status === 'completed') {
+            setWorkflow(null)
+            void refreshCompletedRecords()
+          }
           setTab('home')
         }}
       />
@@ -2128,7 +2166,7 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
       case 'reflections':      return <WhanauReflectionsScreen />
       case 'referrals-browse': return <ReferralsBrowseScreen />
       case 'synthesis-archive':return <SynthesisArchiveScreen />
-      case 'record-archive':   return <RecordArchiveScreen />
+      case 'record-archive':   return <CompletedRecordsScreen records={completedRecords} onOpen={(workflowId) => { void getWorkflow(workflowId).then((completed) => { setWorkflow(completed); setSessionOpen(true) }) }} />
       case 'settings':         return <SettingsScreen profile={profile} />
       default:                 return <HomeScreen onBeginSession={() => { void beginOrResumeSession() }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} displayName={profile.displayName} persistenceState={startPersistenceState} />
     }

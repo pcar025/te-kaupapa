@@ -1,8 +1,11 @@
 import { cleanup, configure, render, screen } from '@testing-library/react'
+import { useState } from 'react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import App from './App'
+import { SessionShell } from './kaimahi/KaimahiSession'
+import type { Workflow } from './workflows'
 
 configure({ asyncUtilTimeout: 5000 })
 
@@ -62,6 +65,44 @@ beforeEach(() => {
 })
 
 describe('approved application smoke paths', () => {
+  it('uses acknowledged Pou data and waits for the real post-Pou transition', async () => {
+    const checkpoints = ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'].map((pouId, index) => ({
+      pouId: pouId as Workflow['checkpoints'][number]['pouId'], ordinal: index + 1, progress: 'confirmed' as const,
+      userSelectedConcern: index === 1 ? 'action' as const : 'low' as const,
+      note: index === 1 ? 'A Kaimahi-confirmed note.' : null, referralSuggested: false, supervisorReviewSuggested: false,
+      confirmedAt: '2026-08-10T00:00:00.000Z',
+    }))
+    const initial: Workflow = {
+      id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'in_progress',
+      currentStage: 'pou-summary', currentPouId: null, version: 9,
+      setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', additionalNotes: null, immediateConcern: 'none' },
+      checkpoints, actions: [], referrals: [], completedAt: null,
+      structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints, actions: [], referrals: [], createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: null },
+      createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
+    }
+    const acknowledged: Workflow = { ...initial, currentStage: 'action-planning', version: 10, structuredReview: { ...initial.structuredReview, setup: initial.setup } }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/interactions')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) })
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: initial }) })
+    }))
+    function Harness() {
+      const [workflow, setWorkflow] = useState(initial)
+      return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} />
+    }
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    expect(screen.getByText('A Kaimahi-confirmed note.')).toBeTruthy()
+    expect(screen.queryByText(/Persistent low mood and sleep disruption/i)).toBeNull()
+    await user.click(screen.getByRole('button', { name: /Concerns & Actions/i }))
+    expect(await screen.findByRole('heading', { name: /Name the actions you will carry forward/i })).toBeTruthy()
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('renders authorized application entry choices after the profile is confirmed', async () => {
     render(<App />)
 

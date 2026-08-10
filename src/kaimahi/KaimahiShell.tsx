@@ -18,9 +18,9 @@ export const SESSION_STAGE_LABELS: Partial<Record<SessionStageKey, { reo: string
   setup:        { reo: 'Tomokia',    en: 'Enter'         },
   'pou-overview':{ reo: 'Ngā Pou',  en: 'Te Waharoa'    },
   'pou-summary': { reo: 'Whakarāpopoto', en: 'Summary'  },
-  risks:        { reo: 'Tūraru',    en: 'Risks'          },
+  risks:        { reo: 'Āwangawanga', en: 'Concerns & Actions' },
   referrals:    { reo: 'Ara',       en: 'Referrals'      },
-  synthesis:    { reo: 'Whakaaro',  en: 'Synthesis'      },
+  synthesis:    { reo: 'Whakaaro',  en: 'Structured review' },
   record:       { reo: 'Tohu',      en: 'Record'         },
 }
 
