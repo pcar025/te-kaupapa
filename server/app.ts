@@ -14,15 +14,19 @@ import {
   ActiveWorkflowError,
   IdempotencyKeyReuseError,
   StaleWorkflowError,
+  WorkflowValidationError,
   WorkflowNotFoundError,
   type WorkflowRepository,
 } from './workflows/repository.js'
 import { WorkflowTransitionError } from './workflows/domain.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
+  WORKFLOW_ACTION_STATUSES,
+  WORKFLOW_ACTION_TYPES,
   WORKFLOW_IMMEDIATE_CONCERNS,
   WORKFLOW_POU_CONCERNS,
   WORKFLOW_POU_IDS,
+  WORKFLOW_REFERRAL_STATUSES,
 } from '../shared/workflow.js'
 
 const transactionCookieName = 'te_kaupapa_oidc_transaction'
@@ -253,6 +257,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
     if (error instanceof StaleWorkflowError) return reply.code(409).send({ error: 'stale_workflow', currentVersion: error.currentVersion })
     if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
+    if (error instanceof WorkflowValidationError) return reply.code(400).send({ error: 'invalid_request' })
     if (error instanceof WorkflowNotFoundError) return reply.code(404).send({ error: 'not_found' })
     request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Workflow persistence unavailable')
     return reply.code(503).send({ error: 'persistence_unavailable' })
@@ -279,7 +284,38 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     referralSuggested: z.boolean(),
     supervisorReviewSuggested: z.boolean(),
   })
-  const workflowCommandSchema = z.discriminatedUnion('type', [setupCommandSchema, pouReviewCommandSchema])
+  const downstreamCommandSchema = z.object({
+    idempotencyKey: z.string().uuid(),
+    expectedVersion: z.number().int().positive(),
+  })
+  const actionInputSchema = z.object({
+    id: z.string().uuid(),
+    title: z.string().trim().min(1).max(300),
+    type: z.enum(WORKFLOW_ACTION_TYPES),
+    pouId: z.enum(WORKFLOW_POU_IDS).optional(),
+    dueDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    status: z.enum(WORKFLOW_ACTION_STATUSES).exclude(['withdrawn']),
+    notes: z.string().trim().max(4_000).optional(),
+  })
+  const referralInputSchema = z.object({
+    id: z.string().uuid(),
+    destinationCode: z.string().trim().min(1).max(100).optional(),
+    destinationName: z.string().trim().min(1).max(300),
+    reason: z.string().trim().min(1).max(4_000),
+    pouId: z.enum(WORKFLOW_POU_IDS).optional(),
+    handoverNote: z.string().trim().max(4_000).optional(),
+    notes: z.string().trim().max(4_000).optional(),
+    status: z.enum(WORKFLOW_REFERRAL_STATUSES).exclude(['withdrawn']),
+  })
+  const workflowCommandSchema = z.discriminatedUnion('type', [
+    setupCommandSchema,
+    pouReviewCommandSchema,
+    downstreamCommandSchema.extend({ type: z.literal('pou-summary-confirmed') }),
+    downstreamCommandSchema.extend({ type: z.literal('action-plan-confirmed'), actions: z.array(actionInputSchema).max(100) }),
+    downstreamCommandSchema.extend({ type: z.literal('referral-plan-confirmed'), referrals: z.array(referralInputSchema).max(100) }),
+    downstreamCommandSchema.extend({ type: z.literal('structured-review-confirmed') }),
+    downstreamCommandSchema.extend({ type: z.literal('workflow-completed') }),
+  ])
 
   app.post('/api/workflows', async (request, reply) => {
     if (!requireTrustedOrigin(request, reply)) return reply
@@ -300,10 +336,12 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
     if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
-    const parsed = z.object({ status: z.literal('resumable').optional() }).safeParse(request.query)
+    const parsed = z.object({ status: z.enum(['resumable', 'completed']).optional() }).safeParse(request.query)
     if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' })
     try {
-      return { workflows: await workflowRepository.listResumable(user) }
+      return { workflows: parsed.data.status === 'completed'
+        ? await workflowRepository.listCompleted(user)
+        : await workflowRepository.listResumable(user) }
     } catch (error) {
       return workflowFailure(error, request, reply)
     }

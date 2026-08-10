@@ -15,9 +15,17 @@ import {
   type WorkflowView,
 } from './workflows/repository.js'
 import type { CreateWorkflowInput, SubmitWorkflowCommandInput } from './workflows/repository.js'
-import { checkpointAfterPouReview, checkpointAfterSetup } from './workflows/domain.js'
+import {
+  checkpointAfterActionPlan,
+  checkpointAfterCompletion,
+  checkpointAfterPouReview,
+  checkpointAfterPouSummary,
+  checkpointAfterReferralPlan,
+  checkpointAfterSetup,
+  checkpointAfterStructuredReview,
+} from './workflows/domain.js'
 import { WORKFLOW_POU_IDS, type WorkflowCommand } from '../shared/workflow.js'
-import type { WorkflowListItem } from './workflows/repository.js'
+import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -74,14 +82,14 @@ class FakeOidcProvider implements OidcProvider {
 }
 
 class MemoryWorkflowRepository implements WorkflowRepository {
-  private readonly workflows = new Map<string, WorkflowView & { ownerId: string }>()
+  private readonly workflows = new Map<string, Omit<WorkflowView, 'structuredReview'> & { ownerId: string }>()
   private readonly operations = new Map<string, { fingerprint: string; result: WorkflowMutationResult }>()
 
   async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
     const key = `${input.actor.id}:${input.idempotencyKey}`
     const existing = this.operations.get(key)
     if (existing) return { ...existing.result, replayed: true }
-    const workflow: WorkflowView & { ownerId: string } = {
+    const workflow: Omit<WorkflowView, 'structuredReview'> & { ownerId: string } = {
       id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb',
       reference: 'TK-7K4M2P9Q',
       status: 'draft',
@@ -99,6 +107,9 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         supervisorReviewSuggested: false,
         confirmedAt: null,
       })),
+      actions: [],
+      referrals: [],
+      completedAt: null,
       createdAt: new Date('2026-08-10T00:00:00.000Z'),
       updatedAt: new Date('2026-08-10T00:00:00.000Z'),
       ownerId: input.actor.id,
@@ -129,6 +140,18 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       }))
   }
 
+  async listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]> {
+    return [...this.workflows.values()]
+      .filter((workflow) => workflow.ownerId === actor.id && workflow.status === 'completed' && workflow.completedAt)
+      .map((workflow) => ({
+        id: workflow.id,
+        reference: workflow.reference,
+        whanauReference: workflow.setup?.whanauReference ?? null,
+        completedAt: workflow.completedAt!,
+        updatedAt: workflow.updatedAt,
+      }))
+  }
+
   async submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult> {
     const workflow = this.workflows.get(input.workflowSessionId)
     if (!workflow || workflow.ownerId !== input.actor.id) throw new WorkflowNotFoundError()
@@ -153,8 +176,8 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         additionalNotes: input.command.additionalNotes || null,
         immediateConcern: input.command.immediateConcern,
       }
-    } else {
-      const command = input.command as Extract<WorkflowCommand, { type: 'pou-review-confirmed' }>
+    } else if (input.command.type === 'pou-review-confirmed') {
+      const command = input.command
       const checkpoint = workflow.checkpoints.find((item) => item.pouId === command.pouId)
       if (!checkpoint) throw new WorkflowNotFoundError()
       const next = checkpointAfterPouReview(
@@ -170,6 +193,51 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       checkpoint.confirmedAt = new Date('2026-08-10T00:00:00.000Z')
       workflow.currentStage = next.stage
       workflow.currentPouId = next.currentPouId
+    } else if (input.command.type === 'pou-summary-confirmed') {
+      const next = checkpointAfterPouSummary({ stage: workflow.currentStage, currentPouId: workflow.currentPouId })
+      workflow.currentStage = next.stage
+      workflow.currentPouId = next.currentPouId
+    } else if (input.command.type === 'action-plan-confirmed') {
+      workflow.actions = input.command.actions.map((action) => ({
+        ...action,
+        pouId: action.pouId ?? null,
+        dueDate: action.dueDate ?? null,
+        notes: action.notes ?? null,
+        withdrawnAt: null,
+        createdAt: new Date('2026-08-10T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-10T00:00:00.000Z'),
+      }))
+      if (workflow.currentStage === 'action-planning') {
+        const next = checkpointAfterActionPlan({ stage: workflow.currentStage, currentPouId: workflow.currentPouId })
+        workflow.currentStage = next.stage
+        workflow.currentPouId = next.currentPouId
+      }
+    } else if (input.command.type === 'referral-plan-confirmed') {
+      workflow.referrals = input.command.referrals.map((referral) => ({
+        ...referral,
+        pouId: referral.pouId ?? null,
+        destinationCode: referral.destinationCode ?? null,
+        handoverNote: referral.handoverNote ?? null,
+        notes: referral.notes ?? null,
+        withdrawnAt: null,
+        createdAt: new Date('2026-08-10T00:00:00.000Z'),
+        updatedAt: new Date('2026-08-10T00:00:00.000Z'),
+      }))
+      if (workflow.currentStage === 'referral-planning') {
+        const next = checkpointAfterReferralPlan({ stage: workflow.currentStage, currentPouId: workflow.currentPouId })
+        workflow.currentStage = next.stage
+        workflow.currentPouId = next.currentPouId
+      }
+    } else if (input.command.type === 'structured-review-confirmed') {
+      const next = checkpointAfterStructuredReview({ stage: workflow.currentStage, currentPouId: workflow.currentPouId })
+      workflow.currentStage = next.stage
+      workflow.currentPouId = next.currentPouId
+    } else {
+      const next = checkpointAfterCompletion({ stage: workflow.currentStage, currentPouId: workflow.currentPouId })
+      workflow.status = 'completed'
+      workflow.currentStage = next.stage
+      workflow.currentPouId = next.currentPouId
+      workflow.completedAt = new Date('2026-08-10T00:00:00.000Z')
     }
     workflow.version += 1
     const result = { workflow: this.publicWorkflow(workflow), interactionId: 'c784a337-05de-4d22-838f-0338b2e45027', replayed: false }
@@ -177,8 +245,20 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     return result
   }
 
-  private publicWorkflow({ ownerId: _ownerId, ...workflow }: WorkflowView & { ownerId: string }): WorkflowView {
-    return structuredClone(workflow)
+  private publicWorkflow({ ownerId: _ownerId, ...workflow }: Omit<WorkflowView, 'structuredReview'> & { ownerId: string }): WorkflowView {
+    return structuredClone({
+      ...workflow,
+      structuredReview: {
+        reference: workflow.reference,
+        setup: workflow.setup,
+        checkpoints: workflow.checkpoints,
+        actions: workflow.actions,
+        referrals: workflow.referrals,
+        createdAt: workflow.createdAt,
+        updatedAt: workflow.updatedAt,
+        completedAt: workflow.completedAt,
+      },
+    })
   }
 }
 

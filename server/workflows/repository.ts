@@ -5,16 +5,31 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import {
   WORKFLOW_POU_IDS,
+  type WorkflowActionInput,
+  type WorkflowActionStatus,
+  type WorkflowActionType,
   type WorkflowCommand,
   type WorkflowImmediateConcern,
+  type WorkflowInteractionType,
   type WorkflowPouConcern,
   type WorkflowPouId,
+  type WorkflowReferralInput,
+  type WorkflowReferralStatus,
   type WorkflowStage,
   type WorkflowStatus,
 } from '../../shared/workflow.js'
 import type { AuthenticatedUser } from '../domain/auth.js'
 import * as schema from '../db/schema.js'
-import { checkpointAfterPouReview, checkpointAfterSetup, WorkflowTransitionError } from './domain.js'
+import {
+  checkpointAfterActionPlan,
+  checkpointAfterCompletion,
+  checkpointAfterPouReview,
+  checkpointAfterPouSummary,
+  checkpointAfterReferralPlan,
+  checkpointAfterSetup,
+  checkpointAfterStructuredReview,
+  WorkflowTransitionError,
+} from './domain.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -27,6 +42,44 @@ export interface WorkflowCheckpointView {
   referralSuggested: boolean
   supervisorReviewSuggested: boolean
   confirmedAt: Date | null
+}
+
+export interface WorkflowActionView {
+  id: string
+  pouId: WorkflowPouId | null
+  title: string
+  type: WorkflowActionType
+  dueDate: string | null
+  status: WorkflowActionStatus
+  notes: string | null
+  withdrawnAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface WorkflowReferralView {
+  id: string
+  pouId: WorkflowPouId | null
+  destinationCode: string | null
+  destinationName: string
+  reason: string
+  handoverNote: string | null
+  notes: string | null
+  status: WorkflowReferralStatus
+  withdrawnAt: Date | null
+  createdAt: Date
+  updatedAt: Date
+}
+
+export interface WorkflowStructuredReview {
+  reference: string
+  setup: WorkflowView['setup']
+  checkpoints: WorkflowCheckpointView[]
+  actions: WorkflowActionView[]
+  referrals: WorkflowReferralView[]
+  createdAt: Date
+  updatedAt: Date
+  completedAt: Date | null
 }
 
 export interface WorkflowView {
@@ -44,6 +97,10 @@ export interface WorkflowView {
     immediateConcern: WorkflowImmediateConcern
   } | null
   checkpoints: WorkflowCheckpointView[]
+  actions: WorkflowActionView[]
+  referrals: WorkflowReferralView[]
+  structuredReview: WorkflowStructuredReview
+  completedAt: Date | null
   createdAt: Date
   updatedAt: Date
 }
@@ -56,6 +113,14 @@ export interface WorkflowListItem {
   currentStage: WorkflowStage
   currentPouId: WorkflowPouId | null
   version: number
+  updatedAt: Date
+}
+
+export interface CompletedWorkflowListItem {
+  id: string
+  reference: string
+  whanauReference: string | null
+  completedAt: Date
   updatedAt: Date
 }
 
@@ -80,6 +145,7 @@ export interface WorkflowRepository {
   createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult>
   findById(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowView | null>
   listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]>
+  listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]>
   submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult>
 }
 
@@ -108,6 +174,13 @@ export class WorkflowNotFoundError extends Error {
   constructor() {
     super('The workflow could not be found.')
     this.name = 'WorkflowNotFoundError'
+  }
+}
+
+export class WorkflowValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'WorkflowValidationError'
   }
 }
 
@@ -241,6 +314,27 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     }))
   }
 
+  async listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]> {
+    const rows = await this.db
+      .select({
+        id: schema.workflowSessions.id,
+        reference: schema.workflowSessions.reference,
+        whanauReference: schema.workflowSessions.whanauReference,
+        completedAt: schema.workflowSessions.completedAt,
+        updatedAt: schema.workflowSessions.updatedAt,
+      })
+      .from(schema.workflowSessions)
+      .where(and(
+        eq(schema.workflowSessions.organisationId, actor.organisation.id),
+        eq(schema.workflowSessions.kaimahiUserId, actor.id),
+        eq(schema.workflowSessions.status, 'completed'),
+      ))
+      .orderBy(desc(schema.workflowSessions.completedAt))
+      .limit(50)
+
+    return rows.flatMap((row) => row.completedAt ? [{ ...row, completedAt: row.completedAt }] : [])
+  }
+
   async submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult> {
     const fingerprint = workflowRequestFingerprint({ workflowSessionId: input.workflowSessionId, command: input.command })
     const replay = await this.findReplay(input.actor, input.command.idempotencyKey, fingerprint)
@@ -270,7 +364,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
 
         const timestamp = this.now()
         const resultingVersion = workflow.version + 1
-        let interactionType: 'setup_confirmed' | 'pou_review_confirmed'
+        let interactionType: WorkflowInteractionType
         let interactionPouId: WorkflowPouId | undefined
 
         if (input.command.type === 'setup-confirmed') {
@@ -294,7 +388,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             updatedAt: timestamp,
           }).where(eq(schema.workflowSessions.id, workflow.id))
           interactionType = 'setup_confirmed'
-        } else {
+        } else if (input.command.type === 'pou-review-confirmed') {
           if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
           const [checkpoint] = await tx
             .select()
@@ -330,6 +424,55 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           }).where(eq(schema.workflowSessions.id, workflow.id))
           interactionType = 'pou_review_confirmed'
           interactionPouId = input.command.pouId
+        } else {
+          if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
+          const checkpoint = {
+            stage: workflow.currentStage as WorkflowStage,
+            currentPouId: workflow.currentPouId as WorkflowPouId | null,
+          }
+
+          if (input.command.type === 'pou-summary-confirmed') {
+            const checkpoints = await tx
+              .select({ progress: schema.workflowPouCheckpoints.progress })
+              .from(schema.workflowPouCheckpoints)
+              .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
+            if (checkpoints.length !== WORKFLOW_POU_IDS.length || checkpoints.some(({ progress }) => progress !== 'confirmed')) {
+              throw new WorkflowTransitionError('All seven Pou must be confirmed before the summary can be acknowledged.')
+            }
+            const next = checkpointAfterPouSummary(checkpoint)
+            await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
+            interactionType = 'pou_summary_confirmed'
+          } else if (input.command.type === 'action-plan-confirmed') {
+            const next = workflow.currentStage === 'action-planning'
+              ? checkpointAfterActionPlan(checkpoint)
+              : this.assertActionRevisionStage(checkpoint)
+            await this.replaceActions(tx, workflow.id, input.actor, input.command.actions, timestamp)
+            await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
+            interactionType = 'action_plan_confirmed'
+          } else if (input.command.type === 'referral-plan-confirmed') {
+            const next = workflow.currentStage === 'referral-planning'
+              ? checkpointAfterReferralPlan(checkpoint)
+              : this.assertReferralRevisionStage(checkpoint)
+            await this.replaceReferrals(tx, workflow.id, input.actor, input.command.referrals, timestamp)
+            await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
+            interactionType = 'referral_plan_confirmed'
+          } else if (input.command.type === 'structured-review-confirmed') {
+            const next = checkpointAfterStructuredReview(checkpoint)
+            await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
+            interactionType = 'structured_review_confirmed'
+          } else {
+            const next = checkpointAfterCompletion(checkpoint)
+            await tx.update(schema.workflowSessions).set({
+              status: 'completed',
+              currentStage: next.stage,
+              currentPouId: next.currentPouId,
+              completedAt: timestamp,
+              completedByUserId: input.actor.id,
+              version: resultingVersion,
+              updatedAt: timestamp,
+            }).where(eq(schema.workflowSessions.id, workflow.id))
+            interactionType = 'workflow_completed'
+          }
         }
 
         const [interaction] = await tx.insert(schema.workflowInteractions).values({
@@ -357,6 +500,147 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const repeated = await this.findReplay(input.actor, input.command.idempotencyKey, fingerprint)
       if (repeated) return repeated
       throw error
+    }
+  }
+
+  private assertActionRevisionStage(checkpoint: { stage: WorkflowStage; currentPouId: WorkflowPouId | null }) {
+    if (!['referral-planning', 'structured-review', 'record-review'].includes(checkpoint.stage)) throw new WorkflowTransitionError()
+    return checkpoint
+  }
+
+  private assertReferralRevisionStage(checkpoint: { stage: WorkflowStage; currentPouId: WorkflowPouId | null }) {
+    if (!['structured-review', 'record-review'].includes(checkpoint.stage)) throw new WorkflowTransitionError()
+    return checkpoint
+  }
+
+  private async updateWorkflowCheckpoint(
+    executor: WorkflowDatabase,
+    workflowId: string,
+    checkpoint: { stage: WorkflowStage; currentPouId: WorkflowPouId | null },
+    version: number,
+    timestamp: Date,
+  ) {
+    await executor.update(schema.workflowSessions).set({
+      currentStage: checkpoint.stage,
+      currentPouId: checkpoint.currentPouId,
+      version,
+      updatedAt: timestamp,
+    }).where(eq(schema.workflowSessions.id, workflowId))
+  }
+
+  private assertUniqueIds(items: Array<{ id: string }>, kind: string) {
+    if (new Set(items.map(({ id }) => id)).size !== items.length) {
+      throw new WorkflowValidationError(`${kind} identifiers must be unique.`)
+    }
+  }
+
+  private async replaceActions(
+    executor: WorkflowDatabase,
+    workflowId: string,
+    actor: AuthenticatedUser,
+    actions: WorkflowActionInput[],
+    timestamp: Date,
+  ) {
+    this.assertUniqueIds(actions, 'Action')
+    const existing = await executor
+      .select()
+      .from(schema.workflowActions)
+      .where(eq(schema.workflowActions.workflowSessionId, workflowId))
+    const existingById = new Map(existing.map((action) => [action.id, action]))
+    const requestedIds = new Set(actions.map(({ id }) => id))
+
+    for (const action of actions) {
+      const values = {
+        pouId: action.pouId ?? null,
+        title: action.title.trim(),
+        type: action.type,
+        dueDate: action.dueDate ?? null,
+        status: action.status,
+        notes: action.notes?.trim() || null,
+        withdrawnAt: null,
+        updatedAt: timestamp,
+      }
+      if (existingById.has(action.id)) {
+        await executor.update(schema.workflowActions).set(values).where(and(
+          eq(schema.workflowActions.id, action.id),
+          eq(schema.workflowActions.workflowSessionId, workflowId),
+        ))
+      } else {
+        await executor.insert(schema.workflowActions).values({
+          id: action.id,
+          workflowSessionId: workflowId,
+          organisationId: actor.organisation.id,
+          createdByUserId: actor.id,
+          ownerUserId: actor.id,
+          ...values,
+          createdAt: timestamp,
+        })
+      }
+    }
+
+    for (const action of existing) {
+      if (!requestedIds.has(action.id) && action.status !== 'withdrawn') {
+        await executor.update(schema.workflowActions).set({
+          status: 'withdrawn',
+          withdrawnAt: timestamp,
+          updatedAt: timestamp,
+        }).where(eq(schema.workflowActions.id, action.id))
+      }
+    }
+  }
+
+  private async replaceReferrals(
+    executor: WorkflowDatabase,
+    workflowId: string,
+    actor: AuthenticatedUser,
+    referrals: WorkflowReferralInput[],
+    timestamp: Date,
+  ) {
+    this.assertUniqueIds(referrals, 'Referral')
+    const existing = await executor
+      .select()
+      .from(schema.workflowReferrals)
+      .where(eq(schema.workflowReferrals.workflowSessionId, workflowId))
+    const existingById = new Map(existing.map((referral) => [referral.id, referral]))
+    const requestedIds = new Set(referrals.map(({ id }) => id))
+
+    for (const referral of referrals) {
+      const values = {
+        pouId: referral.pouId ?? null,
+        destinationCode: referral.destinationCode?.trim() || null,
+        destinationName: referral.destinationName.trim(),
+        reason: referral.reason.trim(),
+        handoverNote: referral.handoverNote?.trim() || null,
+        notes: referral.notes?.trim() || null,
+        status: referral.status,
+        withdrawnAt: null,
+        updatedAt: timestamp,
+      }
+      if (existingById.has(referral.id)) {
+        await executor.update(schema.workflowReferrals).set(values).where(and(
+          eq(schema.workflowReferrals.id, referral.id),
+          eq(schema.workflowReferrals.workflowSessionId, workflowId),
+        ))
+      } else {
+        await executor.insert(schema.workflowReferrals).values({
+          id: referral.id,
+          workflowSessionId: workflowId,
+          organisationId: actor.organisation.id,
+          createdByUserId: actor.id,
+          ...values,
+          createdAt: timestamp,
+        })
+      }
+    }
+
+    for (const referral of existing) {
+      if (!requestedIds.has(referral.id) && referral.status !== 'withdrawn') {
+        await executor.update(schema.workflowReferrals).set({
+          status: 'withdrawn',
+          withdrawnAt: timestamp,
+          updatedAt: timestamp,
+        }).where(eq(schema.workflowReferrals.id, referral.id))
+      }
     }
   }
 
@@ -407,6 +691,19 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
       .orderBy(schema.workflowPouCheckpoints.ordinal)
 
+    const [actions, referrals] = await Promise.all([
+      executor
+        .select()
+        .from(schema.workflowActions)
+        .where(eq(schema.workflowActions.workflowSessionId, workflow.id))
+        .orderBy(schema.workflowActions.createdAt),
+      executor
+        .select()
+        .from(schema.workflowReferrals)
+        .where(eq(schema.workflowReferrals.workflowSessionId, workflow.id))
+        .orderBy(schema.workflowReferrals.createdAt),
+    ])
+
     const setup = workflow.whanauReference && workflow.engagementType && workflow.sessionFocus && workflow.immediateConcern
       ? {
           whanauReference: workflow.whanauReference,
@@ -417,7 +714,43 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         }
       : null
 
-    return {
+    const checkpointViews = checkpoints.map((checkpoint) => ({
+      pouId: checkpoint.pouId as WorkflowPouId,
+      ordinal: checkpoint.ordinal,
+      progress: checkpoint.progress,
+      userSelectedConcern: checkpoint.userSelectedConcern as WorkflowPouConcern | null,
+      note: checkpoint.note,
+      referralSuggested: checkpoint.referralSuggested,
+      supervisorReviewSuggested: checkpoint.supervisorReviewSuggested,
+      confirmedAt: checkpoint.confirmedAt,
+    }))
+    const actionViews = actions.map((action) => ({
+      id: action.id,
+      pouId: action.pouId as WorkflowPouId | null,
+      title: action.title,
+      type: action.type as WorkflowActionType,
+      dueDate: action.dueDate,
+      status: action.status as WorkflowActionStatus,
+      notes: action.notes,
+      withdrawnAt: action.withdrawnAt,
+      createdAt: action.createdAt,
+      updatedAt: action.updatedAt,
+    }))
+    const referralViews = referrals.map((referral) => ({
+      id: referral.id,
+      pouId: referral.pouId as WorkflowPouId | null,
+      destinationCode: referral.destinationCode,
+      destinationName: referral.destinationName,
+      reason: referral.reason,
+      handoverNote: referral.handoverNote,
+      notes: referral.notes,
+      status: referral.status as WorkflowReferralStatus,
+      withdrawnAt: referral.withdrawnAt,
+      createdAt: referral.createdAt,
+      updatedAt: referral.updatedAt,
+    }))
+
+    const view = {
       id: workflow.id,
       reference: workflow.reference,
       status: workflow.status as WorkflowStatus,
@@ -425,18 +758,25 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       currentPouId: workflow.currentPouId as WorkflowPouId | null,
       version: workflow.version,
       setup,
-      checkpoints: checkpoints.map((checkpoint) => ({
-        pouId: checkpoint.pouId as WorkflowPouId,
-        ordinal: checkpoint.ordinal,
-        progress: checkpoint.progress,
-        userSelectedConcern: checkpoint.userSelectedConcern as WorkflowPouConcern | null,
-        note: checkpoint.note,
-        referralSuggested: checkpoint.referralSuggested,
-        supervisorReviewSuggested: checkpoint.supervisorReviewSuggested,
-        confirmedAt: checkpoint.confirmedAt,
-      })),
+      checkpoints: checkpointViews,
+      actions: actionViews,
+      referrals: referralViews,
+      completedAt: workflow.completedAt,
       createdAt: workflow.createdAt,
       updatedAt: workflow.updatedAt,
+    }
+    return {
+      ...view,
+      structuredReview: {
+        reference: view.reference,
+        setup: view.setup,
+        checkpoints: view.checkpoints,
+        actions: view.actions.filter(({ status }) => status !== 'withdrawn'),
+        referrals: view.referrals.filter(({ status }) => status !== 'withdrawn'),
+        createdAt: view.createdAt,
+        updatedAt: view.updatedAt,
+        completedAt: view.completedAt,
+      },
     }
   }
 

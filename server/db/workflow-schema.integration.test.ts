@@ -4,7 +4,15 @@ import { count, eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 
 import { WORKFLOW_POU_IDS } from '../../shared/workflow.js'
-import { appUsers, organisations, workflowInteractions, workflowPouCheckpoints, workflowSessions } from './schema.js'
+import {
+  appUsers,
+  organisations,
+  workflowActions,
+  workflowInteractions,
+  workflowPouCheckpoints,
+  workflowReferrals,
+  workflowSessions,
+} from './schema.js'
 import { hasTestDatabaseUrl, withMigratedTestDatabase } from './test-harness.js'
 
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow schema integration', () => {
@@ -37,6 +45,20 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow schema integration',
         .where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
       expect(checkpointCount[0]?.value).toBe(7)
 
+      await connection.db.insert(workflowActions).values({
+        id: randomUUID(), workflowSessionId: workflowId, organisationId, pouId: 'whakapapa',
+        title: 'Kaimahi-confirmed follow-up', type: 'follow-up', status: 'open', createdByUserId: userId, ownerUserId: userId,
+      })
+      await connection.db.insert(workflowReferrals).values({
+        id: randomUUID(), workflowSessionId: workflowId, organisationId, pouId: 'manaakitanga',
+        destinationName: 'A manually named destination', reason: 'Manual referral reason', status: 'draft', createdByUserId: userId,
+      })
+
+      await expect(connection.db.insert(workflowActions).values({
+        id: randomUUID(), workflowSessionId: workflowId, organisationId,
+        title: 'An invalid ownership row', type: 'other', status: 'open', createdByUserId: userId, ownerUserId: randomUUID(),
+      })).rejects.toThrow()
+
       await expect(connection.db.insert(workflowSessions).values({
         id: randomUUID(),
         organisationId,
@@ -49,6 +71,8 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow schema integration',
       })).rejects.toThrow()
     }, async (connection) => {
       await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
+      await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, workflowId))
+      await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, workflowId))
       await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
       await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))

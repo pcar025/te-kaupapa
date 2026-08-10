@@ -40,3 +40,32 @@ export function checkpointAfterPouReview(
     ? { stage: 'pou-convo', currentPouId: nextPouId }
     : { stage: 'pou-summary', currentPouId: null }
 }
+
+function downstreamCheckpoint(
+  checkpoint: WorkflowCheckpoint,
+  expectedStage: WorkflowStage,
+  nextStage: WorkflowStage,
+): WorkflowCheckpoint {
+  if (checkpoint.stage !== expectedStage || checkpoint.currentPouId !== null) throw new WorkflowTransitionError()
+  return { stage: nextStage, currentPouId: null }
+}
+
+export function checkpointAfterPouSummary(checkpoint: WorkflowCheckpoint): WorkflowCheckpoint {
+  return downstreamCheckpoint(checkpoint, 'pou-summary', 'action-planning')
+}
+
+export function checkpointAfterActionPlan(checkpoint: WorkflowCheckpoint): WorkflowCheckpoint {
+  return downstreamCheckpoint(checkpoint, 'action-planning', 'referral-planning')
+}
+
+export function checkpointAfterReferralPlan(checkpoint: WorkflowCheckpoint): WorkflowCheckpoint {
+  return downstreamCheckpoint(checkpoint, 'referral-planning', 'structured-review')
+}
+
+export function checkpointAfterStructuredReview(checkpoint: WorkflowCheckpoint): WorkflowCheckpoint {
+  return downstreamCheckpoint(checkpoint, 'structured-review', 'record-review')
+}
+
+export function checkpointAfterCompletion(checkpoint: WorkflowCheckpoint): WorkflowCheckpoint {
+  return downstreamCheckpoint(checkpoint, 'record-review', 'complete')
+}

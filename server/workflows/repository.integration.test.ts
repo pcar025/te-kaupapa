@@ -4,9 +4,23 @@ import { eq } from 'drizzle-orm'
 import { describe, expect, it } from 'vitest'
 
 import type { AuthenticatedUser } from '../domain/auth.js'
-import { appUsers, organisations, workflowInteractions, workflowPouCheckpoints, workflowSessions } from '../db/schema.js'
+import {
+  appUsers,
+  organisations,
+  workflowActions,
+  workflowInteractions,
+  workflowPouCheckpoints,
+  workflowReferrals,
+  workflowSessions,
+} from '../db/schema.js'
 import { hasTestDatabaseUrl, withMigratedTestDatabase } from '../db/test-harness.js'
-import { ActiveWorkflowError, IdempotencyKeyReuseError, PostgresWorkflowRepository, StaleWorkflowError } from './repository.js'
+import {
+  ActiveWorkflowError,
+  IdempotencyKeyReuseError,
+  PostgresWorkflowRepository,
+  StaleWorkflowError,
+} from './repository.js'
+import { WorkflowTransitionError } from './domain.js'
 
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integration', () => {
   it('creates exactly one resumable workflow and preserves retry and stale-state guarantees', async () => {
@@ -148,6 +162,8 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
     }, async (connection) => {
       if (workflowId) {
         await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
+        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, workflowId))
+        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, workflowId))
         await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
         await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))
       }
@@ -155,6 +171,136 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
       await connection.db.delete(appUsers).where(eq(appUsers.id, foreignUserId))
       await connection.db.delete(organisations).where(eq(organisations.id, foreignOrganisationId))
+    })
+  })
+
+  it('persists the complete manual downstream plan, preserves withdrawals, and freezes it on completion', async () => {
+    const organisationId = randomUUID()
+    const userId = randomUUID()
+    const actor: AuthenticatedUser = {
+      id: userId,
+      displayName: 'Workflow completion Kaimahi',
+      status: 'active',
+      organisation: { id: organisationId, slug: `complete-${organisationId}`, name: 'Completion test organisation' },
+      roles: ['KAIMAHI'],
+    }
+    let workflowId: string | undefined
+    let nextWorkflowId: string | undefined
+    await withMigratedTestDatabase(async (connection) => {
+      await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
+      await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
+      const repository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-10T00:00:00.000Z'))
+      const created = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
+      workflowId = created.workflow.id
+      let version = created.workflow.version
+
+      const setup = await repository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: version,
+          whanauReference: 'TW-41', engagementType: 'hui', sessionFocus: 'Kaimahi-confirmed workflow completion', immediateConcern: 'none',
+        },
+      })
+      version = setup.workflow.version
+      for (const pouId of ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
+        const result = await repository.submitCommand({
+          actor,
+          workflowSessionId: workflowId,
+          command: {
+            type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, pouId,
+            userSelectedConcern: pouId === 'manaakitanga' ? 'action' : 'low',
+            note: `${pouId} confirmed by the Kaimahi`, referralSuggested: pouId === 'manaakitanga', supervisorReviewSuggested: false,
+          },
+        })
+        version = result.workflow.version
+      }
+
+      const summary = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'pou-summary-confirmed', idempotencyKey: randomUUID(), expectedVersion: version },
+      })
+      expect(summary.workflow.currentStage).toBe('action-planning')
+      version = summary.workflow.version
+
+      const keptActionId = randomUUID()
+      const withdrawnActionId = randomUUID()
+      const actionPlan = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: {
+          type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: version,
+          actions: [
+            { id: keptActionId, title: 'Arrange a follow-up kōrero', type: 'follow-up', pouId: 'manaakitanga', dueDate: '2026-08-20', status: 'open', notes: 'Manual Kaimahi action.' },
+            { id: withdrawnActionId, title: 'Offer practical support', type: 'support', status: 'completed' },
+          ],
+        },
+      })
+      expect(actionPlan.workflow).toMatchObject({ currentStage: 'referral-planning', actions: [{ id: keptActionId }, { id: withdrawnActionId }] })
+      version = actionPlan.workflow.version
+
+      const revisedActions = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: {
+          type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: version,
+          actions: [{ id: keptActionId, title: 'Arrange a follow-up kōrero', type: 'follow-up', pouId: 'manaakitanga', dueDate: '2026-08-20', status: 'completed' }],
+        },
+      })
+      expect(revisedActions.workflow).toMatchObject({ currentStage: 'referral-planning', actions: [
+        { id: keptActionId, status: 'completed' }, { id: withdrawnActionId, status: 'withdrawn' },
+      ] })
+      version = revisedActions.workflow.version
+
+      const referralId = randomUUID()
+      const referrals = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: {
+          type: 'referral-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: version,
+          referrals: [{ id: referralId, destinationCode: 'local-support', destinationName: 'Local support service', reason: 'Kaimahi-requested support pathway', pouId: 'manaakitanga', status: 'prepared' }],
+        },
+      })
+      expect(referrals.workflow).toMatchObject({ currentStage: 'structured-review', referrals: [{ id: referralId, status: 'prepared' }] })
+      version = referrals.workflow.version
+
+      const review = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'structured-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version },
+      })
+      version = review.workflow.version
+      expect(review.workflow.currentStage).toBe('record-review')
+
+      const completionKey = randomUUID()
+      const completed = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'workflow-completed', idempotencyKey: completionKey, expectedVersion: version },
+      })
+      expect(completed.workflow).toMatchObject({ status: 'completed', currentStage: 'complete', completedAt: new Date('2026-08-10T00:00:00.000Z') })
+      expect(completed.workflow.structuredReview).toMatchObject({ reference: completed.workflow.reference, actions: [{ id: keptActionId }], referrals: [{ id: referralId }] })
+      expect(await repository.listResumable(actor)).toEqual([])
+      expect(await repository.listCompleted(actor)).toMatchObject([{ id: workflowId, reference: completed.workflow.reference }])
+
+      const replayedCompletion = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'workflow-completed', idempotencyKey: completionKey, expectedVersion: version },
+      })
+      expect(replayedCompletion.replayed).toBe(true)
+      await expect(repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: completed.workflow.version, actions: [] },
+      })).rejects.toThrow(WorkflowTransitionError)
+
+      const nextWorkflow = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
+      nextWorkflowId = nextWorkflow.workflow.id
+      expect(nextWorkflow).toMatchObject({ workflow: { status: 'draft' } })
+    }, async (connection) => {
+      for (const id of [workflowId, nextWorkflowId].filter((value): value is string => Boolean(value))) {
+        await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
+        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
+        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
+        await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
+        await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
+      }
+      await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
+      await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
     })
   })
 })
