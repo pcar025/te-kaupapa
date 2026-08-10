@@ -9,17 +9,55 @@ configure({ asyncUtilTimeout: 5000 })
 afterEach(() => cleanup())
 
 beforeEach(() => {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: async () => ({
-      profile: {
-        id: 'test-user',
-        displayName: 'Test user',
-        organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' },
-        roles: ['KAIMAHI', 'SUPERVISOR'],
-      },
-    }),
+  const workflow = {
+    id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb',
+    reference: 'TK-7K4M2P9Q',
+    status: 'draft',
+    currentStage: 'setup',
+    currentPouId: null,
+    version: 1,
+    setup: null,
+    checkpoints: [],
+    createdAt: '2026-08-10T00:00:00.000Z',
+    updatedAt: '2026-08-10T00:00:00.000Z',
+  }
+  const setupConfirmedWorkflow = {
+    ...workflow,
+    status: 'in_progress',
+    currentStage: 'pou-overview',
+    currentPouId: 'whakapapa',
+    version: 2,
+    setup: {
+      whanauReference: 'TW-04',
+      engagementType: 'home-visit',
+      sessionFocus: 'Whānau support discussion',
+      additionalNotes: null,
+      immediateConcern: 'none',
+    },
+  }
+  vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (url.startsWith('/api/workflows?')) {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: [] }) })
+    }
+    if (url === '/api/workflows' && init?.method === 'POST') {
+      return Promise.resolve({ ok: true, status: 201, json: async () => ({ workflow, acknowledgement: { replayed: false } }) })
+    }
+    if (url.includes('/api/workflows/') && url.endsWith('/interactions') && init?.method === 'POST') {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: setupConfirmedWorkflow, acknowledgement: { replayed: false } }) })
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        profile: {
+          id: 'test-user',
+          displayName: 'Test user',
+          organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' },
+          roles: ['KAIMAHI', 'SUPERVISOR'],
+        },
+      }),
+    })
   }))
 })
 
@@ -44,6 +82,25 @@ describe('approved application smoke paths', () => {
 
     expect(await screen.findByText('Tomokia — Setup Reflection')).toBeTruthy()
     expect(screen.getByPlaceholderText('e.g. TW-04')).toBeTruthy()
+  })
+
+  it('does not advance setup until its workflow confirmation is acknowledged', async () => {
+    const user = userEvent.setup()
+    render(<App />)
+
+    await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' })
+    await user.click(screen.getByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
+    await user.click(screen.getByRole('button', { name: /Begin a reflective session/i }))
+    await user.type(screen.getByPlaceholderText('e.g. TW-04'), 'tw-04')
+    await user.type(screen.getByPlaceholderText('What was the purpose or focus of this engagement?'), 'Whānau support discussion')
+    await user.click(screen.getByRole('button', { name: /No immediate concern/i }))
+    await user.click(screen.getByRole('button', { name: /Uru atu ki te whare/i }))
+
+    expect(await screen.findByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeTruthy()
+    expect(vi.mocked(fetch)).toHaveBeenCalledWith(
+      '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      expect.objectContaining({ method: 'POST' }),
+    )
   })
 
   it('preserves core Kaimahi tab navigation', async () => {
