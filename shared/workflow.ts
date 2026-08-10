@@ -26,6 +26,23 @@ export type WorkflowImmediateConcern = (typeof WORKFLOW_IMMEDIATE_CONCERNS)[numb
 export const WORKFLOW_POU_CONCERNS = ['low', 'watch', 'action', 'urgent'] as const
 export type WorkflowPouConcern = (typeof WORKFLOW_POU_CONCERNS)[number]
 
+export const SAFETY_BROAD_CLASSES = ['whanau_safety', 'practice_quality', 'practitioner_wellbeing'] as const
+export type SafetyBroadClass = (typeof SAFETY_BROAD_CLASSES)[number]
+
+export const SAFETY_OBSERVATION_CONTEXTS = ['setup', 'pou'] as const
+export type SafetyObservationContext = (typeof SAFETY_OBSERVATION_CONTEXTS)[number]
+
+export const SAFETY_OBSERVATION_CONCERN_LEVELS = ['unsure', 'low', 'watch', 'action', 'urgent'] as const
+export type SafetyObservationConcernLevel = (typeof SAFETY_OBSERVATION_CONCERN_LEVELS)[number]
+
+export interface SafetyObservationSnapshotInput {
+  assessmentContext: SafetyObservationContext
+  pouId?: WorkflowPouId
+  broadClass: SafetyBroadClass
+  concernLevel: SafetyObservationConcernLevel
+  contextNote?: string
+}
+
 export const WORKFLOW_STATUSES = ['draft', 'in_progress', 'completed', 'abandoned'] as const
 export type WorkflowStatus = (typeof WORKFLOW_STATUSES)[number]
 
@@ -60,6 +77,10 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'referral_plan_confirmed',
   'structured_review_confirmed',
   'workflow_completed',
+  'safety_observation_confirmed',
+  'safety_observation_corrected',
+  'safety_observation_retracted',
+  'supervisor_review_requested',
 ] as const
 export type WorkflowInteractionType = (typeof WORKFLOW_INTERACTION_TYPES)[number]
 
@@ -131,6 +152,38 @@ export type WorkflowCommand =
       type: 'workflow-completed'
       idempotencyKey: string
       expectedVersion: number
+    }
+  | {
+      type: 'safety-observation-confirmed'
+      observationId: string
+      idempotencyKey: string
+      expectedVersion: number
+      observation: SafetyObservationSnapshotInput
+    }
+  | {
+      type: 'safety-observation-corrected'
+      observationId: string
+      expectedObservationRevision: number
+      idempotencyKey: string
+      expectedVersion: number
+      replacement: SafetyObservationSnapshotInput
+      reason: string
+    }
+  | {
+      type: 'safety-observation-retracted'
+      observationId: string
+      expectedObservationRevision: number
+      idempotencyKey: string
+      expectedVersion: number
+      reason: string
+    }
+  | {
+      type: 'supervisor-review-requested'
+      requestId: string
+      idempotencyKey: string
+      expectedVersion: number
+      pouId?: WorkflowPouId
+      requestNote?: string
     }
 
 export interface WorkflowCheckpoint {

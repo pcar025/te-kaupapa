@@ -13,6 +13,8 @@ import type { AuthRepository } from './db/repository.js'
 import {
   ActiveWorkflowError,
   IdempotencyKeyReuseError,
+  SafetyObservationIdentifierReuseError,
+  StaleSafetyObservationError,
   StaleWorkflowError,
   WorkflowValidationError,
   WorkflowNotFoundError,
@@ -27,6 +29,8 @@ import {
   WORKFLOW_POU_CONCERNS,
   WORKFLOW_POU_IDS,
   WORKFLOW_REFERRAL_STATUSES,
+  SAFETY_BROAD_CLASSES,
+  SAFETY_OBSERVATION_CONCERN_LEVELS,
 } from '../shared/workflow.js'
 
 const transactionCookieName = 'te_kaupapa_oidc_transaction'
@@ -256,6 +260,8 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof ActiveWorkflowError) return reply.code(409).send({ error: 'active_workflow_exists' })
     if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
     if (error instanceof StaleWorkflowError) return reply.code(409).send({ error: 'stale_workflow', currentVersion: error.currentVersion })
+    if (error instanceof StaleSafetyObservationError) return reply.code(409).send({ error: 'stale_safety_observation', currentRevision: error.currentRevision })
+    if (error instanceof SafetyObservationIdentifierReuseError) return reply.code(409).send({ error: 'safety_observation_identifier_reused' })
     if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
     if (error instanceof WorkflowValidationError) return reply.code(400).send({ error: 'invalid_request' })
     if (error instanceof WorkflowNotFoundError) return reply.code(404).send({ error: 'not_found' })
@@ -307,6 +313,21 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     notes: z.string().trim().max(4_000).optional(),
     status: z.enum(WORKFLOW_REFERRAL_STATUSES).exclude(['withdrawn']),
   })
+  const safetyObservationSnapshotSchema = z.discriminatedUnion('assessmentContext', [
+    z.object({
+      assessmentContext: z.literal('setup'),
+      broadClass: z.enum(SAFETY_BROAD_CLASSES),
+      concernLevel: z.enum(SAFETY_OBSERVATION_CONCERN_LEVELS).extract(['unsure', 'urgent']),
+      contextNote: z.string().trim().max(4_000).optional(),
+    }).strict(),
+    z.object({
+      assessmentContext: z.literal('pou'),
+      pouId: z.enum(WORKFLOW_POU_IDS),
+      broadClass: z.enum(SAFETY_BROAD_CLASSES),
+      concernLevel: z.enum(SAFETY_OBSERVATION_CONCERN_LEVELS).extract(['low', 'watch', 'action', 'urgent']),
+      contextNote: z.string().trim().max(4_000).optional(),
+    }).strict(),
+  ])
   const workflowCommandSchema = z.discriminatedUnion('type', [
     setupCommandSchema,
     pouReviewCommandSchema,
@@ -315,6 +336,38 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     downstreamCommandSchema.extend({ type: z.literal('referral-plan-confirmed'), referrals: z.array(referralInputSchema).max(100) }),
     downstreamCommandSchema.extend({ type: z.literal('structured-review-confirmed') }),
     downstreamCommandSchema.extend({ type: z.literal('workflow-completed') }),
+    z.object({
+      type: z.literal('safety-observation-confirmed'),
+      observationId: z.string().uuid(),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      observation: safetyObservationSnapshotSchema,
+    }).strict(),
+    z.object({
+      type: z.literal('safety-observation-corrected'),
+      observationId: z.string().uuid(),
+      expectedObservationRevision: z.number().int().positive(),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      replacement: safetyObservationSnapshotSchema,
+      reason: z.string().trim().min(1).max(4_000),
+    }).strict(),
+    z.object({
+      type: z.literal('safety-observation-retracted'),
+      observationId: z.string().uuid(),
+      expectedObservationRevision: z.number().int().positive(),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      reason: z.string().trim().min(1).max(4_000),
+    }).strict(),
+    z.object({
+      type: z.literal('supervisor-review-requested'),
+      requestId: z.string().uuid(),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      pouId: z.enum(WORKFLOW_POU_IDS).optional(),
+      requestNote: z.string().trim().max(4_000).optional(),
+    }).strict(),
   ])
 
   app.post('/api/workflows', async (request, reply) => {
@@ -357,6 +410,21 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       const workflow = await workflowRepository.findById(user, parsed.data.workflowSessionId)
       if (!workflow) return reply.code(404).send({ error: 'not_found' })
       return { workflow }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/workflows/:workflowSessionId/safety-observations/:observationId/history', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = z.object({ workflowSessionId: z.string().uuid(), observationId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      const history = await workflowRepository.findSafetyObservationHistory(user, parsed.data.workflowSessionId, parsed.data.observationId)
+      if (!history) return reply.code(404).send({ error: 'not_found' })
+      return { history }
     } catch (error) {
       return workflowFailure(error, request, reply)
     }
