@@ -1,4 +1,5 @@
 import { TE_WAHAROA_POU } from './pou'
+import type { AuthProfile } from './auth'
 
 // Six Safety Pou — structural entry marks
 const ENTRY_POU = TE_WAHAROA_POU.map((pou) => pou.reo)
@@ -6,10 +7,20 @@ const ENTRY_POU = TE_WAHAROA_POU.map((pou) => pou.reo)
 export default function EntryScreen({
   onKaimahi,
   onSupervisor,
+  profile,
+  authMessage,
+  onSignIn,
+  onSignOut,
 }: {
   onKaimahi: () => void
   onSupervisor: () => void
+  profile?: AuthProfile
+  authMessage?: string
+  onSignIn?: () => void
+  onSignOut?: () => void
 }) {
+  const canUseKaimahi = profile?.roles.includes('KAIMAHI') ?? false
+  const canUseSupervisor = profile?.roles.includes('SUPERVISOR') ?? false
   return (
     <div
       className="min-h-screen flex flex-col"
@@ -116,31 +127,74 @@ export default function EntryScreen({
 
           {/* Entry actions */}
           <div className="space-y-3">
-            <button
-              onClick={onKaimahi}
-              className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-90 active:opacity-75"
-              style={{
-                backgroundColor: 'var(--color-ridge)',
-                color: 'white',
-                letterSpacing: '0.06em',
-                fontFamily: 'var(--font-mono)',
-              }}
-            >
-              Kaimahi — Tīmata Kōrero
-            </button>
-            <button
-              onClick={onSupervisor}
-              className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-80"
-              style={{
-                backgroundColor: 'transparent',
-                color: 'var(--color-ink-secondary)',
-                border: '1px solid var(--color-border-strong)',
-                letterSpacing: '0.06em',
-                fontFamily: 'var(--font-mono)',
-              }}
-            >
-              Mātāmua — Supervisor View
-            </button>
+            {profile ? (
+              <>
+                <div className="flex items-center justify-between gap-3 pb-1">
+                  <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>
+                    {profile.displayName} · {profile.organisation.name}
+                  </p>
+                  <button
+                    onClick={onSignOut}
+                    className="text-xs underline underline-offset-4"
+                    style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}
+                  >
+                    Sign out
+                  </button>
+                </div>
+                {canUseKaimahi && (
+                  <button
+                    onClick={onKaimahi}
+                    className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-90 active:opacity-75"
+                    style={{
+                      backgroundColor: 'var(--color-ridge)',
+                      color: 'white',
+                      letterSpacing: '0.06em',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  >
+                    Kaimahi — Tīmata Kōrero
+                  </button>
+                )}
+                {canUseSupervisor && (
+                  <button
+                    onClick={onSupervisor}
+                    className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-80"
+                    style={{
+                      backgroundColor: 'transparent',
+                      color: 'var(--color-ink-secondary)',
+                      border: '1px solid var(--color-border-strong)',
+                      letterSpacing: '0.06em',
+                      fontFamily: 'var(--font-mono)',
+                    }}
+                  >
+                    Mātāmua — Supervisor View
+                  </button>
+                )}
+                {!canUseKaimahi && !canUseSupervisor && (
+                  <p role="status" className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
+                    Your account does not have a Te Kaupapa role assigned.
+                  </p>
+                )}
+              </>
+            ) : (
+              <>
+                <p role="status" className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
+                  {authMessage ?? 'Please sign in to continue.'}
+                </p>
+                <button
+                  onClick={onSignIn}
+                  className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-90 active:opacity-75"
+                  style={{
+                    backgroundColor: 'var(--color-ridge)',
+                    color: 'white',
+                    letterSpacing: '0.06em',
+                    fontFamily: 'var(--font-mono)',
+                  }}
+                >
+                  Waitohu mai — Sign in
+                </button>
+              </>
+            )}
           </div>
         </div>
       </div>

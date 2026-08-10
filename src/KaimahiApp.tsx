@@ -32,6 +32,7 @@ import {
   type SessionStageKey,
 } from './kaimahi/KaimahiShell'
 import { SessionShell } from './kaimahi/KaimahiSession'
+import type { AuthProfile } from './auth'
 
 // ─── Navigation types ─────────────────────────────────────────────────────────
 
@@ -280,11 +281,13 @@ function HomeScreen({
   sessionActive,
   sessionRef,
   sessionStage,
+  displayName,
 }: {
   onBeginSession: () => void
   sessionActive: boolean
   sessionRef: string
   sessionStage: SessionStageKey
+  displayName: string
 }) {
   const greeting = getGreeting()
   const stageMeta = SESSION_STAGE_LABELS[sessionStage]
@@ -381,7 +384,7 @@ function HomeScreen({
         >
           {greeting},
           <br />
-          Aroha
+          {displayName}
         </h1>
         <p
           className="text-xs"
@@ -2017,7 +2020,7 @@ function WhanauReflectionsScreen() {
 // KAIMAHI APP ROOT
 // ─────────────────────────────────────────────────────────────────────────────
 
-export default function KaimahiApp({ onBack }: { onBack: () => void }) {
+export default function KaimahiApp({ onBack, profile }: { onBack: () => void; profile: AuthProfile }) {
   const [tab, setTab] = useState<KaimahiTab>('home')
   const [moreOpen, setMoreOpen] = useState(false)
   const [sessionActive, setSessionActive] = useState(false)
@@ -2038,6 +2041,7 @@ export default function KaimahiApp({ onBack }: { onBack: () => void }) {
   if (sessionActive) {
     return (
       <SessionShell
+        displayName={profile.displayName}
         onDone={() => {
           setSessionActive(false)
           setTab('home')
@@ -2048,14 +2052,14 @@ export default function KaimahiApp({ onBack }: { onBack: () => void }) {
 
   const renderContent = () => {
     switch (tab) {
-      case 'home':             return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} />
+      case 'home':             return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} displayName={profile.displayName} />
       case 'actions':          return <MyActionsScreen />
       case 'reflections':      return <WhanauReflectionsScreen />
       case 'referrals-browse': return <ReferralsBrowseScreen />
       case 'synthesis-archive':return <SynthesisArchiveScreen />
       case 'record-archive':   return <RecordArchiveScreen />
-      case 'settings':         return <SettingsScreen />
-      default:                 return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} />
+      case 'settings':         return <SettingsScreen profile={profile} />
+      default:                 return <HomeScreen onBeginSession={() => setSessionActive(true)} sessionActive={sessionActive} sessionRef={sessionRef} sessionStage={sessionStage} displayName={profile.displayName} />
     }
   }
 

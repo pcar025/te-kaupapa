@@ -1,0 +1,129 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Dedicated Te Kaupapa passwordless Cognito user pool. Deploy only to an approved Te Kaupapa AWS environment.
+
+Parameters:
+  UserPoolName:
+    Type: String
+    Default: te-kaupapa-staging
+  CognitoDomainPrefix:
+    Type: String
+    Description: Globally unique Cognito domain prefix for this approved Te Kaupapa environment.
+  CallbackUrl:
+    Type: String
+    Description: Exact server callback URL, for example https://staging.te-kaupapa.example/api/auth/callback.
+  LogoutUrl:
+    Type: String
+    Description: Exact application URL after Cognito managed-login logout.
+  SesSourceArn:
+    Type: String
+    Description: Verified Amazon SES identity ARN in this AWS Region for passwordless email OTP.
+  EmailFrom:
+    Type: String
+    Description: From address that belongs to SesSourceArn.
+  WebAuthnRelyingPartyId:
+    Type: String
+    Default: ''
+    Description: Optional passkey RP ID. Supply the active managed-login domain only in a second stack update after the domain exists.
+
+Conditions:
+  HasWebAuthnRelyingPartyId: !Not [!Equals [!Ref WebAuthnRelyingPartyId, '']]
+
+Resources:
+  TeKaupapaUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Ref UserPoolName
+      UserPoolTier: ESSENTIALS
+      DeletionProtection: ACTIVE
+      UserPoolTags:
+        Application: te-kaupapa
+        Environment: staging
+        ManagedBy: te-kaupapa-repository
+        Purpose: authentication-pilot
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      UsernameConfiguration:
+        CaseSensitive: false
+      MfaConfiguration: 'OFF'
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+        SourceArn: !Ref SesSourceArn
+        From: !Ref EmailFrom
+      Policies:
+        SignInPolicy:
+          AllowedFirstAuthFactors:
+            - EMAIL_OTP
+            - WEB_AUTHN
+            # Cognito Essentials requires PASSWORD to be configured alongside
+            # passwordless factors. Admin-created pilot users receive no
+            # password, so EMAIL_OTP and WEB_AUTHN remain their usable flows.
+            - PASSWORD
+      WebAuthnUserVerification: preferred
+      WebAuthnRelyingPartyID: !If
+        - HasWebAuthnRelyingPartyId
+        - !Ref WebAuthnRelyingPartyId
+        - !Ref AWS::NoValue
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  TeKaupapaUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      UserPoolId: !Ref TeKaupapaUserPool
+      Domain: !Ref CognitoDomainPrefix
+      ManagedLoginVersion: 2
+
+  TeKaupapaServerClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: te-kaupapa-server-staging
+      UserPoolId: !Ref TeKaupapaUserPool
+      GenerateSecret: true
+      PreventUserExistenceErrors: ENABLED
+      EnableTokenRevocation: true
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_USER_AUTH
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - openid
+        - email
+        - profile
+      CallbackURLs:
+        - !Ref CallbackUrl
+      LogoutURLs:
+        - !Ref LogoutUrl
+      TokenValidityUnits:
+        IdToken: minutes
+        AccessToken: minutes
+        RefreshToken: days
+      IdTokenValidity: 30
+      AccessTokenValidity: 30
+      RefreshTokenValidity: 1
+
+  TeKaupapaManagedLoginBranding:
+    Type: AWS::Cognito::ManagedLoginBranding
+    Properties:
+      UserPoolId: !Ref TeKaupapaUserPool
+      ClientId: !Ref TeKaupapaServerClient
+      UseCognitoProvidedValues: true
+
+Outputs:
+  UserPoolId:
+    Value: !Ref TeKaupapaUserPool
+  UserPoolClientId:
+    Value: !Ref TeKaupapaServerClient
+  CognitoIssuer:
+    Value: !Sub 'https://cognito-idp.${AWS::Region}.amazonaws.com/${TeKaupapaUserPool}'
+  ManagedLoginDomain:
+    Value: !Sub 'https://${CognitoDomainPrefix}.auth.${AWS::Region}.amazoncognito.com'

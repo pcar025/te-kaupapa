@@ -1,0 +1,168 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VerifyOnlyCognitoEmailServiceLinkedRole",
+      "Effect": "Allow",
+      "Action": "iam:GetRole",
+      "Resource": "arn:aws:iam::905418481310:role/aws-service-role/email.cognito-idp.amazonaws.com/AWSServiceRoleForAmazonCognitoIdpEmailService"
+    },
+    {
+      "Sid": "CreateOnlyRequiredTaggedTeKaupapaUserPool",
+      "Effect": "Allow",
+      "Action": "cognito-idp:CreateUserPool",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:RequestTag/Application": "te-kaupapa",
+          "aws:RequestTag/Environment": "staging",
+          "aws:RequestTag/ManagedBy": "te-kaupapa-repository",
+          "aws:RequestTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "ManageOnlyTaggedTeKaupapaUserPools",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:CreateUserPoolClient",
+        "cognito-idp:CreateUserPoolDomain",
+        "cognito-idp:CreateManagedLoginBranding",
+        "cognito-idp:DeleteManagedLoginBranding",
+        "cognito-idp:DeleteUserPool",
+        "cognito-idp:DeleteUserPoolClient",
+        "cognito-idp:DeleteUserPoolDomain",
+        "cognito-idp:DescribeUserPool",
+        "cognito-idp:DescribeUserPoolClient",
+        "cognito-idp:DescribeUserPoolDomain",
+        "cognito-idp:DescribeManagedLoginBranding",
+        "cognito-idp:DescribeManagedLoginBrandingByClient",
+        "cognito-idp:GetUserPoolMfaConfig",
+        "cognito-idp:ListTagsForResource",
+        "cognito-idp:ListUserPoolClients",
+        "cognito-idp:ListUsers",
+        "cognito-idp:SetUserPoolMfaConfig",
+        "cognito-idp:UpdateUserPool",
+        "cognito-idp:UpdateUserPoolClient",
+        "cognito-idp:UpdateUserPoolDomain"
+      ],
+      "Resource": "arn:aws:cognito-idp:ap-southeast-2:905418481310:userpool/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "TagOnlyNewRequiredTeKaupapaUserPools",
+      "Effect": "Allow",
+      "Action": "cognito-idp:TagResource",
+      "Resource": "arn:aws:cognito-idp:ap-southeast-2:905418481310:userpool/*",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "aws:TagKeys": [
+            "Application",
+            "Environment",
+            "ManagedBy",
+            "Purpose",
+            "aws:cloudformation:*"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:RequestTag/Application": "te-kaupapa",
+          "aws:RequestTag/Environment": "staging",
+          "aws:RequestTag/ManagedBy": "te-kaupapa-repository",
+          "aws:RequestTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "RemoveOnlyCloudFormationSystemTagsFromTeKaupapaPools",
+      "Effect": "Allow",
+      "Action": "cognito-idp:UntagResource",
+      "Resource": "arn:aws:cognito-idp:ap-southeast-2:905418481310:userpool/*",
+      "Condition": {
+        "ForAllValues:StringLike": {
+          "aws:TagKeys": [
+            "aws:cloudformation:*"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "CheckTeKaupapaCognitoDomainAvailability",
+      "Effect": "Allow",
+      "Action": "cognito-idp:DescribeUserPoolDomain",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlyCognitoPoolDiscovery",
+      "Effect": "Allow",
+      "Action": "cognito-idp:ListUserPools",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "AdministerPilotUsersOnlyInTaggedTeKaupapaPool",
+      "Effect": "Allow",
+      "Action": [
+        "cognito-idp:AdminCreateUser",
+        "cognito-idp:AdminDeleteUser",
+        "cognito-idp:AdminGetUser"
+      ],
+      "Resource": "arn:aws:cognito-idp:ap-southeast-2:905418481310:userpool/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "ReadOnlySesAccountAndIdentityDiscovery",
+      "Effect": "Allow",
+      "Action": [
+        "ses:GetAccount",
+        "ses:ListEmailIdentities"
+      ],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "InspectSesIdentityVerificationOnly",
+      "Effect": "Allow",
+      "Action": "ses:GetEmailIdentity",
+      "Resource": "arn:aws:ses:ap-southeast-2:905418481310:identity/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    }
+  ]
+}

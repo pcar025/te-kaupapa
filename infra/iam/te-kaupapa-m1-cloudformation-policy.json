@@ -1,0 +1,171 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "VerifyCallerIdentity",
+      "Effect": "Allow",
+      "Action": "sts:GetCallerIdentity",
+      "Resource": "*"
+    },
+    {
+      "Sid": "ValidateTeKaupapaCognitoTemplate",
+      "Effect": "Allow",
+      "Action": "cloudformation:ValidateTemplate",
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "CreateOnlyTeKaupapaStagingCognitoStack",
+      "Effect": "Allow",
+      "Action": "cloudformation:CreateStack",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "UpdateOnlyTaggedTeKaupapaStagingCognitoStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:UpdateStack",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "CreateOnlyCanonicalTeKaupapaManagedLoginAuthConfigChangeSet",
+      "Effect": "Allow",
+      "Action": "cloudformation:CreateChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "ForAllValues:StringEquals": {
+          "cloudformation:ResourceTypes": [
+            "AWS::Cognito::UserPool",
+            "AWS::Cognito::UserPoolClient",
+            "AWS::Cognito::UserPoolDomain",
+            "AWS::Cognito::ManagedLoginBranding"
+          ],
+          "aws:TagKeys": [
+            "Application",
+            "Environment",
+            "ManagedBy",
+            "Purpose"
+          ]
+        },
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-auth-config-20260810",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot",
+          "aws:RequestTag/Application": "te-kaupapa",
+          "aws:RequestTag/Environment": "staging",
+          "aws:RequestTag/ManagedBy": "te-kaupapa-repository",
+          "aws:RequestTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "RemoveOnlyCanonicalTeKaupapaManagedLoginAuthConfigChangeSet",
+      "Effect": "Allow",
+      "Action": "cloudformation:DeleteChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "cloudformation:ChangeSetName": "te-kaupapa-managed-login-auth-config-20260810",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "InspectOnlyCanonicalTeKaupapaManagedLoginBrandingChangeSets",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeChangeSet",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/29a3c780-93e1-11f1-936a-02407fbd357b",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    },
+    {
+      "Sid": "InspectOnlyTaggedTeKaupapaStagingStacks",
+      "Effect": "Allow",
+      "Action": [
+        "cloudformation:DescribeStackEvents",
+        "cloudformation:DescribeStackResources",
+        "cloudformation:DescribeStacks",
+        "cloudformation:GetTemplate"
+      ],
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-*/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "DeleteOnlyTaggedCanonicalTeKaupapaAuthenticationStacks",
+      "Effect": "Allow",
+      "Action": "cloudformation:DeleteStack",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2",
+          "aws:ResourceTag/Application": "te-kaupapa",
+          "aws:ResourceTag/Environment": "staging",
+          "aws:ResourceTag/ManagedBy": "te-kaupapa-repository",
+          "aws:ResourceTag/Purpose": "authentication-pilot"
+        }
+      }
+    },
+    {
+      "Sid": "VerifyOnlyCanonicalTeKaupapaAuthenticationStackCleanup",
+      "Effect": "Allow",
+      "Action": "cloudformation:DescribeStacks",
+      "Resource": "arn:aws:cloudformation:ap-southeast-2:905418481310:stack/te-kaupapa-staging-authentication/*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestedRegion": "ap-southeast-2"
+        }
+      }
+    }
+  ]
+}
