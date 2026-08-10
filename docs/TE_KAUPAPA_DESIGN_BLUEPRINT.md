@@ -762,6 +762,20 @@ Full transcripts should not be preloaded into mobile workflows.
 
 If a transcript is opened, only that transcript should be fetched and rendered, ideally using bounded/virtualised rendering if transcript sizes later require it.
 
+### 22.1 Mobile and poor-network performance acceptance
+
+For every milestone that materially changes frontend bundles, network requests, workflow response shapes, retries, or media use:
+
+1. record the production bundle baseline, including role-specific chunks;
+2. record representative request counts and payload sizes for affected user paths;
+3. distinguish measured results from estimates clearly;
+4. test constrained and poor-network behaviour appropriate to the change;
+5. confirm acknowledged server-authoritative work can be recovered after refresh;
+6. confirm pending or unacknowledged work is handled truthfully; and
+7. verify media, socket, transcript, and temporary-buffer cleanup where applicable.
+
+This is an engineering acceptance requirement. It does not make provisional numeric budgets permanent product requirements, and it does not authorize broad offline storage or retention of transcripts, audio, secrets, or sensitive workflow data in the browser.
+
 ---
 
 ## 23. Deployment direction
