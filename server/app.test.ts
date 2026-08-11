@@ -27,8 +27,10 @@ import {
   checkpointAfterStructuredReview,
   WorkflowTransitionError,
 } from './workflows/domain.js'
-import { WORKFLOW_POU_IDS, type WorkflowCommand } from '../shared/workflow.js'
+import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
+import type { ConversationRecord } from './conversations/repository.js'
+import type { ConversationApplicationService } from './conversations/service.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -375,6 +377,36 @@ class MemoryWorkflowRepository implements WorkflowRepository {
   }
 }
 
+class FakeConversationService implements ConversationApplicationService {
+  private conversation: ConversationRecord | null = null
+  readonly starts: Array<{ workflowSessionId: string; pouId: string; idempotencyKey: string }> = []
+
+  async start(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId, idempotencyKey: string) {
+    this.starts.push({ workflowSessionId, pouId, idempotencyKey })
+    this.conversation = {
+      id: '8e1fde30-c4b6-492a-8862-32200b2661a9', organisationId: actor.organisation.id, workflowSessionId, pouId, startedByUserId: actor.id,
+      provider: 'elevenlabs', providerConversationId: 'provider-conversation-id', providerAgentReference: 'server-selected-agent', providerBranchReference: 'server-selected-branch', providerEnvironment: 'staging',
+      conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
+      authorizedAt: new Date('2026-08-11T00:00:00.000Z'), connectedAt: null, endedAt: null, terminationReason: null, createdAt: new Date('2026-08-11T00:00:00.000Z'), updatedAt: new Date('2026-08-11T00:00:00.000Z'),
+    }
+    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token' }
+  }
+
+  async acknowledgeClientConnected(_actor: AuthenticatedUser, conversationId: string, providerConversationId: string) {
+    if (!this.conversation || this.conversation.id !== conversationId || this.conversation.providerConversationId !== providerConversationId) throw new Error('provider mismatch')
+    this.conversation = { ...this.conversation, status: 'active', connectedAt: new Date('2026-08-11T00:01:00.000Z') }
+    return this.conversation
+  }
+
+  async end(_actor: AuthenticatedUser, conversationId: string, reason: 'user_ended' | 'navigation' | 'connection_lost' | 'startup_failed' | 'provider_error' | 'provider_id_mismatch') {
+    if (!this.conversation || this.conversation.id !== conversationId) throw new Error('not found')
+    this.conversation = { ...this.conversation, status: 'ended', endedAt: new Date('2026-08-11T00:02:00.000Z'), terminationReason: reason }
+    return this.conversation
+  }
+
+  async current() { return this.conversation }
+}
+
 function config(): AppConfiguration {
   return {
     nodeEnv: 'test',
@@ -615,6 +647,62 @@ describe('authenticated application shell API', () => {
     })
     expect(stale.statusCode).toBe(409)
     expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
+    await app.close()
+  })
+
+  it('authorizes a Whakapapa voice attempt behind Kaimahi, owner, and trusted-origin boundaries without changing workflow state', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '0ff258d3-3ca5-4cdd-bf5e-1dfe425b4624', userId: activeKaimahi.id, tokenHash: sha256('conversation-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: '4aa3c038-b5da-46e7-b11c-3f549416fcf4' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: 'db82d548-b703-4e0e-a5f7-f2d99c69c84a', expectedVersion: 1, whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+    const cookie = 'test_session=conversation-session'
+    const url = `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`
+
+    expect((await app.inject({ method: 'POST', url, headers: { origin: 'http://web.test' }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'POST', url, headers: { cookie }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url, headers: { cookie, origin: 'http://web.test' }, payload: {
+      idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef',
+      agentId: 'browser-must-not-select-this',
+      branchId: 'browser-must-not-select-this',
+      environment: 'browser-must-not-select-this',
+    } })).statusCode).toBe(400)
+
+    const started = await app.inject({ method: 'POST', url, headers: { cookie, origin: 'http://web.test' }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })
+    expect(started.statusCode).toBe(201)
+    expect(started.headers['cache-control']).toBe('no-store')
+    expect(started.json()).toMatchObject({
+      conversation: { pouId: 'whakapapa', status: 'authorized', providerConversationId: 'provider-conversation-id' },
+      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token' },
+    })
+    expect(JSON.stringify(started.json())).not.toContain('server-selected-agent')
+    expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'whakapapa', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])
+
+    const conversationId = started.json<{ conversation: { id: string } }>().conversation.id
+    const connected = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversationId}/client-connected`, headers: { cookie, origin: 'http://web.test' }, payload: { providerConversationId: 'provider-conversation-id' },
+    })
+    expect(connected.json()).toMatchObject({ conversation: { status: 'active' } })
+    expect(connected.headers['cache-control']).toBe('no-store')
+    const current = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversation`, headers: { cookie } })
+    expect(current.json()).toMatchObject({ conversation: { status: 'active' } })
+    expect(current.headers['cache-control']).toBe('no-store')
+    expect(JSON.stringify(current.json())).not.toContain('temporary-conversation-token')
+    const ended = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversationId}/end`, headers: { cookie, origin: 'http://web.test' }, payload: { reason: 'user_ended' },
+    })
+    expect(ended.json()).toMatchObject({ conversation: { status: 'ended', terminationReason: 'user_ended' } })
+    expect(ended.headers['cache-control']).toBe('no-store')
+    expect(await workflows.findById(activeKaimahi, created.workflow.id)).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2 })
     await app.close()
   })
 

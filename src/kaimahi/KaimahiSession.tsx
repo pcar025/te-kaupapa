@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type {
   ActiveSessionData,
   EngagementType,
@@ -38,6 +38,9 @@ import {
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
 } from '../workflows'
+import { VoiceChunkBoundary, VoiceChunkLoading } from '../conversations/VoiceChunkBoundary'
+
+const ElevenLabsConversation = lazy(() => import('../conversations/ElevenLabsConversation'))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION STAGES
@@ -1684,12 +1687,23 @@ function PouConversationStage({
   onChange,
   onNext,
   pouIdx,
+  workflowId,
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
   onNext: () => void
   pouIdx: number
+  workflowId: string
 }) {
+  if (pouIdx === 0) {
+    return (
+      <VoiceChunkBoundary onProceedToReview={onNext}>
+        <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
+          <ElevenLabsConversation workflowId={workflowId} onProceedToReview={onNext} />
+        </Suspense>
+      </VoiceChunkBoundary>
+    )
+  }
   return <GuidedReflectionStage data={data} onChange={onChange} onNext={onNext} pouIdx={pouIdx} />
 }
 
@@ -6053,7 +6067,7 @@ export function SessionShell({
         {stage === 'setup'        && <SetupStage data={data} onChange={patch} onConfirm={confirmSetup} displayName={displayName} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-overview' && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} />}
+        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <RealPouSummaryStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'pou-summary-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

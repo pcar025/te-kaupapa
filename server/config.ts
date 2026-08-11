@@ -7,6 +7,13 @@ export interface CognitoConfiguration {
   managedLoginDomain: string
 }
 
+export interface ElevenLabsConfiguration {
+  apiKey: string
+  agentId: string
+  agentBranchId: string
+  agentEnvironment: string
+}
+
 export interface AppConfiguration {
   nodeEnv: 'development' | 'test' | 'production'
   port: number
@@ -19,6 +26,7 @@ export interface AppConfiguration {
   sessionTtlHours: number
   sessionIdleTimeoutMinutes: number
   cognito?: CognitoConfiguration
+  elevenlabs?: ElevenLabsConfiguration
 }
 
 const runtimeSchema = z.object({
@@ -36,6 +44,10 @@ const runtimeSchema = z.object({
   COGNITO_CLIENT_SECRET: z.string().min(1).optional(),
   COGNITO_ISSUER: z.string().url().optional(),
   COGNITO_MANAGED_LOGIN_DOMAIN: z.string().url().optional(),
+  ELEVENLABS_API_KEY: z.string().min(1).optional(),
+  ELEVENLABS_AGENT_ID: z.string().trim().min(1).max(255).optional(),
+  ELEVENLABS_AGENT_BRANCH_ID: z.string().trim().min(1).max(255).optional(),
+  ELEVENLABS_AGENT_ENVIRONMENT: z.string().trim().min(1).max(80).optional(),
 })
 
 export function loadConfiguration(env = process.env): AppConfiguration {
@@ -48,6 +60,16 @@ export function loadConfiguration(env = process.env): AppConfiguration {
   const hasCognito = cognitoValues.some(Boolean)
   if (hasCognito && cognitoValues.some((value) => !value)) {
     throw new Error('COGNITO_CLIENT_ID, COGNITO_ISSUER, and COGNITO_MANAGED_LOGIN_DOMAIN must be set together.')
+  }
+  const elevenLabsValues = [
+    parsed.ELEVENLABS_API_KEY,
+    parsed.ELEVENLABS_AGENT_ID,
+    parsed.ELEVENLABS_AGENT_BRANCH_ID,
+    parsed.ELEVENLABS_AGENT_ENVIRONMENT,
+  ]
+  const hasElevenLabs = elevenLabsValues.some(Boolean)
+  if (hasElevenLabs && elevenLabsValues.some((value) => !value)) {
+    throw new Error('ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_AGENT_BRANCH_ID, and ELEVENLABS_AGENT_ENVIRONMENT must be set together.')
   }
 
   const allowedOrigins = new Set([parsed.APP_ORIGIN, parsed.FRONTEND_ORIGIN])
@@ -72,6 +94,14 @@ export function loadConfiguration(env = process.env): AppConfiguration {
           clientSecret: parsed.COGNITO_CLIENT_SECRET,
           issuer: parsed.COGNITO_ISSUER!,
           managedLoginDomain: parsed.COGNITO_MANAGED_LOGIN_DOMAIN!.replace(/\/$/, ''),
+        }
+      : undefined,
+    elevenlabs: hasElevenLabs
+      ? {
+          apiKey: parsed.ELEVENLABS_API_KEY!,
+          agentId: parsed.ELEVENLABS_AGENT_ID!,
+          agentBranchId: parsed.ELEVENLABS_AGENT_BRANCH_ID!,
+          agentEnvironment: parsed.ELEVENLABS_AGENT_ENVIRONMENT!,
         }
       : undefined,
   }

@@ -237,7 +237,7 @@ ElevenLabs provides the conversational AI experience.
 
 The conversational agent and its primary conversational/system prompt are configured and maintained inside ElevenLabs.
 
-OpenAI is the LLM used by the ElevenLabs conversational agent.
+The underlying conversational LLM is selected and configured as part of the versioned ElevenLabs agent configuration. Te Kaupapa must remain agnostic to whether that agent uses Gemini, OpenAI, Claude, or another approved provider/model, and must not select the LLM at runtime.
 
 Do not duplicate or recreate the main conversational prompt inside Te Kaupapa.
 
@@ -247,7 +247,7 @@ ElevenLabs owns:
 - voice interaction
 - primary conversational prompt
 - conversational orchestration
-- interaction with the underlying OpenAI LLM
+- interaction with the underlying provider-configured LLM
 
 Te Kaupapa owns:
 
@@ -265,7 +265,11 @@ Te Kaupapa owns:
 
 Keep this boundary explicit.
 
-Any direct OpenAI integration added to Te Kaupapa in the future must have a separate approved purpose and must be server-side.
+Any direct LLM-provider integration added to Te Kaupapa in the future must have a separate approved purpose and must be server-side.
+
+Voice sessions must be authorized by the Te Kaupapa backend only after authenticated role, organisation, workflow ownership, active state, and authoritative Pou eligibility have been verified. Private provider credentials must remain server-side. Temporary provider authorization must not be persisted, logged, put in URLs, or exposed through client configuration.
+
+Live caption state is ephemeral UI state only. It must be bounded and released on end, navigation, unmount, logout, and failure. Starting a voice session does not approve transcript or audio retention.
 
 ---
 

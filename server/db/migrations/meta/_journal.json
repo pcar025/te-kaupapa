@@ -36,6 +36,13 @@
       "when": 1786345738492,
       "tag": "0004_nice_chamber",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786406855037,
+      "tag": "0005_living_thena",
+      "breakpoints": true
     }
   ]
 }

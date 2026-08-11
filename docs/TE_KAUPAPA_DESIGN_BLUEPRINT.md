@@ -176,7 +176,7 @@ The conversational agent will be configured in the ElevenLabs environment.
 
 The primary agent prompt will also be maintained in ElevenLabs.
 
-OpenAI will provide the LLM used by the ElevenLabs conversational agent.
+The underlying conversational LLM is selected and configured inside the versioned ElevenLabs agent. Te Kaupapa does not depend directly on, select, or persist the runtime LLM. A staging agent may use Gemini 3.5 Flash as operational context without making Gemini an application dependency.
 
 ### ElevenLabs is responsible for
 
@@ -184,7 +184,7 @@ OpenAI will provide the LLM used by the ElevenLabs conversational agent.
 - voice input and output
 - conversational agent behaviour
 - the primary conversational prompt
-- orchestration of the underlying LLM
+- selection and orchestration of the underlying LLM
 - conversational analysis configured in the provider
 
 ### Te Kaupapa is responsible for
@@ -203,6 +203,14 @@ OpenAI will provide the LLM used by the ElevenLabs conversational agent.
 - supervisor review
 
 The Te Kaupapa frontend should not independently analyse raw transcript text to determine contraindications, risks, or workflow consequences.
+
+### Provider authorization and lifecycle
+
+Voice sessions must begin only after Te Kaupapa has authenticated and authorized the Kaimahi, workflow, organisation, and authoritative Pou. The backend selects the provider agent configuration and issues only temporary provider authorization to the browser. Provider API keys, signed material, raw transcript, audio, and raw provider payloads must not be persisted or logged.
+
+Conversation provenance may associate an internal conversation ID, workflow, Pou, actor, provider reference, selected non-secret agent configuration reference, and approved conversation-specification version. This provenance does not make provider output canonical. It must not advance a workflow, create a safety observation, action, referral, summary, or deterministic consequence without the separately approved validation and human-confirmation path.
+
+Live caption display, where enabled, is ephemeral and bounded. It is released with media resources on normal end, error, navigation, unmount, logout, and session expiry. Transcript and audio retention remain separate product/privacy decisions.
 
 ---
 

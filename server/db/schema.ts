@@ -53,6 +53,7 @@ export const workflowSafetyRevisionOperation = pgEnum('workflow_safety_revision_
 export const workflowSafetyConsequenceType = pgEnum('workflow_safety_consequence_type', ['supervisor_review_required', 'supervisor_notification_required'])
 export const workflowSafetyConsequenceState = pgEnum('workflow_safety_consequence_state', ['required', 'ceased'])
 export const workflowSafetyConsequenceCessationReason = pgEnum('workflow_safety_consequence_cessation_reason', ['observation_corrected', 'observation_retracted'])
+export const workflowConversationStatus = pgEnum('workflow_conversation_status', ['preparing', 'authorized', 'active', 'ended', 'failed'])
 export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
@@ -217,6 +218,104 @@ export const workflowPouCheckpoints = pgTable(
     uniqueIndex('workflow_pou_checkpoint_session_ordinal_uq').on(table.workflowSessionId, table.ordinal),
     uniqueIndex('workflow_pou_checkpoint_session_organisation_pou_uq').on(table.workflowSessionId, table.organisationId, table.pouId),
     check('workflow_pou_checkpoint_ordinal_range', sql`${table.ordinal} between 1 and 7`),
+  ],
+)
+
+/**
+ * Media-session provenance only. Phase 5A intentionally stores neither
+ * transcript/audio content nor temporary provider authorization material.
+ */
+export const workflowConversations = pgTable(
+  'workflow_conversation',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    startedByUserId: uuid('started_by_user_id').notNull(),
+    provider: text('provider').notNull(),
+    providerConversationId: text('provider_conversation_id'),
+    providerAgentReference: text('provider_agent_reference').notNull(),
+    providerBranchReference: text('provider_branch_reference'),
+    providerEnvironment: text('provider_environment').notNull(),
+    conversationSpecificationCode: text('conversation_specification_code').notNull(),
+    conversationSpecificationVersion: integer('conversation_specification_version').notNull(),
+    status: workflowConversationStatus('status').default('preparing').notNull(),
+    startIdempotencyKey: uuid('start_idempotency_key').notNull(),
+    requestFingerprint: text('request_fingerprint').notNull(),
+    authorizedAt: timestamp('authorized_at', { withTimezone: true }),
+    connectedAt: timestamp('connected_at', { withTimezone: true }),
+    endedAt: timestamp('ended_at', { withTimezone: true }),
+    terminationReason: text('termination_reason'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId],
+      foreignColumns: [workflowSessions.id, workflowSessions.organisationId],
+      name: 'workflow_conversation_session_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.workflowSessionId, table.organisationId, table.pouId],
+      foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId],
+      name: 'workflow_conversation_checkpoint_organisation_fk',
+    }),
+    foreignKey({
+      columns: [table.startedByUserId, table.organisationId],
+      foreignColumns: [appUsers.id, appUsers.organisationId],
+      name: 'workflow_conversation_actor_organisation_fk',
+    }),
+    uniqueIndex('workflow_conversation_provider_reference_uq')
+      .on(table.provider, table.providerConversationId)
+      .where(sql`${table.providerConversationId} is not null`),
+    uniqueIndex('workflow_conversation_actor_start_idempotency_uq').on(table.startedByUserId, table.startIdempotencyKey),
+    uniqueIndex('workflow_conversation_one_open_per_pou_uq')
+      .on(table.workflowSessionId, table.pouId)
+      .where(sql`${table.status} in ('preparing', 'authorized', 'active')`),
+    index('workflow_conversation_workflow_created_idx').on(table.workflowSessionId, table.createdAt),
+    check('workflow_conversation_provider_length', sql`length(${table.provider}) between 1 and 80`),
+    check('workflow_conversation_provider_reference_length', sql`${table.providerConversationId} is null or length(${table.providerConversationId}) between 1 and 255`),
+    check('workflow_conversation_agent_reference_length', sql`length(${table.providerAgentReference}) between 1 and 255`),
+    check('workflow_conversation_branch_reference_length', sql`${table.providerBranchReference} is null or length(${table.providerBranchReference}) between 1 and 255`),
+    check('workflow_conversation_environment_length', sql`length(${table.providerEnvironment}) between 1 and 80`),
+    check('workflow_conversation_specification_code_length', sql`length(${table.conversationSpecificationCode}) between 1 and 120`),
+    check('workflow_conversation_specification_version_positive', sql`${table.conversationSpecificationVersion} > 0`),
+    check('workflow_conversation_termination_reason_length', sql`${table.terminationReason} is null or length(${table.terminationReason}) between 1 and 80`),
+    check('workflow_conversation_connection_requires_authorization', sql`${table.connectedAt} is null or ${table.authorizedAt} is not null`),
+    check('workflow_conversation_terminal_timestamp', sql`(${table.endedAt} is null) = (${table.status} in ('preparing', 'authorized', 'active'))`),
+    check('workflow_conversation_lifecycle_consistency', sql`
+      (${table.status} = 'preparing'
+        and ${table.providerConversationId} is null
+        and ${table.authorizedAt} is null
+        and ${table.connectedAt} is null
+        and ${table.endedAt} is null
+        and ${table.terminationReason} is null)
+      or (${table.status} = 'authorized'
+        and ${table.providerConversationId} is not null
+        and ${table.authorizedAt} is not null
+        and ${table.connectedAt} is null
+        and ${table.endedAt} is null
+        and ${table.terminationReason} is null)
+      or (${table.status} = 'active'
+        and ${table.providerConversationId} is not null
+        and ${table.authorizedAt} is not null
+        and ${table.connectedAt} is not null
+        and ${table.endedAt} is null
+        and ${table.terminationReason} is null)
+      or (${table.status} = 'ended'
+        and ${table.providerConversationId} is not null
+        and ${table.authorizedAt} is not null
+        and ${table.endedAt} is not null
+        and ${table.terminationReason} is not null)
+      or (${table.status} = 'failed'
+        and ${table.endedAt} is not null
+        and ${table.terminationReason} is not null
+        and (
+          (${table.providerConversationId} is null and ${table.authorizedAt} is null and ${table.connectedAt} is null)
+          or (${table.providerConversationId} is not null and ${table.authorizedAt} is not null)
+        ))
+    `),
   ],
 )
 

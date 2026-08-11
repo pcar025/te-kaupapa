@@ -22,6 +22,27 @@ import {
 } from './workflows/repository.js'
 import { WorkflowTransitionError } from './workflows/domain.js'
 import {
+  ConversationAuthorizationAlreadyIssuedError,
+  ConversationNotFoundError,
+  ConversationStartInProgressError,
+  ProviderConversationMismatchError,
+  type ConversationApplicationService,
+} from './conversations/service.js'
+import {
+  ConversationEligibilityError,
+  TERMINATION_REASONS,
+  type ConversationTerminationReason,
+} from './conversations/domain.js'
+import {
+  ConversationProviderAuthorizationError,
+  ConversationProviderUnavailableError,
+} from './conversations/provider.js'
+import {
+  ConversationIdempotencyKeyReuseError,
+  OpenConversationExistsError,
+  type ConversationRecord,
+} from './conversations/repository.js'
+import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
   WORKFLOW_ACTION_TYPES,
@@ -45,6 +66,7 @@ export interface AppDependencies {
   config: AppConfiguration
   repository: AuthRepository
   workflowRepository?: WorkflowRepository
+  conversationService?: ConversationApplicationService
   oidcProvider?: OidcProvider
   now?: () => Date
 }
@@ -56,7 +78,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -269,7 +291,43 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     return reply.code(503).send({ error: 'persistence_unavailable' })
   }
 
+  function publicConversation(conversation: ConversationRecord) {
+    return {
+      id: conversation.id,
+      pouId: conversation.pouId,
+      status: conversation.status,
+      providerConversationId: conversation.providerConversationId,
+      authorizedAt: conversation.authorizedAt,
+      connectedAt: conversation.connectedAt,
+      endedAt: conversation.endedAt,
+      terminationReason: conversation.terminationReason,
+      createdAt: conversation.createdAt,
+      updatedAt: conversation.updatedAt,
+    }
+  }
+
+  function conversationFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
+    if (error instanceof ConversationNotFoundError) return reply.code(404).send({ error: 'not_found' })
+    if (error instanceof ConversationEligibilityError) return reply.code(409).send({ error: 'conversation_ineligible' })
+    if (error instanceof ConversationIdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
+    if (error instanceof OpenConversationExistsError || error instanceof ConversationStartInProgressError) return reply.code(409).send({ error: 'conversation_start_in_progress' })
+    if (error instanceof ConversationAuthorizationAlreadyIssuedError) return reply.code(409).send({ error: 'authorization_already_issued', conversation: publicConversation(error.conversation) })
+    if (error instanceof ProviderConversationMismatchError) return reply.code(409).send({ error: 'provider_id_mismatch' })
+    if (error instanceof ConversationProviderUnavailableError) return reply.code(503).send({ error: 'provider_unavailable' })
+    if (error instanceof ConversationProviderAuthorizationError) return reply.code(502).send({ error: 'provider_authorization_failed' })
+    request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Conversation operation failed')
+    return reply.code(503).send({ error: 'conversation_unavailable' })
+  }
+
   const idempotencySchema = z.object({ idempotencyKey: z.string().uuid() })
+  const conversationStartSchema = z.object({ idempotencyKey: z.string().uuid() }).strict()
+  const conversationParamsSchema = z.object({
+    workflowSessionId: z.string().uuid(),
+    pouId: z.literal('whakapapa'),
+  })
+  const conversationIdParamsSchema = z.object({ conversationId: z.string().uuid() })
+  const clientConnectedSchema = z.object({ providerConversationId: z.string().trim().min(1).max(255) }).strict()
+  const conversationEndSchema = z.object({ reason: z.enum(TERMINATION_REASONS) }).strict()
   const setupCommandSchema = z.object({
     type: z.literal('setup-confirmed'),
     idempotencyKey: z.string().uuid(),
@@ -443,6 +501,75 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       return { workflow: result.workflow, acknowledgement: { interactionId: result.interactionId, replayed: result.replayed } }
     } catch (error) {
       return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.post('/api/workflows/:workflowSessionId/pou/:pouId/conversations', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!conversationService) return reply.code(503).send({ error: 'provider_unavailable' })
+    const params = conversationParamsSchema.safeParse(request.params)
+    const body = conversationStartSchema.safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const result = await conversationService.start(user, params.data.workflowSessionId, params.data.pouId, body.data.idempotencyKey)
+      reply.header('cache-control', 'no-store')
+      return reply.code(201).send({
+        conversation: publicConversation(result.conversation),
+        authorization: { transport: 'webrtc', conversationToken: result.conversationToken },
+      })
+    } catch (error) {
+      return conversationFailure(error, request, reply)
+    }
+  })
+
+  app.post('/api/conversations/:conversationId/client-connected', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!conversationService) return reply.code(503).send({ error: 'provider_unavailable' })
+    const params = conversationIdParamsSchema.safeParse(request.params)
+    const body = clientConnectedSchema.safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const conversation = await conversationService.acknowledgeClientConnected(user, params.data.conversationId, body.data.providerConversationId)
+      reply.header('cache-control', 'no-store')
+      return { conversation: publicConversation(conversation) }
+    } catch (error) {
+      return conversationFailure(error, request, reply)
+    }
+  })
+
+  app.post('/api/conversations/:conversationId/end', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!conversationService) return reply.code(503).send({ error: 'provider_unavailable' })
+    const params = conversationIdParamsSchema.safeParse(request.params)
+    const body = conversationEndSchema.safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const conversation = await conversationService.end(user, params.data.conversationId, body.data.reason as ConversationTerminationReason)
+      reply.header('cache-control', 'no-store')
+      return { conversation: publicConversation(conversation) }
+    } catch (error) {
+      return conversationFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/workflows/:workflowSessionId/pou/:pouId/conversation', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!conversationService) return reply.code(503).send({ error: 'provider_unavailable' })
+    const params = conversationParamsSchema.safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      const conversation = await conversationService.current(user, params.data.workflowSessionId, params.data.pouId)
+      reply.header('cache-control', 'no-store')
+      return { conversation: conversation ? publicConversation(conversation) : null }
+    } catch (error) {
+      return conversationFailure(error, request, reply)
     }
   })
 
