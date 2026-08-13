@@ -1,0 +1,2 @@
+ALTER TABLE "conversation_safety_assessment_run" ADD COLUMN "assessment_provider_config_hash" text;--> statement-breakpoint
+ALTER TABLE "conversation_safety_assessment_run" ADD COLUMN "assessment_schema_version" text;

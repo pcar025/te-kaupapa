@@ -93,6 +93,20 @@ export interface WorkflowSafetyState {
   indicators: WorkflowSafetyIndicators
 }
 
+export interface WhakapapaAssessmentCandidate {
+  id: string
+  outcome: 'possible_concern' | 'insufficient_information' | 'no_candidate_concern' | 'not_applicable'
+  title: string
+  description: string
+  ruleCode: string
+  ruleVersion: number
+  matchedProtectiveIndicatorCodes: string[]
+  matchedConcernIndicatorCodes: string[]
+  missingInformationCodes: string[]
+  permittedHumanConcernLevels: SafetyObservationConcernLevel[]
+  canonicalBroadClass: SafetyBroadClass | null
+}
+
 export interface WorkflowAction {
   id: string
   pouId: WorkflowPouId | null
@@ -198,6 +212,17 @@ export async function listCompletedWorkflows(): Promise<CompletedWorkflowListIte
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   const payload = await requestJson<{ workflow: Workflow }>(`/api/workflows/${encodeURIComponent(workflowId)}`)
   return payload.workflow
+}
+
+export async function getWhakapapaAssessmentCandidates(workflowId: string): Promise<WhakapapaAssessmentCandidate[]> {
+  const payload = await requestJson<{ candidates: WhakapapaAssessmentCandidate[] }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/assessment-candidates`)
+  // An empty response is treated as no completed assessment. This keeps the
+  // manual Whakapapa review available through an interrupted/older response.
+  return Array.isArray(payload.candidates) ? payload.candidates : []
+}
+
+export async function reviewWhakapapaAssessmentCandidate(workflowId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {
+  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/assessment-candidates/${encodeURIComponent(assessmentId)}/review`, { method: 'POST', body: JSON.stringify({ status }) })
 }
 
 export async function submitWorkflowCommand(workflowId: string, command: WorkflowCommand): Promise<{ workflow: Workflow; replayed: boolean }> {

@@ -541,6 +541,75 @@ describe('approved application smoke paths', () => {
     expect(await screen.findByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeTruthy()
   })
 
+  it('starts an independent reflection without changing the existing resumable workflow', async () => {
+    const existing = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
+    const fresh = workflowFixture({
+      id: '93ee2ae3-5c8b-4d0d-9f78-2a9cf7b05750', reference: 'TK-NEWREFL', status: 'draft', currentStage: 'setup', currentPouId: null, version: 1,
+      setup: null, checkpoints: [], actions: [], referrals: [], safety: emptySafety,
+    })
+    let resumableListRequests = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workflows?status=resumable') {
+        resumableListRequests += 1
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: resumableListRequests === 1
+          ? [{ ...existing, whanauReference: 'TW-04' }]
+          : [{ ...fresh, whanauReference: null }, { ...existing, whanauReference: 'TW-04' }],
+        }) })
+      }
+      if (url === '/api/workflows?status=completed') return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: [] }) })
+      if (url === `/api/workflows/${existing.id}`) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: existing }) })
+      if (url === '/api/workflows' && init?.method === 'POST') return Promise.resolve({ ok: true, status: 201, json: async () => ({ workflow: fresh, acknowledgement: { replayed: false } }) })
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ profile: {
+        id: 'test-user', displayName: 'Test user', organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' }, roles: ['KAIMAHI'],
+      } }) })
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
+    await screen.findByText('SESSION IN PROGRESS')
+    await user.click(screen.getByRole('button', { name: /Start a new reflection/i }))
+
+    expect(await screen.findByRole('heading', { name: /Pause at the entrance/i })).toBeTruthy()
+    const create = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input) === '/api/workflows' && init?.method === 'POST')
+    expect(create?.[0]).toBe('/api/workflows')
+    expect(JSON.parse(String(create?.[1]?.body)).idempotencyKey).toMatch(/[0-9a-f-]{36}/)
+    expect(vi.mocked(fetch).mock.calls.filter(([input]) => String(input) === `/api/workflows/${existing.id}`)).toHaveLength(1)
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/workflows/${existing.id}/interactions`)).toBe(false)
+  })
+
+  it('opens an acknowledged new reflection when the follow-up resumable-list refresh is unavailable', async () => {
+    const existing = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
+    const fresh = workflowFixture({
+      id: '1d2634e2-35e9-4f26-9f8e-ae3cc0c04525', reference: 'TK-RETRYNEW', status: 'draft', currentStage: 'setup', currentPouId: null, version: 1,
+      setup: null, checkpoints: [], actions: [], referrals: [], safety: emptySafety,
+    })
+    let resumableListRequests = 0
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/workflows?status=resumable') {
+        resumableListRequests += 1
+        if (resumableListRequests > 1) return Promise.reject(new Error('network unavailable'))
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: [{ ...existing, whanauReference: 'TW-04' }] }) })
+      }
+      if (url === '/api/workflows?status=completed') return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflows: [] }) })
+      if (url === `/api/workflows/${existing.id}`) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: existing }) })
+      if (url === '/api/workflows' && init?.method === 'POST') return Promise.resolve({ ok: true, status: 201, json: async () => ({ workflow: fresh, acknowledgement: { replayed: false } }) })
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ profile: {
+        id: 'test-user', displayName: 'Test user', organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' }, roles: ['KAIMAHI'],
+      } }) })
+    }))
+    const user = userEvent.setup()
+    render(<App />)
+
+    await user.click(await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
+    await user.click(await screen.findByRole('button', { name: /Start a new reflection/i }))
+
+    expect(await screen.findByRole('heading', { name: /Pause at the entrance/i })).toBeTruthy()
+    expect(screen.queryByText(/Couldn’t save/i)).toBeNull()
+  })
+
   it('preserves core Kaimahi tab navigation', async () => {
     const user = userEvent.setup()
     render(<App />)

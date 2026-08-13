@@ -11,7 +11,6 @@ import type { AppConfiguration } from './config.js'
 import { AuthorizationError, requireRole, toPublicProfile, type ApplicationRole, type AuthenticatedUser } from './domain/auth.js'
 import type { AuthRepository } from './db/repository.js'
 import {
-  ActiveWorkflowError,
   IdempotencyKeyReuseError,
   SafetyObservationIdentifierReuseError,
   StaleSafetyObservationError,
@@ -42,6 +41,12 @@ import {
   OpenConversationExistsError,
   type ConversationRecord,
 } from './conversations/repository.js'
+import { contentHash } from './safety-assessments/domain.js'
+import { AssessmentCandidateUnavailableError, PostgresSafetyAssessmentRepository, ProviderDeliveryConflictError, SafetyAssessmentValidationError } from './safety-assessments/repository.js'
+import { ConversationAssessmentProviderError, type ConversationAssessmentProvider } from './safety-assessments/assessment-provider.js'
+import { ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
+import { normaliseSignedTranscript } from './transcripts/domain.js'
+import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
@@ -62,11 +67,26 @@ const transactionSchema = z.object({
   issuedAt: z.number().int(),
 })
 
+function providerWebhookRejectionReason(error: unknown): 'signature' | 'invalid_json' | 'unsupported_event' | 'schema_validation' | 'assessment_validation' | 'assessment_provider' | 'unexpected' {
+  if (error instanceof ElevenLabsWebhookSignatureError) return 'signature'
+  if (error instanceof SyntaxError) return 'invalid_json'
+  if (error instanceof ElevenLabsWebhookUnsupportedEventError) return 'unsupported_event'
+  if (error instanceof ElevenLabsWebhookEnvelopeError) return 'schema_validation'
+  if (error instanceof z.ZodError) return 'schema_validation'
+  if (error instanceof SafetyAssessmentValidationError) return 'assessment_validation'
+  if (error instanceof ConversationAssessmentProviderError) return 'assessment_provider'
+  return 'unexpected'
+}
+
 export interface AppDependencies {
   config: AppConfiguration
   repository: AuthRepository
   workflowRepository?: WorkflowRepository
   conversationService?: ConversationApplicationService
+  safetyAssessmentRepository?: PostgresSafetyAssessmentRepository
+  conversationAssessmentProvider?: ConversationAssessmentProvider
+  transcriptRepository?: PostgresTranscriptRepository
+  elevenLabsWebhookVerifier?: ElevenLabsWebhookVerifier
   oidcProvider?: OidcProvider
   now?: () => Date
 }
@@ -78,7 +98,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, transcriptRepository, elevenLabsWebhookVerifier, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -279,7 +299,6 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   }
 
   function workflowFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
-    if (error instanceof ActiveWorkflowError) return reply.code(409).send({ error: 'active_workflow_exists' })
     if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
     if (error instanceof StaleWorkflowError) return reply.code(409).send({ error: 'stale_workflow', currentVersion: error.currentVersion })
     if (error instanceof StaleSafetyObservationError) return reply.code(409).send({ error: 'stale_safety_observation', currentRevision: error.currentRevision })
@@ -315,7 +334,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof ProviderConversationMismatchError) return reply.code(409).send({ error: 'provider_id_mismatch' })
     if (error instanceof ConversationProviderUnavailableError) return reply.code(503).send({ error: 'provider_unavailable' })
     if (error instanceof ConversationProviderAuthorizationError) return reply.code(502).send({ error: 'provider_authorization_failed' })
-    request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Conversation operation failed')
+    if (error instanceof SafetyAssessmentValidationError) {
+      request.log.error({ category: 'assessment_activation_invalid' }, 'Conversation operation failed')
+      return reply.code(503).send({ error: 'assessment_activation_invalid' })
+    }
+    request.log.error({ category: 'unexpected', err: error instanceof Error ? error.name : 'unknown' }, 'Conversation operation failed')
     return reply.code(503).send({ error: 'conversation_unavailable' })
   }
 
@@ -328,6 +351,8 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   const conversationIdParamsSchema = z.object({ conversationId: z.string().uuid() })
   const clientConnectedSchema = z.object({ providerConversationId: z.string().trim().min(1).max(255) }).strict()
   const conversationEndSchema = z.object({ reason: z.enum(TERMINATION_REASONS) }).strict()
+  const assessmentParamsSchema = z.object({ workflowSessionId: z.string().uuid(), assessmentId: z.string().uuid() })
+  const assessmentReviewSchema = z.object({ status: z.enum(['dismissed', 'insufficient_information_acknowledged']) }).strict()
   const setupCommandSchema = z.object({
     type: z.literal('setup-confirmed'),
     idempotencyKey: z.string().uuid(),
@@ -400,6 +425,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       idempotencyKey: z.string().uuid(),
       expectedVersion: z.number().int().positive(),
       observation: safetyObservationSnapshotSchema,
+      candidateAssessmentId: z.string().uuid().optional(),
     }).strict(),
     z.object({
       type: z.literal('safety-observation-corrected'),
@@ -504,6 +530,40 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
+  app.get('/api/workflows/:workflowSessionId/pou/whakapapa/assessment-candidates', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository || !safetyAssessmentRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    if (!await workflowRepository.findById(user, params.data.workflowSessionId)) return reply.code(404).send({ error: 'not_found' })
+    try {
+      reply.header('cache-control', 'no-store')
+      return { candidates: await safetyAssessmentRepository.listReviewable(user, params.data.workflowSessionId) }
+    } catch (error) {
+      request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Safety assessment candidate lookup failed')
+      return reply.code(503).send({ error: 'persistence_unavailable' })
+    }
+  })
+
+  app.post('/api/workflows/:workflowSessionId/assessment-candidates/:assessmentId/review', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository || !safetyAssessmentRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const params = assessmentParamsSchema.safeParse(request.params)
+    const body = assessmentReviewSchema.safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    if (!await workflowRepository.findById(user, params.data.workflowSessionId)) return reply.code(404).send({ error: 'not_found' })
+    try {
+      await safetyAssessmentRepository.acknowledge(user, params.data.workflowSessionId, params.data.assessmentId, body.data.status)
+      return reply.code(204).send()
+    } catch (error) {
+      if (error instanceof AssessmentCandidateUnavailableError) return reply.code(409).send({ error: 'assessment_unavailable' })
+      return reply.code(503).send({ error: 'persistence_unavailable' })
+    }
+  })
+
   app.post('/api/workflows/:workflowSessionId/pou/:pouId/conversations', async (request, reply) => {
     if (!requireTrustedOrigin(request, reply)) return reply
     const user = await requireKaimahi(request, reply)
@@ -572,6 +632,75 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       return conversationFailure(error, request, reply)
     }
   })
+
+  if (config.elevenlabsWebhook && safetyAssessmentRepository && transcriptRepository) {
+    const verifier = elevenLabsWebhookVerifier ?? new ElevenLabsHmacWebhookVerifier(config.elevenlabsWebhook.signingSecret, config.elevenlabsWebhook.maximumAgeSeconds)
+    await app.register(async (webhookApp) => {
+      webhookApp.removeContentTypeParser('application/json')
+      webhookApp.addContentTypeParser('application/json', { parseAs: 'buffer', bodyLimit: config.elevenlabsWebhook!.maximumBodyBytes }, (_request, body, done) => done(null, body))
+      webhookApp.post('/api/integrations/elevenlabs/post-call', async (request, reply) => {
+        if (!Buffer.isBuffer(request.body)) return reply.code(415).send({ error: 'unsupported_media_type' })
+        try {
+          verifier.verify(request.body, request.headers[elevenLabsSignatureHeader] as string | undefined, now())
+          if (!conversationAssessmentProvider) return reply.code(503).send({ error: 'assessment_provider_unavailable' })
+          const event = parseElevenLabsPostCallTranscript(request.body)
+          const payloadHash = contentHash(request.body.toString('utf8'))
+          const transcriptReceivedAt = now()
+          const pin = await safetyAssessmentRepository.resolveActivePinForConversation({
+            providerConversationId: event.providerConversationId,
+            agentReference: event.agentReference,
+            branchReference: event.branchReference,
+            environment: event.environment,
+          })
+          const reservation = await safetyAssessmentRepository.reserveDelivery({ provider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, assessmentRunId: pin.runId })
+          if (reservation.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
+          if (reservation.replayed) return reply.code(200).send({ accepted: true, replayed: true, superseded: pin.superseded })
+          if (reservation.inFlight) return reply.code(503).send({ error: 'delivery_in_progress' })
+          try {
+            const retainedTranscript = await transcriptRepository.retainForConversation({
+              organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId,
+              workflowConversationId: pin.workflowConversationId, provider: 'elevenlabs', providerConversationId: event.providerConversationId,
+              turns: normaliseSignedTranscript(event.transientTranscript),
+            })
+            if (!pin.requiresAssessment || reservation.superseded) {
+              const outcome = await safetyAssessmentRepository.ingest({
+                deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
+                agentReference: event.agentReference, branchReference: event.branchReference, environment: event.environment,
+                transcriptReceivedAt, transcriptId: retainedTranscript.transcriptId, assessments: [],
+              })
+              return reply.code(202).send({ accepted: true, replayed: false, superseded: outcome.superseded })
+            }
+            const assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
+            const outcome = await safetyAssessmentRepository.ingest({
+              deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
+              agentReference: event.agentReference, branchReference: event.branchReference, environment: event.environment,
+              assessmentProvider: assessment.provider, assessmentProviderModel: assessment.model,
+              assessmentProviderConfigHash: assessment.configurationHash, assessmentSchemaVersion: assessment.schemaVersion,
+              transcriptReceivedAt, transcriptId: retainedTranscript.transcriptId, assessmentStartedAt: assessment.assessmentStartedAt, assessmentCompletedAt: assessment.assessmentCompletedAt,
+              assessments: assessment.assessment.assessments,
+            })
+            if (outcome.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
+            return reply.code(outcome.replayed ? 200 : 202).send({ accepted: true, replayed: outcome.replayed, superseded: outcome.superseded })
+          } catch (error) {
+            await safetyAssessmentRepository.releaseReservedDelivery({ provider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash })
+            throw error
+          }
+        } catch (error) {
+          if (error instanceof ProviderDeliveryConflictError) return reply.code(409).send({ error: 'delivery_conflict' })
+          if (error instanceof ConversationAssessmentProviderError) {
+            request.log.warn({ providerWebhookRejection: providerWebhookRejectionReason(error), bodyBytes: request.body.length }, 'ElevenLabs webhook assessment temporarily unavailable')
+            return reply.code(502).send({ error: 'assessment_provider_unavailable' })
+          }
+          // Keep the public response and persisted data deliberately opaque.
+          // This bounded category lets an operator distinguish delivery-path
+          // failures without ever logging raw provider content or credentials.
+          request.log.warn({ providerWebhookRejection: providerWebhookRejectionReason(error), bodyBytes: request.body.length }, 'ElevenLabs webhook rejected')
+          if (error instanceof SafetyAssessmentValidationError || error instanceof z.ZodError || error instanceof SyntaxError || error instanceof Error) return reply.code(400).send({ error: 'invalid_provider_event' })
+          return reply.code(400).send({ error: 'invalid_provider_event' })
+        }
+      })
+    })
+  }
 
   return app
 }

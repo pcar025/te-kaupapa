@@ -39,6 +39,7 @@ import {
   type SafetyConsequenceType,
   type SafetyDecisionCode,
 } from '../safety/domain.js'
+import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -236,13 +237,6 @@ export interface WorkflowRepository {
   findSafetyObservationHistory(actor: AuthenticatedUser, workflowSessionId: string, observationId: string): Promise<WorkflowSafetyObservationHistory | null>
 }
 
-export class ActiveWorkflowError extends Error {
-  constructor(public readonly workflowId?: string) {
-    super('The Kaimahi already has a resumable workflow.')
-    this.name = 'ActiveWorkflowError'
-  }
-}
-
 export class IdempotencyKeyReuseError extends Error {
   constructor() {
     super('The idempotency key was previously used for a different request.')
@@ -311,6 +305,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     private readonly db: WorkflowDatabase,
     private readonly now: () => Date = () => new Date(),
     private readonly referenceGenerator: () => string = generateWorkflowReference,
+    private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
   ) {}
 
   async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
@@ -322,16 +317,6 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const created = await this.db.transaction(async (tx) => {
         const repeated = await this.findReplay(input.actor, input.idempotencyKey, fingerprint, tx)
         if (repeated) return repeated
-
-        const existing = await tx
-          .select({ id: schema.workflowSessions.id })
-          .from(schema.workflowSessions)
-          .where(and(
-            eq(schema.workflowSessions.kaimahiUserId, input.actor.id),
-            inArray(schema.workflowSessions.status, ['draft', 'in_progress']),
-          ))
-          .limit(1)
-        if (existing[0]) throw new ActiveWorkflowError(existing[0].id)
 
         const timestamp = this.now()
         const workflowId = crypto.randomUUID()
@@ -377,8 +362,6 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       if (!isUniqueViolation(error)) throw error
       const repeated = await this.findReplay(input.actor, input.idempotencyKey, fingerprint)
       if (repeated) return repeated
-      const existing = await this.findResumableWorkflowId(input.actor)
-      if (existing) throw new ActiveWorkflowError(existing)
       throw error
     }
   }
@@ -480,6 +463,19 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         if (input.command.type === 'safety-observation-confirmed') {
           this.assertSafetyObservationSnapshot(input.command.observation)
           if (workflow.status === 'completed' || workflow.status === 'abandoned') throw new WorkflowTransitionError()
+          if (input.command.candidateAssessmentId) {
+            if (!this.safetyAssessments || input.command.observation.assessmentContext !== 'pou' || input.command.observation.pouId !== 'whakapapa') {
+              throw new WorkflowValidationError('Candidate safety assessment confirmation is not available.')
+            }
+            await this.safetyAssessments.prepareConfirmation(
+              tx,
+              input.actor,
+              workflow.id,
+              input.command.candidateAssessmentId,
+              input.command.observation.broadClass,
+              input.command.observation.concernLevel,
+            )
+          }
           const [existing] = await tx
             .select({ id: schema.workflowSafetyObservations.id })
             .from(schema.workflowSafetyObservations)
@@ -520,6 +516,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             observationId: input.command.observationId, organisationId: input.actor.organisation.id,
             revision: 1, concernLevel: observation.concernLevel, status: 'active', operation: 'confirmed', timestamp,
           })
+          if (input.command.candidateAssessmentId) {
+            await this.safetyAssessments!.finalizeConfirmation(tx, input.actor, workflow.id, input.command.candidateAssessmentId, input.command.observationId)
+          }
           await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
         } else if (input.command.type === 'safety-observation-corrected' || input.command.type === 'safety-observation-retracted') {
           if (workflow.status === 'abandoned') throw new WorkflowTransitionError()
@@ -646,6 +645,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
             eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
           ))
+          if (input.command.pouId === 'whakapapa' && this.safetyAssessments) {
+            await this.safetyAssessments.supersedeForPouConfirmation(tx, input.actor.organisation.id, workflow.id, 'whakapapa')
+          }
           await tx.update(schema.workflowSessions).set({
             currentStage: next.stage,
             currentPouId: next.currentPouId,
@@ -1243,16 +1245,4 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     }
   }
 
-  private async findResumableWorkflowId(actor: AuthenticatedUser): Promise<string | null> {
-    const [workflow] = await this.db
-      .select({ id: schema.workflowSessions.id })
-      .from(schema.workflowSessions)
-      .where(and(
-        eq(schema.workflowSessions.organisationId, actor.organisation.id),
-        eq(schema.workflowSessions.kaimahiUserId, actor.id),
-        inArray(schema.workflowSessions.status, ['draft', 'in_progress']),
-      ))
-      .limit(1)
-    return workflow?.id ?? null
-  }
 }

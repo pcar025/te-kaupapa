@@ -31,6 +31,7 @@ import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../s
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
 import type { ConversationRecord } from './conversations/repository.js'
 import type { ConversationApplicationService } from './conversations/service.js'
+import { SafetyAssessmentValidationError } from './safety-assessments/repository.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -411,6 +412,7 @@ function config(): AppConfiguration {
   return {
     nodeEnv: 'test',
     port: 3011,
+    host: '127.0.0.1',
     databaseUrl: 'postgresql://not-used',
     appOrigin: 'http://api.test',
     frontendOrigin: 'http://web.test',
@@ -703,6 +705,36 @@ describe('authenticated application shell API', () => {
     expect(ended.json()).toMatchObject({ conversation: { status: 'ended', terminationReason: 'user_ended' } })
     expect(ended.headers['cache-control']).toBe('no-store')
     expect(await workflows.findById(activeKaimahi, created.workflow.id)).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2 })
+    await app.close()
+  })
+
+  it('reports an invalid active assessment activation without exposing its internals', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    conversations.start = async () => { throw new SafetyAssessmentValidationError('durable activation detail must remain server-only') }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '50f4d472-fd36-4c9e-a354-2a5b2adabc8f', userId: activeKaimahi.id, tokenHash: sha256('invalid-activation-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: '3a379063-fcd9-4fea-b5fc-31fbdf6b3ff4' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: 'ab5e4581-508c-45a3-8dac-4d5dd72c0a5e', expectedVersion: 1, whanauReference: 'TW-05', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`,
+      headers: { cookie: 'test_session=invalid-activation-session', origin: 'http://web.test' },
+      payload: { idempotencyKey: '89a31317-47e4-44d2-8e85-a086e6495b38' },
+    })
+
+    expect(response.statusCode).toBe(503)
+    expect(response.json()).toEqual({ error: 'assessment_activation_invalid' })
+    expect(response.body).not.toContain('durable activation detail')
     await app.close()
   })
 

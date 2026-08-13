@@ -30,6 +30,8 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
+  getWhakapapaAssessmentCandidates,
+  reviewWhakapapaAssessmentCandidate,
   submitWorkflowCommand,
   type Workflow,
   type WorkflowAction,
@@ -37,6 +39,7 @@ import {
   type WorkflowReferral,
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
+  type WhakapapaAssessmentCandidate,
 } from '../workflows'
 import { VoiceChunkBoundary, VoiceChunkLoading } from '../conversations/VoiceChunkBoundary'
 
@@ -1719,10 +1722,43 @@ const CONCERN_META: Record<ConcernLevel, { label: string; color: string; bg: str
   urgent: { label: 'Urgent concern', color: 'var(--color-concern)', bg: '#fee8e6' },
 }
 
+function WhakapapaAssessmentCandidates({
+  workflowId,
+  onConfirm,
+}: {
+  workflowId: string
+  onConfirm: (candidate: WhakapapaAssessmentCandidate, level: SafetyObservationConcernLevel) => void
+}) {
+  const [candidates, setCandidates] = useState<WhakapapaAssessmentCandidate[]>([])
+  const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const [selected, setSelected] = useState<Record<string, SafetyObservationConcernLevel | undefined>>({})
+  const load = () => {
+    setState('loading')
+    void getWhakapapaAssessmentCandidates(workflowId).then((items) => { setCandidates(items); setState('idle') }).catch(() => setState('failed'))
+  }
+  if (!candidates.length && state === 'idle') return <div className="flex justify-between gap-3 px-4 py-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>You can check for a completed reflection assessment. Manual review remains available.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
+  return <div className="space-y-3" aria-live="polite">
+    {state === 'loading' && <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Checking for a completed reflection assessment…</p>}
+    {state === 'failed' && <div className="flex justify-between gap-3"><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Assessment suggestions could not be loaded. Manual review remains available.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>}
+    {candidates.map((candidate) => candidate.outcome === 'possible_concern' ? <div key={candidate.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
+      <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-caution)', letterSpacing: '0.08em' }}>POSSIBLE CONCERN FOR YOUR REVIEW</p>
+      <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>The reflection suggests this may need your attention. This has not been confirmed.</p>
+      <p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{candidate.title}</p>
+      <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.description}</p>
+      {candidate.matchedConcernIndicatorCodes.length > 0 && <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>Matched concern indicators: {candidate.matchedConcernIndicatorCodes.join(', ')}</p>}
+      {candidate.matchedProtectiveIndicatorCodes.length > 0 && <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>Relevant protective indicators: {candidate.matchedProtectiveIndicatorCodes.join(', ')}</p>}
+      <fieldset><legend className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS?</legend><div className="grid grid-cols-2 gap-1.5">{candidate.permittedHumanConcernLevels.map((level) => <button type="button" key={level} onClick={() => setSelected((current) => ({ ...current, [candidate.id]: level }))} className="px-3 py-2 text-left text-xs" style={{ backgroundColor: selected[candidate.id] === level ? 'var(--color-caution-light)' : 'var(--color-ground)', borderLeft: `3px solid ${selected[candidate.id] === level ? 'var(--color-caution)' : 'var(--color-border)'}`, fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>
+      <div className="flex gap-3"><button type="button" disabled={!selected[candidate.id]} onClick={() => selected[candidate.id] && onConfirm(candidate, selected[candidate.id]!)} className="text-xs disabled:opacity-40" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Confirm concern</button><button type="button" onClick={() => void reviewWhakapapaAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Dismiss suggestion</button></div>
+    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.missingInformationCodes.join(', ')}</p><button type="button" onClick={() => void reviewWhakapapaAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge</button></div> : null)}
+  </div>
+}
+
 function SinglePouReviewStage({
   pouIdx,
   checkpoint,
   onConfirm,
+  workflowId,
+  onCandidateConfirm,
   persistenceState,
   onRetry,
   onReload,
@@ -1735,6 +1771,8 @@ function SinglePouReviewStage({
     referralSuggested: boolean
     supervisorReviewSuggested: boolean
   }, safetyDraft?: SafetyDraft, supervisorReviewRequest?: { note?: string }) => void
+  workflowId: string
+  onCandidateConfirm: (candidate: WhakapapaAssessmentCandidate, level: SafetyObservationConcernLevel) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
@@ -1808,6 +1846,7 @@ function SinglePouReviewStage({
       </div>
 
       <div className="px-5 pt-5 space-y-5">
+        {pouIdx === 0 && <WhakapapaAssessmentCandidates workflowId={workflowId} onConfirm={onCandidateConfirm} />}
         {/* What was discussed */}
         <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
           <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
@@ -5893,6 +5932,23 @@ export function SessionShell({
     void attempt()
   }
 
+  const confirmAssessmentCandidate = (candidate: WhakapapaAssessmentCandidate, concernLevel: SafetyObservationConcernLevel) => {
+    if (!candidate.canonicalBroadClass) return
+    const command = {
+      type: 'safety-observation-confirmed' as const,
+      observationId: crypto.randomUUID(),
+      idempotencyKey: crypto.randomUUID(),
+      expectedVersion: workflow.version,
+      candidateAssessmentId: candidate.id,
+      observation: { assessmentContext: 'pou' as const, pouId: 'whakapapa' as const, broadClass: candidate.canonicalBroadClass, concernLevel },
+    }
+    retrySubmission.current = async () => {
+      const result = await submitWorkflowCommand(workflow.id, command)
+      onWorkflowChange(result.workflow)
+    }
+    void persist(() => submitWorkflowCommand(workflow.id, command))
+  }
+
   const correctSafetyConcern = (observation: SafetyObservationCurrentView, replacement: SafetyDraft, reason: string) => {
     const command = { type: 'safety-observation-corrected' as const, observationId: observation.id, expectedObservationRevision: observation.currentRevision, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version, replacement, reason }
     const attempt = async (retrying = false) => {
@@ -6069,7 +6125,7 @@ export function SessionShell({
         {stage === 'pou-overview' && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} onCandidateConfirm={confirmAssessmentCandidate} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <RealPouSummaryStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'pou-summary-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

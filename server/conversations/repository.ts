@@ -1,10 +1,11 @@
-import { and, desc, eq, inArray } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import type { WorkflowPouId } from '../../shared/workflow.js'
 import type { AuthenticatedUser } from '../domain/auth.js'
 import * as schema from '../db/schema.js'
-import type { ConversationStatus, ConversationTerminationReason } from './domain.js'
+import { assertWhakapapaConversationEligibility, type ConversationStatus, type ConversationTerminationReason, type ConversationWorkflowState } from './domain.js'
+import type { AssessmentStartPin, ConversationAssessmentRunWriter } from '../safety-assessments/repository.js'
 
 type ConversationDatabase = NodePgDatabase<typeof schema>
 
@@ -44,6 +45,7 @@ export interface PrepareConversationInput {
   conversationSpecificationVersion: number
   idempotencyKey: string
   requestFingerprint: string
+  assessmentPin?: AssessmentStartPin | null
 }
 
 export interface PreparedConversation {
@@ -92,7 +94,11 @@ function asRecord(row: typeof schema.workflowConversations.$inferSelect): Conver
 }
 
 export class PostgresConversationRepository implements ConversationRepository {
-  constructor(private readonly db: ConversationDatabase, private readonly now: () => Date = () => new Date()) {}
+  constructor(
+    private readonly db: ConversationDatabase,
+    private readonly now: () => Date = () => new Date(),
+    private readonly assessmentRunWriter?: ConversationAssessmentRunWriter,
+  ) {}
 
   async prepare(input: PrepareConversationInput): Promise<PreparedConversation> {
     const findExisting = async (executor: ConversationDatabase) => executor
@@ -113,6 +119,39 @@ export class PostgresConversationRepository implements ConversationRepository {
           return { conversation, created: false }
         }
 
+        // Conversation creation and ordinary Pou confirmation share the
+        // workflow-session lock. This keeps assessment-run supersession and
+        // provider delivery reconciliation serializable for one workflow.
+        const locked = await tx.execute(sql`
+          select id from workflow_session
+          where id = ${input.workflowSessionId}
+            and organisation_id = ${input.actor.organisation.id}
+            and kaimahi_user_id = ${input.actor.id}
+          for update
+        `)
+        if (locked.rows.length === 0) throw new ConversationRepositoryError()
+        const [lockedWorkflow] = await tx
+          .select({
+            status: schema.workflowSessions.status,
+            currentStage: schema.workflowSessions.currentStage,
+            currentPouId: schema.workflowSessions.currentPouId,
+          })
+          .from(schema.workflowSessions)
+          .where(eq(schema.workflowSessions.id, input.workflowSessionId))
+          .limit(1)
+        const checkpoints = await tx
+          .select({ pouId: schema.workflowPouCheckpoints.pouId, progress: schema.workflowPouCheckpoints.progress })
+          .from(schema.workflowPouCheckpoints)
+          .where(eq(schema.workflowPouCheckpoints.workflowSessionId, input.workflowSessionId))
+        if (!lockedWorkflow) throw new ConversationRepositoryError()
+        const workflowState: ConversationWorkflowState = {
+          status: lockedWorkflow.status as ConversationWorkflowState['status'],
+          currentStage: lockedWorkflow.currentStage as ConversationWorkflowState['currentStage'],
+          currentPouId: lockedWorkflow.currentPouId as ConversationWorkflowState['currentPouId'],
+          checkpoints: checkpoints.map((checkpoint) => ({ pouId: checkpoint.pouId as WorkflowPouId, progress: checkpoint.progress as 'not_started' | 'confirmed' })),
+        }
+        assertWhakapapaConversationEligibility(workflowState, input.pouId)
+
         const timestamp = this.now()
         const [created] = await tx.insert(schema.workflowConversations).values({
           organisationId: input.actor.organisation.id,
@@ -132,6 +171,20 @@ export class PostgresConversationRepository implements ConversationRepository {
           updatedAt: timestamp,
         }).returning()
         if (!created) throw new ConversationRepositoryError()
+        // Phase 5A remains usable without an approved assessment activation.
+        // When one is active, its exact policy and projection are pinned in the
+        // same transaction as the provider conversation provenance.
+        if (input.assessmentPin && !this.assessmentRunWriter) throw new ConversationRepositoryError()
+        if (input.assessmentPin) await this.assessmentRunWriter!.createRun(tx, {
+          id: created.id,
+          organisationId: created.organisationId,
+          workflowSessionId: created.workflowSessionId,
+          pouId: 'whakapapa',
+          provider: created.provider,
+          providerAgentReference: created.providerAgentReference,
+          providerBranchReference: created.providerBranchReference,
+          providerEnvironment: created.providerEnvironment,
+        }, input.assessmentPin)
         return { conversation: asRecord(created), created: true }
       })
     } catch (error) {

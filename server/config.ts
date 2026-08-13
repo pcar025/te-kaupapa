@@ -14,9 +14,17 @@ export interface ElevenLabsConfiguration {
   agentEnvironment: string
 }
 
+export interface ElevenLabsWebhookConfiguration {
+  signingSecret: string
+  maximumBodyBytes: number
+  maximumAgeSeconds: number
+}
+export interface OpenAiAssessmentConfiguration { apiKey: string; model: string }
+
 export interface AppConfiguration {
   nodeEnv: 'development' | 'test' | 'production'
   port: number
+  host: '0.0.0.0' | '127.0.0.1' | '::1'
   databaseUrl: string
   appOrigin: string
   frontendOrigin: string
@@ -27,11 +35,14 @@ export interface AppConfiguration {
   sessionIdleTimeoutMinutes: number
   cognito?: CognitoConfiguration
   elevenlabs?: ElevenLabsConfiguration
+  elevenlabsWebhook?: ElevenLabsWebhookConfiguration
+  openaiAssessment?: OpenAiAssessmentConfiguration
 }
 
 const runtimeSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().positive().default(3011),
+  HOST: z.enum(['0.0.0.0', '127.0.0.1', '::1']).default('0.0.0.0'),
   DATABASE_URL: z.string().min(1),
   APP_ORIGIN: z.string().url(),
   FRONTEND_ORIGIN: z.string().url(),
@@ -48,6 +59,13 @@ const runtimeSchema = z.object({
   ELEVENLABS_AGENT_ID: z.string().trim().min(1).max(255).optional(),
   ELEVENLABS_AGENT_BRANCH_ID: z.string().trim().min(1).max(255).optional(),
   ELEVENLABS_AGENT_ENVIRONMENT: z.string().trim().min(1).max(80).optional(),
+  ELEVENLABS_WEBHOOK_SECRET: z.string().min(16).optional(),
+  // Real post-call transcript envelopes can exceed 32 KiB. Keep a bounded
+  // ingress limit while allowing the provider's signed result to arrive.
+  ELEVENLABS_WEBHOOK_MAXIMUM_BODY_BYTES: z.coerce.number().int().min(1024).max(262144).default(131072),
+  ELEVENLABS_WEBHOOK_MAXIMUM_AGE_SECONDS: z.coerce.number().int().min(30).max(900).default(300),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+  OPENAI_ASSESSMENT_MODEL: z.string().trim().min(1).max(200).optional(),
 })
 
 export function loadConfiguration(env = process.env): AppConfiguration {
@@ -71,6 +89,9 @@ export function loadConfiguration(env = process.env): AppConfiguration {
   if (hasElevenLabs && elevenLabsValues.some((value) => !value)) {
     throw new Error('ELEVENLABS_API_KEY, ELEVENLABS_AGENT_ID, ELEVENLABS_AGENT_BRANCH_ID, and ELEVENLABS_AGENT_ENVIRONMENT must be set together.')
   }
+  const openAiValues = [parsed.OPENAI_API_KEY, parsed.OPENAI_ASSESSMENT_MODEL]
+  const hasOpenAiAssessment = openAiValues.some(Boolean)
+  if (hasOpenAiAssessment && openAiValues.some((value) => !value)) throw new Error('OPENAI_API_KEY and OPENAI_ASSESSMENT_MODEL must be set together.')
 
   const allowedOrigins = new Set([parsed.APP_ORIGIN, parsed.FRONTEND_ORIGIN])
   for (const origin of (parsed.CORS_ALLOWED_ORIGINS ?? '').split(',')) {
@@ -80,6 +101,7 @@ export function loadConfiguration(env = process.env): AppConfiguration {
   return {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
+    host: parsed.HOST,
     databaseUrl: parsed.DATABASE_URL,
     appOrigin: parsed.APP_ORIGIN,
     frontendOrigin: parsed.FRONTEND_ORIGIN,
@@ -104,5 +126,9 @@ export function loadConfiguration(env = process.env): AppConfiguration {
           agentEnvironment: parsed.ELEVENLABS_AGENT_ENVIRONMENT!,
         }
       : undefined,
+    elevenlabsWebhook: parsed.ELEVENLABS_WEBHOOK_SECRET
+      ? { signingSecret: parsed.ELEVENLABS_WEBHOOK_SECRET, maximumBodyBytes: parsed.ELEVENLABS_WEBHOOK_MAXIMUM_BODY_BYTES, maximumAgeSeconds: parsed.ELEVENLABS_WEBHOOK_MAXIMUM_AGE_SECONDS }
+      : undefined,
+    openaiAssessment: hasOpenAiAssessment ? { apiKey: parsed.OPENAI_API_KEY!, model: parsed.OPENAI_ASSESSMENT_MODEL! } : undefined,
   }
 }

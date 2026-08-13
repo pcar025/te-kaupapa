@@ -10,8 +10,8 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena']
-const PRE_MILESTONE_5_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 5)
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway']
+const PRE_MILESTONE_5_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 6)
 
 interface MigrationJournal {
   entries: Array<{ tag: string }>
@@ -167,22 +167,44 @@ export async function verifyUpgradeFromPreMilestone5TestDatabase(): Promise<void
     await resetDisposableSchemaForUpgradeTest(connection)
     await migrate(connection.db, { migrationsFolder: temporaryMigrationsFolder })
     if (await recordedMigrationCount(connection) !== PRE_MILESTONE_5_MIGRATION_TAGS.length) {
-      throw new Error('The disposable database did not record the genuine 0000 through 0004 Drizzle migration journal before the 0005 upgrade.')
+      throw new Error('The disposable database did not record the genuine 0000 through 0005 Drizzle migration journal before the later migration upgrades.')
     }
 
     const markerSlug = `upgrade-check-${Date.now()}`
     await connection.db.execute(sql`insert into "organisation" ("slug", "name") values (${markerSlug}, 'Pre-Milestone 5 fixture')`)
     await migrate(connection.db, { migrationsFolder: migrationDetails().migrationsFolder })
     if (await recordedMigrationCount(connection) !== REQUIRED_MIGRATION_TAGS.length) {
-      throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after the 0005 upgrade.`)
+      throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after the later migration upgrades.`)
     }
     const preservedFixture = await connection.db.execute(sql`select "id" from "organisation" where "slug" = ${markerSlug}`)
     if (preservedFixture.rows.length !== 1) {
-      throw new Error('The pre-0005 fixture data was not preserved by the 0005 upgrade.')
+      throw new Error('The pre-Milestone 5 fixture data was not preserved by the later migration upgrades.')
     }
     const conversationTable = await connection.db.execute(sql`select to_regclass('public.workflow_conversation') as relation`)
     if (!(conversationTable.rows[0] as { relation?: string | null } | undefined)?.relation) {
-      throw new Error('The 0005 conversation provenance schema was not created by the genuine upgrade.')
+      throw new Error('The conversation provenance schema was not preserved by the later migration upgrades.')
+    }
+    const assessmentProviderColumns = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.columns
+      where table_schema = 'public' and table_name = 'conversation_safety_assessment_run'
+        and column_name in ('assessment_provider', 'assessment_provider_model', 'assessment_provider_config_hash', 'assessment_schema_version', 'transcript_received_at', 'assessment_started_at', 'assessment_completed_at', 'review_available_at')
+    `)
+    if (Number(assessmentProviderColumns.rows[0]?.count ?? 0) !== 8) {
+      throw new Error('The assessment-provider provenance columns were not created by the Phase 5B migration chain.')
+    }
+    const transcriptRelations = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.tables
+      where table_schema = 'public' and table_name in ('conversation_transcript', 'conversation_transcript_turn')
+    `)
+    if (Number(transcriptRelations.rows[0]?.count ?? 0) !== 2) {
+      throw new Error('The transcript source-material tables were not created by the Phase 5B migration chain.')
+    }
+    const evidenceTurnColumn = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.columns
+      where table_schema = 'public' and table_name = 'conversation_provider_rule_assessment' and column_name = 'evidence_turn_ids'
+    `)
+    if (Number(evidenceTurnColumn.rows[0]?.count ?? 0) !== 1) {
+      throw new Error('The evidence-turn provenance column was not created by the Phase 5B migration chain.')
     }
   } catch (error) {
     primaryFailure = true

@@ -6,6 +6,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgEnum,
   pgTable,
   primaryKey,
@@ -54,6 +55,13 @@ export const workflowSafetyConsequenceType = pgEnum('workflow_safety_consequence
 export const workflowSafetyConsequenceState = pgEnum('workflow_safety_consequence_state', ['required', 'ceased'])
 export const workflowSafetyConsequenceCessationReason = pgEnum('workflow_safety_consequence_cessation_reason', ['observation_corrected', 'observation_retracted'])
 export const workflowConversationStatus = pgEnum('workflow_conversation_status', ['preparing', 'authorized', 'active', 'ended', 'failed'])
+export const safetySpecificationApprovalStatus = pgEnum('safety_specification_approval_status', ['draft_derived', 'approved_for_pilot'])
+export const safetyEvidenceScope = pgEnum('safety_evidence_scope', ['current_conversation', 'application_state', 'longitudinal'])
+export const providerAssessmentOutcome = pgEnum('provider_assessment_outcome', ['no_candidate_concern', 'possible_concern', 'insufficient_information', 'not_applicable'])
+export const providerAssessmentRunStatus = pgEnum('provider_assessment_run_status', ['pending', 'received', 'superseded'])
+export const providerAssessmentReviewStatus = pgEnum('provider_assessment_review_status', ['confirmed', 'dismissed', 'insufficient_information_acknowledged'])
+export const providerAssessmentDeliveryStatus = pgEnum('provider_assessment_delivery_status', ['reserved', 'completed'])
+export const conversationTranscriptSpeaker = pgEnum('conversation_transcript_speaker', ['kaimahi', 'assistant', 'unknown'])
 export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
@@ -177,9 +185,6 @@ export const workflowSessions = pgTable(
     }),
     uniqueIndex('workflow_session_organisation_reference_uq').on(table.organisationId, table.reference),
     uniqueIndex('workflow_session_id_organisation_uq').on(table.id, table.organisationId),
-    uniqueIndex('workflow_session_one_resumable_per_kaimahi_uq')
-      .on(table.kaimahiUserId)
-      .where(sql`${table.status} in ('draft', 'in_progress')`),
     index('workflow_session_kaimahi_status_updated_idx').on(table.kaimahiUserId, table.status, table.updatedAt),
     index('workflow_session_organisation_whanau_updated_idx').on(table.organisationId, table.whanauReference, table.updatedAt),
     check('workflow_session_version_positive', sql`${table.version} > 0`),
@@ -270,6 +275,7 @@ export const workflowConversations = pgTable(
       .on(table.provider, table.providerConversationId)
       .where(sql`${table.providerConversationId} is not null`),
     uniqueIndex('workflow_conversation_actor_start_idempotency_uq').on(table.startedByUserId, table.startIdempotencyKey),
+    uniqueIndex('workflow_conversation_id_scope_uq').on(table.id, table.organisationId, table.workflowSessionId, table.pouId),
     uniqueIndex('workflow_conversation_one_open_per_pou_uq')
       .on(table.workflowSessionId, table.pouId)
       .where(sql`${table.status} in ('preparing', 'authorized', 'active')`),
@@ -316,6 +322,262 @@ export const workflowConversations = pgTable(
           or (${table.providerConversationId} is not null and ${table.authorizedAt} is not null)
         ))
     `),
+  ],
+)
+
+/**
+ * Phase 5B provider assessments are deliberately noncanonical. These records
+ * pin approved SME policy/projection provenance and structured results only;
+ * they do not retain transcript, captions, audio, raw payloads, or effects.
+ */
+export const safetySpecificationVersions = pgTable(
+  'safety_specification_version',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull().references(() => organisations.id),
+    specificationCode: text('specification_code').notNull(),
+    specificationVersion: text('specification_version').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    approvalStatus: safetySpecificationApprovalStatus('approval_status').notNull(),
+    contentHash: text('content_hash').notNull(),
+    ruleManifestHash: text('rule_manifest_hash').notNull(),
+    specification: jsonb('specification').notNull(),
+    sourceDocumentCode: text('source_document_code').notNull(),
+    sourceDocumentStatus: text('source_document_status').notNull(),
+    sourceReference: text('source_reference').notNull(),
+    sourceDocumentHash: text('source_document_hash').notNull(),
+    derivedAt: timestamp('derived_at', { withTimezone: true }).notNull(),
+    approvedForPilotBy: uuid('approved_for_pilot_by'),
+    approvedForPilotAt: timestamp('approved_for_pilot_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.approvedForPilotBy, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'safety_specification_approval_actor_organisation_fk' }),
+    uniqueIndex('safety_specification_organisation_code_version_uq').on(table.organisationId, table.specificationCode, table.specificationVersion),
+    uniqueIndex('safety_specification_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    check('safety_specification_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('safety_specification_hash_format', sql`length(${table.contentHash}) = 64 and length(${table.ruleManifestHash}) = 64 and length(${table.sourceDocumentHash}) = 64`),
+    check('safety_specification_approval_fields', sql`(${table.approvalStatus} = 'draft_derived' and ${table.approvedForPilotBy} is null and ${table.approvedForPilotAt} is null) or (${table.approvalStatus} = 'approved_for_pilot' and ${table.approvedForPilotBy} is not null and ${table.approvedForPilotAt} is not null)`),
+  ],
+)
+
+export const providerAssessmentProjections = pgTable(
+  'provider_assessment_projection',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    specificationId: uuid('specification_id').notNull(),
+    projectionCode: text('projection_code').notNull(),
+    projectionVersion: text('projection_version').notNull(),
+    projectionHash: text('projection_hash').notNull(),
+    provider: text('provider').notNull(),
+    providerAgentReference: text('provider_agent_reference').notNull(),
+    providerBranchReference: text('provider_branch_reference'),
+    providerEnvironment: text('provider_environment').notNull(),
+    projection: jsonb('projection').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'provider_projection_specification_organisation_pou_fk' }),
+    uniqueIndex('provider_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
+    uniqueIndex('provider_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    index('provider_projection_provider_agent_idx').on(table.provider, table.providerAgentReference, table.providerEnvironment),
+    check('provider_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('provider_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
+  ],
+)
+
+export const safetySpecificationActivations = pgTable(
+  'safety_specification_activation',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull().references(() => organisations.id),
+    pouId: workflowPouId('pou_id').notNull(),
+    specificationId: uuid('specification_id').notNull(),
+    projectionId: uuid('projection_id').notNull(),
+    activatedByUserId: uuid('activated_by_user_id').notNull(),
+    activatedAt: timestamp('activated_at', { withTimezone: true }).defaultNow().notNull(),
+    deactivatedAt: timestamp('deactivated_at', { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'safety_activation_specification_organisation_pou_fk' }),
+    foreignKey({ columns: [table.projectionId, table.organisationId, table.pouId], foreignColumns: [providerAssessmentProjections.id, providerAssessmentProjections.organisationId, providerAssessmentProjections.pouId], name: 'safety_activation_projection_organisation_pou_fk' }),
+    foreignKey({ columns: [table.activatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'safety_activation_actor_organisation_fk' }),
+    uniqueIndex('safety_activation_one_active_per_organisation_pou_uq').on(table.organisationId, table.pouId).where(sql`${table.deactivatedAt} is null`),
+    check('safety_activation_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+  ],
+)
+
+export const conversationSafetyAssessmentRuns = pgTable(
+  'conversation_safety_assessment_run',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowConversationId: uuid('workflow_conversation_id').notNull().references(() => workflowConversations.id, { onDelete: 'cascade' }),
+    organisationId: uuid('organisation_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    specificationId: uuid('specification_id').notNull(),
+    specificationCode: text('specification_code').notNull(),
+    specificationVersion: text('specification_version').notNull(),
+    specificationHash: text('specification_hash').notNull(),
+    ruleManifestHash: text('rule_manifest_hash').notNull(),
+    projectionId: uuid('projection_id').notNull(),
+    projectionCode: text('projection_code').notNull(),
+    projectionVersion: text('projection_version').notNull(),
+    projectionHash: text('projection_hash').notNull(),
+    provider: text('provider').notNull(),
+    providerAgentReference: text('provider_agent_reference').notNull(),
+    providerBranchReference: text('provider_branch_reference'),
+    providerEnvironment: text('provider_environment').notNull(),
+    /** The transcript interpreter is distinct from the conversation provider. */
+    assessmentProvider: text('assessment_provider'),
+    assessmentProviderModel: text('assessment_provider_model'),
+    assessmentProviderConfigHash: text('assessment_provider_config_hash'),
+    assessmentSchemaVersion: text('assessment_schema_version'),
+    transcriptReceivedAt: timestamp('transcript_received_at', { withTimezone: true }),
+    assessmentStartedAt: timestamp('assessment_started_at', { withTimezone: true }),
+    assessmentCompletedAt: timestamp('assessment_completed_at', { withTimezone: true }),
+    reviewAvailableAt: timestamp('review_available_at', { withTimezone: true }),
+    /** Complete immutable policy artifacts pinned when the conversation starts. */
+    specificationSnapshot: jsonb('specification_snapshot').notNull(),
+    projectionSnapshot: jsonb('projection_snapshot').notNull(),
+    status: providerAssessmentRunStatus('status').default('pending').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }),
+    supersededAt: timestamp('superseded_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'assessment_run_session_organisation_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'assessment_run_checkpoint_organisation_fk' }),
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'assessment_run_specification_organisation_pou_fk' }),
+    foreignKey({ columns: [table.projectionId, table.organisationId, table.pouId], foreignColumns: [providerAssessmentProjections.id, providerAssessmentProjections.organisationId, providerAssessmentProjections.pouId], name: 'assessment_run_projection_organisation_pou_fk' }),
+    uniqueIndex('assessment_run_one_per_conversation_uq').on(table.workflowConversationId),
+    uniqueIndex('assessment_run_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
+    index('assessment_run_workflow_pou_status_idx').on(table.workflowSessionId, table.pouId, table.status),
+    check('assessment_run_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('assessment_run_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.ruleManifestHash}) = 64 and length(${table.projectionHash}) = 64`),
+    check('assessment_run_status_timestamps', sql`(${table.status} = 'pending' and ${table.receivedAt} is null and ${table.supersededAt} is null) or (${table.status} = 'received' and ${table.receivedAt} is not null and ${table.supersededAt} is null) or (${table.status} = 'superseded' and ${table.supersededAt} is not null)`),
+  ],
+)
+
+/**
+ * Noncanonical supporting source material.  These rows are deliberately not
+ * joined into ordinary workflow or dashboard serializers.  A later transcript
+ * access policy/service may move text to encrypted object storage without
+ * changing the conversation, assessment, or canonical-safety contracts.
+ */
+export const conversationTranscripts = pgTable(
+  'conversation_transcript',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    workflowConversationId: uuid('workflow_conversation_id').notNull(),
+    provider: text('provider').notNull(),
+    providerConversationId: text('provider_conversation_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowConversationId, table.organisationId, table.workflowSessionId, table.pouId], foreignColumns: [workflowConversations.id, workflowConversations.organisationId, workflowConversations.workflowSessionId, workflowConversations.pouId], name: 'transcript_conversation_scope_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'transcript_checkpoint_organisation_fk' }),
+    uniqueIndex('transcript_one_per_workflow_conversation_uq').on(table.workflowConversationId),
+    uniqueIndex('transcript_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
+    check('transcript_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+  ],
+)
+
+export const conversationTranscriptTurns = pgTable(
+  'conversation_transcript_turn',
+  {
+    id: uuid('id').primaryKey(),
+    transcriptId: uuid('transcript_id').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    speaker: conversationTranscriptSpeaker('speaker').notNull(),
+    text: text('text').notNull(),
+    providerSequence: integer('provider_sequence'),
+    providerTimestamp: timestamp('provider_timestamp', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.transcriptId], foreignColumns: [conversationTranscripts.id], name: 'transcript_turn_transcript_fk' }),
+    uniqueIndex('transcript_turn_transcript_ordinal_uq').on(table.transcriptId, table.ordinal),
+    check('transcript_turn_ordinal_positive', sql`${table.ordinal} > 0`),
+    check('transcript_turn_text_nonempty', sql`length(${table.text}) between 1 and 120000`),
+  ],
+)
+
+export const providerAssessmentDeliveries = pgTable(
+  'provider_assessment_delivery',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    provider: text('provider').notNull(),
+    providerDeliveryId: text('provider_delivery_id').notNull(),
+    payloadHash: text('payload_hash').notNull(),
+    assessmentRunId: uuid('assessment_run_id').notNull(),
+    status: providerAssessmentDeliveryStatus('status').default('reserved').notNull(),
+    receivedAt: timestamp('received_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.assessmentRunId], foreignColumns: [conversationSafetyAssessmentRuns.id], name: 'provider_delivery_assessment_run_fk' }),
+    uniqueIndex('provider_assessment_delivery_identity_uq').on(table.provider, table.providerDeliveryId),
+    check('provider_delivery_hash_format', sql`length(${table.payloadHash}) = 64`),
+  ],
+)
+
+export const conversationProviderRuleAssessments = pgTable(
+  'conversation_provider_rule_assessment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    assessmentRunId: uuid('assessment_run_id').notNull(),
+    ruleCode: text('rule_code').notNull(),
+    ruleVersion: integer('rule_version').notNull(),
+    evidenceScope: safetyEvidenceScope('evidence_scope').notNull(),
+    outcome: providerAssessmentOutcome('outcome').notNull(),
+    candidateConcernLevel: workflowSafetyConcernLevel('candidate_concern_level'),
+    matchedProtectiveIndicatorCodes: jsonb('matched_protective_indicator_codes').notNull(),
+    matchedConcernIndicatorCodes: jsonb('matched_concern_indicator_codes').notNull(),
+    missingInformationCodes: jsonb('missing_information_codes').notNull(),
+    uncertaintyReasonCodes: jsonb('uncertainty_reason_codes').notNull(),
+    applicabilityReasonCode: text('applicability_reason_code'),
+    evidenceTurnIds: jsonb('evidence_turn_ids').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.assessmentRunId], foreignColumns: [conversationSafetyAssessmentRuns.id], name: 'provider_rule_assessment_run_fk' }),
+    uniqueIndex('provider_rule_assessment_run_rule_version_uq').on(table.assessmentRunId, table.ruleCode, table.ruleVersion),
+    uniqueIndex('provider_rule_assessment_id_run_uq').on(table.id, table.assessmentRunId),
+    check('provider_rule_assessment_current_conversation_only', sql`${table.evidenceScope} = 'current_conversation'`),
+    // v0.1 leaves all concern-level selection to an explicit human action.
+    check('provider_rule_assessment_level_outcome', sql`${table.candidateConcernLevel} is null`),
+    check('provider_rule_assessment_code_length', sql`length(${table.ruleCode}) between 2 and 120`),
+  ],
+)
+
+export const providerAssessmentReviews = pgTable(
+  'provider_assessment_review',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    providerRuleAssessmentId: uuid('provider_rule_assessment_id').notNull(),
+    assessmentRunId: uuid('assessment_run_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    reviewedByUserId: uuid('reviewed_by_user_id').notNull(),
+    status: providerAssessmentReviewStatus('status').notNull(),
+    classificationSource: text('classification_source'),
+    canonicalObservationId: uuid('canonical_observation_id'),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.providerRuleAssessmentId, table.assessmentRunId], foreignColumns: [conversationProviderRuleAssessments.id, conversationProviderRuleAssessments.assessmentRunId], name: 'provider_assessment_review_assessment_run_fk' }),
+    foreignKey({ columns: [table.assessmentRunId, table.organisationId, table.workflowSessionId], foreignColumns: [conversationSafetyAssessmentRuns.id, conversationSafetyAssessmentRuns.organisationId, conversationSafetyAssessmentRuns.workflowSessionId], name: 'provider_assessment_review_run_organisation_session_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'provider_assessment_review_session_organisation_fk' }),
+    foreignKey({ columns: [table.reviewedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'provider_assessment_review_actor_organisation_fk' }),
+    foreignKey({ columns: [table.canonicalObservationId, table.organisationId, table.workflowSessionId], foreignColumns: [workflowSafetyObservations.id, workflowSafetyObservations.organisationId, workflowSafetyObservations.workflowSessionId], name: 'provider_assessment_review_observation_organisation_session_fk' }),
+    uniqueIndex('provider_assessment_review_one_final_uq').on(table.providerRuleAssessmentId),
+    uniqueIndex('provider_assessment_review_observation_uq').on(table.canonicalObservationId).where(sql`${table.canonicalObservationId} is not null`),
+    check('provider_assessment_review_linking', sql`(${table.status} = 'confirmed' and ${table.canonicalObservationId} is not null and ${table.classificationSource} = 'human_selected') or (${table.status} in ('dismissed', 'insufficient_information_acknowledged') and ${table.canonicalObservationId} is null and ${table.classificationSource} is null)`),
   ],
 )
 

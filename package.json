@@ -13,6 +13,7 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "provision:cognito-user": "tsx server/scripts/provision-cognito-user.ts",
+    "provision:safety-assessment": "tsx server/scripts/provision-safety-assessment.ts",
     "preview": "vite preview",
     "format": "oxfmt"
   },

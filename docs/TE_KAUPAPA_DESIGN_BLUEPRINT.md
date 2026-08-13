@@ -185,7 +185,7 @@ The underlying conversational LLM is selected and configured inside the versione
 - conversational agent behaviour
 - the primary conversational prompt
 - selection and orchestration of the underlying LLM
-- conversational analysis configured in the provider
+- signed post-call transcript delivery and conversation provenance
 
 ### Te Kaupapa is responsible for
 
@@ -201,6 +201,21 @@ The underlying conversational LLM is selected and configured inside the versione
 - acknowledgements
 - audit
 - supervisor review
+
+### Architecture decision: separate conversational orchestration, transcript source material, and Safety Pou assessment
+
+ElevenLabs is the conversation provider and does not make Safety Pou assessments. A separate, provider-neutral `ConversationAssessmentProvider` performs complex structured interpretation. The initial adapter is OpenAI Responses API Structured Outputs; a future AWS Bedrock/Claude adapter remains possible without workflow, database, or UI redesign. Selected-model regional availability and data governance must be verified; Te Kaupapa does not claim all Claude/Bedrock models process in Sydney.
+
+The authoritative path is: signed ElevenLabs transcript webhook → Te Kaupapa normalises the verified conversation into stable ordered turns → noncanonical transcript source material is retained through a dedicated repository → a transient copy is sent to the assessment provider → structured assessment with evidence-turn identifiers → Te Kaupapa schema/policy validation → noncanonical Pou candidate → Kaimahi review → explicit human-confirmed canonical state. No provider can directly create canonical observations, actions, referrals, consequences, summaries, or workflow transitions.
+
+Four information classes remain distinct:
+
+1. **Transcript source material** is a noncanonical source conversation, scoped to its organisation, workflow, Pou, and conversation, and separately access-controlled.
+2. **AI assessment** is bounded, noncanonical interpretation that refers to source turns by stable identifier rather than copying quotations or rationale.
+3. **Canonical workflow/safety state** is created only through approved deterministic and human-confirmed paths.
+4. **Supervisor source access** is a future role-, relationship-, organisation-, audit-, retention-, and deletion-governed capability that may retrieve referenced turn context. Its UI is explicitly deferred beyond the SME proof of concept.
+
+Te Kaupapa never stores audio, raw webhook envelopes, raw model requests/responses, provider rationale, or hidden reasoning. OpenAI `store: false` remains an OpenAI request setting, not a claim of Zero Data Retention. Real whānau transcript retention remains a separate governance gate: the present storage foundation is authorised for synthetic POC material only and has no approved production retention duration. A PostgreSQL transcript repository may later delegate text storage to encrypted object storage without changing workflow or assessment contracts.
 
 The Te Kaupapa frontend should not independently analyse raw transcript text to determine contraindications, risks, or workflow consequences.
 

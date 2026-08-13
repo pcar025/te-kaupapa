@@ -43,6 +43,55 @@
       "when": 1786406855037,
       "tag": "0005_living_thena",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786481600304,
+      "tag": "0006_large_wolfpack",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1786514863001,
+      "tag": "0007_opposite_johnny_blaze",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1786528068491,
+      "tag": "0008_dear_master_chief",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1786529074712,
+      "tag": "0009_loose_mindworm",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1786529156638,
+      "tag": "0010_violet_luke_cage",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1786529239503,
+      "tag": "0011_short_zeigeist",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1786563278191,
+      "tag": "0012_nervous_gateway",
+      "breakpoints": true
     }
   ]
 }

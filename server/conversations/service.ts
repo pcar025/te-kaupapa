@@ -18,6 +18,7 @@ import {
   type ConversationRepository,
   ConversationRepositoryError,
 } from './repository.js'
+import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
 
 export interface ElevenLabsConversationConfiguration {
   agentId: string
@@ -72,6 +73,7 @@ export class ConversationService implements ConversationApplicationService {
     private readonly conversationRepository: ConversationRepository,
     private readonly provider: ConversationProvider | undefined,
     private readonly elevenlabs: ElevenLabsConversationConfiguration | undefined,
+    private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
   ) {}
 
   async start(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId, idempotencyKey: string): Promise<ConversationStartResult> {
@@ -86,6 +88,14 @@ export class ConversationService implements ConversationApplicationService {
       pouId,
       conversationSpecification: WHAKAPAPA_CONVERSATION_SPECIFICATION,
     })
+    const assessmentPin = this.safetyAssessments
+      ? await this.safetyAssessments.resolveActivePin(actor.organisation.id, {
+          provider: CONVERSATION_PROVIDER,
+          agentReference: this.elevenlabs.agentId,
+          branchReference: this.elevenlabs.branchId,
+          environment: this.elevenlabs.environment,
+        })
+      : null
     const prepared = await this.conversationRepository.prepare({
       actor,
       workflowSessionId,
@@ -98,6 +108,7 @@ export class ConversationService implements ConversationApplicationService {
       conversationSpecificationVersion: WHAKAPAPA_CONVERSATION_SPECIFICATION.version,
       idempotencyKey,
       requestFingerprint: fingerprint,
+      assessmentPin,
     })
     if (!prepared.created) {
       if (prepared.conversation.status === 'preparing') throw new ConversationStartInProgressError()

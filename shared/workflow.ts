@@ -159,6 +159,11 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       observation: SafetyObservationSnapshotInput
+      /**
+       * Optional provenance for an explicitly human-confirmed Phase 5B
+       * assessment candidate. The browser never supplies classification source.
+       */
+      candidateAssessmentId?: string
     }
   | {
       type: 'safety-observation-corrected'

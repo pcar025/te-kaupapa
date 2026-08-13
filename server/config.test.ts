@@ -11,6 +11,11 @@ const base = {
 }
 
 describe('ElevenLabs server configuration', () => {
+  it('defaults to the normal network host but supports loopback-only ingress', () => {
+    expect(loadConfiguration(base).host).toBe('0.0.0.0')
+    expect(loadConfiguration({ ...base, HOST: '127.0.0.1' }).host).toBe('127.0.0.1')
+  })
+
   it('allows ordinary startup without ElevenLabs configuration', () => {
     expect(loadConfiguration(base).elevenlabs).toBeUndefined()
   })
@@ -37,6 +42,13 @@ describe('ElevenLabs server configuration', () => {
       agentId: 'agent-test',
       agentBranchId: 'branch-test',
       agentEnvironment: 'staging',
+    })
+  })
+
+  it('keeps post-call ingestion disabled unless its separate server-only signing secret is configured', () => {
+    expect(loadConfiguration(base).elevenlabsWebhook).toBeUndefined()
+    expect(loadConfiguration({ ...base, ELEVENLABS_WEBHOOK_SECRET: 'test-webhook-secret-with-sufficient-length' }).elevenlabsWebhook).toEqual({
+      signingSecret: 'test-webhook-secret-with-sufficient-length', maximumBodyBytes: 131072, maximumAgeSeconds: 300,
     })
   })
 })
