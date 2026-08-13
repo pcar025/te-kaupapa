@@ -438,6 +438,48 @@ function cookieFrom(response: { headers: { ['set-cookie']?: string | string[] | 
 }
 
 describe('authenticated application shell API', () => {
+  it('forwards only review content when saving a Whakapapa draft and reloads its edited revision', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: 'a22f5c12-5dfa-4658-b4ea-b455ee5f0b6a', userId: activeKaimahi.id, tokenHash: sha256('review-draft-session'), expiresAt: new Date(Date.now() + 60_000) })
+    const generated = {
+      id: '11111111-1111-4111-8111-111111111111', revisionId: '22222222-2222-4222-8222-222222222222', revision: 1,
+      overallSummary: 'Identity context was explored.', strengthsSummary: 'Whānau strengths were named.', areasForAttentionSummary: null,
+      evidenceTurnIds: ['33333333-3333-4333-8333-333333333333'], generatedAt: new Date('2026-08-13T00:00:00.000Z'),
+    }
+    let current: {
+      id: string
+      revisionId: string
+      revision: number
+      overallSummary: string | null
+      strengthsSummary: string | null
+      areasForAttentionSummary: string | null
+      evidenceTurnIds: string[]
+      generatedAt: Date
+    } = generated
+    let captured: unknown
+    const reviewDraftRepository = {
+      findForKaimahi: async () => ({ status: 'ready' as const, assessmentCompleted: true, hasReviewableCandidate: false, draft: current }),
+      edit: async (_actor: AuthenticatedUser, _workflowSessionId: string, input: { reviewDraftId: string; expectedRevision: number; content: { overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] } }) => {
+        captured = input
+        current = { ...current, revisionId: '44444444-4444-4444-8444-444444444444', revision: 2, ...input.content }
+        return current
+      },
+    }
+    const app = await createApplication({ config: config(), repository, reviewDraftRepository: reviewDraftRepository as any, oidcProvider: new FakeOidcProvider() })
+    const headers = { cookie: 'test_session=review-draft-session', origin: 'http://web.test' }
+    const url = '/api/workflows/55555555-5555-4555-8555-555555555555/pou/whakapapa/review-draft'
+    const before = await app.inject({ method: 'GET', url, headers })
+    expect(before.statusCode).toBe(200)
+    const saved = await app.inject({ method: 'PUT', url, headers, payload: { reviewDraftId: generated.id, expectedRevision: 1, overallSummary: 'Identity context was carefully explored.', strengthsSummary: generated.strengthsSummary, areasForAttentionSummary: null, evidenceTurnIds: generated.evidenceTurnIds } })
+    expect(saved.statusCode).toBe(200)
+    expect(captured).toEqual({ reviewDraftId: generated.id, expectedRevision: 1, content: { overallSummary: 'Identity context was carefully explored.', strengthsSummary: generated.strengthsSummary, areasForAttentionSummary: null, evidenceTurnIds: generated.evidenceTurnIds } })
+    const after = await app.inject({ method: 'GET', url, headers })
+    expect(after.statusCode).toBe(200)
+    expect(after.json()).toMatchObject({ review: { status: 'ready', draft: { revision: 2, overallSummary: 'Identity context was carefully explored.' } } })
+    await app.close()
+  })
+
   it('does not reveal a profile without an application session', async () => {
     const app = await createApplication({ config: config(), repository: new MemoryRepository(), oidcProvider: new FakeOidcProvider() })
     const response = await app.inject({ method: 'GET', url: '/api/me' })

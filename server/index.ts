@@ -9,12 +9,15 @@ import { PostgresWorkflowRepository } from './workflows/repository.js'
 import { PostgresSafetyAssessmentRepository } from './safety-assessments/repository.js'
 import { OpenAIConversationAssessmentProvider } from './safety-assessments/assessment-provider.js'
 import { PostgresTranscriptRepository } from './transcripts/repository.js'
+import { OpenAIConversationReviewDraftProvider } from './review-drafts/provider.js'
+import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
 const safetyAssessmentRepository = new PostgresSafetyAssessmentRepository(database.db)
 const transcriptRepository = new PostgresTranscriptRepository(database.db)
-const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository)
+const reviewDraftRepository = new PostgresConversationReviewDraftRepository(database.db)
+const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository)
 const conversationService = new ConversationService(
   workflowRepository,
   new PostgresConversationRepository(database.db, undefined, safetyAssessmentRepository),
@@ -33,6 +36,8 @@ const app = await createApplication({
   conversationService,
   safetyAssessmentRepository,
   conversationAssessmentProvider: config.openaiAssessment ? new OpenAIConversationAssessmentProvider(config.openaiAssessment) : undefined,
+  conversationReviewDraftProvider: config.openaiAssessment ? new OpenAIConversationReviewDraftProvider(config.openaiAssessment) : undefined,
+  reviewDraftRepository,
   transcriptRepository,
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,
 })

@@ -62,6 +62,8 @@ export const providerAssessmentRunStatus = pgEnum('provider_assessment_run_statu
 export const providerAssessmentReviewStatus = pgEnum('provider_assessment_review_status', ['confirmed', 'dismissed', 'insufficient_information_acknowledged'])
 export const providerAssessmentDeliveryStatus = pgEnum('provider_assessment_delivery_status', ['reserved', 'completed'])
 export const conversationTranscriptSpeaker = pgEnum('conversation_transcript_speaker', ['kaimahi', 'assistant', 'unknown'])
+export const conversationReviewDraftStatus = pgEnum('conversation_review_draft_status', ['generated', 'failed'])
+export const conversationReviewDraftRevisionSource = pgEnum('conversation_review_draft_revision_source', ['generated', 'edited'])
 export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
@@ -505,6 +507,107 @@ export const conversationTranscriptTurns = pgTable(
     uniqueIndex('transcript_turn_transcript_ordinal_uq').on(table.transcriptId, table.ordinal),
     check('transcript_turn_ordinal_positive', sql`${table.ordinal} > 0`),
     check('transcript_turn_text_nonempty', sql`length(${table.text}) between 1 and 120000`),
+  ],
+)
+
+/**
+ * A generated Whakapapa narrative remains noncanonical. Generated material,
+ * human edits, and the later canonical Pou review are deliberately separate.
+ */
+export const conversationReviewDrafts = pgTable(
+  'conversation_review_draft',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    assessmentRunId: uuid('assessment_run_id').notNull(),
+    workflowConversationId: uuid('workflow_conversation_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    status: conversationReviewDraftStatus('status').notNull(),
+    provider: text('provider'),
+    providerModel: text('provider_model'),
+    providerConfigHash: text('provider_config_hash'),
+    schemaVersion: text('schema_version'),
+    generatedAt: timestamp('generated_at', { withTimezone: true }),
+    failedAt: timestamp('failed_at', { withTimezone: true }),
+    failureCategory: text('failure_category'),
+    specificationHash: text('specification_hash').notNull(),
+    projectionHash: text('projection_hash').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.assessmentRunId, table.organisationId, table.workflowSessionId], foreignColumns: [conversationSafetyAssessmentRuns.id, conversationSafetyAssessmentRuns.organisationId, conversationSafetyAssessmentRuns.workflowSessionId], name: 'review_draft_run_organisation_session_fk' }),
+    foreignKey({ columns: [table.workflowConversationId, table.organisationId, table.workflowSessionId, table.pouId], foreignColumns: [workflowConversations.id, workflowConversations.organisationId, workflowConversations.workflowSessionId, workflowConversations.pouId], name: 'review_draft_conversation_scope_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'review_draft_checkpoint_organisation_fk' }),
+    uniqueIndex('review_draft_one_per_assessment_run_uq').on(table.assessmentRunId),
+    uniqueIndex('review_draft_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
+    check('review_draft_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('review_draft_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.projectionHash}) = 64 and (${table.providerConfigHash} is null or length(${table.providerConfigHash}) = 64)`),
+    check('review_draft_status_lifecycle', sql`(${table.status} = 'generated' and ${table.generatedAt} is not null and ${table.failedAt} is null and ${table.provider} is not null and ${table.providerModel} is not null and ${table.providerConfigHash} is not null and ${table.schemaVersion} is not null and ${table.failureCategory} is null) or (${table.status} = 'failed' and ${table.generatedAt} is null and ${table.failedAt} is not null and ${table.provider} is null and ${table.providerModel} is null and ${table.providerConfigHash} is null and ${table.schemaVersion} is null and ${table.failureCategory} is not null)`),
+  ],
+)
+
+export const conversationReviewDraftRevisions = pgTable(
+  'conversation_review_draft_revision',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    reviewDraftId: uuid('review_draft_id').notNull(),
+    revision: integer('revision').notNull(),
+    source: conversationReviewDraftRevisionSource('source').notNull(),
+    overallSummary: text('overall_summary'),
+    strengthsSummary: text('strengths_summary'),
+    areasForAttentionSummary: text('areas_for_attention_summary'),
+    evidenceTurnIds: jsonb('evidence_turn_ids').notNull(),
+    createdByUserId: uuid('created_by_user_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.reviewDraftId], foreignColumns: [conversationReviewDrafts.id], name: 'review_draft_revision_draft_fk' }),
+    uniqueIndex('review_draft_revision_draft_revision_uq').on(table.reviewDraftId, table.revision),
+    uniqueIndex('review_draft_revision_id_draft_uq').on(table.id, table.reviewDraftId),
+    check('review_draft_revision_positive', sql`${table.revision} > 0`),
+    check('review_draft_revision_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
+    check('review_draft_revision_source_actor', sql`(${table.source} = 'generated' and ${table.revision} = 1 and ${table.createdByUserId} is null) or (${table.source} = 'edited' and ${table.revision} > 1 and ${table.createdByUserId} is not null)`),
+  ],
+)
+
+export const conversationReviewDraftViews = pgTable(
+  'conversation_review_draft_view',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    reviewDraftId: uuid('review_draft_id').notNull(),
+    viewedByUserId: uuid('viewed_by_user_id').notNull(),
+    viewedAt: timestamp('viewed_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.reviewDraftId], foreignColumns: [conversationReviewDrafts.id], name: 'review_draft_view_draft_fk' }),
+    foreignKey({ columns: [table.viewedByUserId], foreignColumns: [appUsers.id], name: 'review_draft_view_user_fk' }),
+    uniqueIndex('review_draft_view_draft_user_uq').on(table.reviewDraftId, table.viewedByUserId),
+  ],
+)
+
+/** The only canonical narrative review record; inserted by explicit Pou confirmation. */
+export const workflowPouReviews = pgTable(
+  'workflow_pou_review',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    reviewDraftRevisionId: uuid('review_draft_revision_id').notNull(),
+    overallSummary: text('overall_summary'),
+    strengthsSummary: text('strengths_summary'),
+    areasForAttentionSummary: text('areas_for_attention_summary'),
+    confirmedByUserId: uuid('confirmed_by_user_id').notNull(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'workflow_pou_review_checkpoint_organisation_fk' }),
+    foreignKey({ columns: [table.reviewDraftRevisionId], foreignColumns: [conversationReviewDraftRevisions.id], name: 'workflow_pou_review_revision_fk' }),
+    foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_pou_review_confirming_user_organisation_fk' }),
+    uniqueIndex('workflow_pou_review_session_pou_uq').on(table.workflowSessionId, table.pouId),
+    check('workflow_pou_review_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('workflow_pou_review_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
   ],
 )
 

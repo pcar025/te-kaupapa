@@ -87,3 +87,17 @@ Application-state and longitudinal evidence are deliberately deferred. Future lo
 The completed controlled synthetic proof returned three `no_candidate_concern` results. The existing empty-candidate state keeps manual Pou review available and does not invent a concern. A future UI refinement may make the completed-with-no-reviewable-candidate state explicit; it is not a Phase 5B safety or acceptance blocker.
 
 The genuine controlled result measured 14.946 seconds from conversation end to transcript receipt, 8.129 seconds for the OpenAI assessment, and 23.528 seconds from end to assessment completion. Reducing end-to-Pou-review latency is deferred. A future investigation may determine whether final transcript turns can be captured during the live ElevenLabs session so assessment can begin at end rather than waiting for the post-call webhook. It must not weaken Zero Retention Mode or the approved privacy boundary.
+
+## Phase 5C: Whakapapa Pou review reconciliation
+
+Phase 5C keeps four separate domains: retained transcript source material; the Phase 5B structured safety assessment; a provider-neutral `ConversationReviewDraftProvider` narrative synthesis; and the human-confirmed canonical Whakapapa Pou review. The initial narrative adapter uses server-only OpenAI Structured Outputs with `store: false`; it does not share an output contract with `ConversationAssessmentProvider`, and another provider can replace it without changing workflow/UI persistence.
+
+The generated draft contains only bounded `overallSummary`, `strengthsSummary`, `areasForAttentionSummary`, and validated `evidenceTurnIds`. It has no diagnosis, concern level, action, referral, escalation, supervisor decision, quotation, provider rationale, or hidden reasoning. Its original generated revision is immutable; opening is recorded, human changes append a new revision, and the explicit ordinary Pou-confirmation path inserts the canonical final review with the confirming Kaimahi and timestamp. It never silently confirms a Phase 5B candidate.
+
+Whakapapa only replaces the former static/demo narrative panels. After voice ends, the Kaimahi sees a bounded analysing state, then either the editable review draft, a truthful manual-review fallback, or a distinct completed-with-no-reviewable-safety-candidate notice. The notice says that no additional safety concern was suggested; it never claims that the Pou is safe or cleared. Safety-candidate review stays visually and semantically separate.
+
+Phase 5C does not alter the other six Pou, introduce Supervisor transcript UI, or decide real whānau transcript retention governance. Phase 5D may extend this proven pattern to Pou 2–7 only after a separate approval.
+
+### Accepted Phase 5C deferred refinements
+
+The genuine controlled reconciliation measured 14.379 seconds from conversation end to transcript receipt, 8.649 seconds from transcript receipt to narrative review readiness, and 23.028 seconds end to review readiness. Reducing this latency is deferred. A future investigation may determine whether final ElevenLabs transcript turns can be made available during the live session so the assessment and narrative-review work can begin immediately at end rather than waiting for the post-call webhook; it must not weaken Zero Retention Mode or the approved privacy boundary. For no-candidate assessment runs, `review_available_at` is currently unset while the narrative draft has its own `generated_at`; aligning those audit timings is also deferred.

@@ -125,6 +125,7 @@ export type WorkflowCommand =
       note?: string
       referralSuggested: boolean
       supervisorReviewSuggested: boolean
+      reviewDraftRevisionId?: string
     }
   | {
       type: 'pou-summary-confirmed'

@@ -47,6 +47,9 @@ import { ConversationAssessmentProviderError, type ConversationAssessmentProvide
 import { ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
 import { normaliseSignedTranscript } from './transcripts/domain.js'
 import { PostgresTranscriptRepository } from './transcripts/repository.js'
+import type { ConversationReviewDraftProvider } from './review-drafts/provider.js'
+import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
+import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-drafts/domain.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
@@ -85,6 +88,8 @@ export interface AppDependencies {
   conversationService?: ConversationApplicationService
   safetyAssessmentRepository?: PostgresSafetyAssessmentRepository
   conversationAssessmentProvider?: ConversationAssessmentProvider
+  conversationReviewDraftProvider?: ConversationReviewDraftProvider
+  reviewDraftRepository?: PostgresConversationReviewDraftRepository
   transcriptRepository?: PostgresTranscriptRepository
   elevenLabsWebhookVerifier?: ElevenLabsWebhookVerifier
   oidcProvider?: OidcProvider
@@ -98,7 +103,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, transcriptRepository, elevenLabsWebhookVerifier, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, transcriptRepository, elevenLabsWebhookVerifier, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -353,6 +358,14 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   const conversationEndSchema = z.object({ reason: z.enum(TERMINATION_REASONS) }).strict()
   const assessmentParamsSchema = z.object({ workflowSessionId: z.string().uuid(), assessmentId: z.string().uuid() })
   const assessmentReviewSchema = z.object({ status: z.enum(['dismissed', 'insufficient_information_acknowledged']) }).strict()
+  const reviewDraftParamsSchema = z.object({ workflowSessionId: z.string().uuid(), reviewDraftId: z.string().uuid() })
+  const reviewDraftEditSchema = z.object({
+    reviewDraftId: z.string().uuid(), expectedRevision: z.number().int().positive(),
+    overallSummary: z.string().trim().min(1).max(1_200).nullable(),
+    strengthsSummary: z.string().trim().min(1).max(900).nullable(),
+    areasForAttentionSummary: z.string().trim().min(1).max(900).nullable(),
+    evidenceTurnIds: z.array(z.string().uuid()).max(8),
+  }).strict()
   const setupCommandSchema = z.object({
     type: z.literal('setup-confirmed'),
     idempotencyKey: z.string().uuid(),
@@ -372,6 +385,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     note: z.string().trim().max(4_000).optional(),
     referralSuggested: z.boolean(),
     supervisorReviewSuggested: z.boolean(),
+    reviewDraftRevisionId: z.string().uuid().optional(),
   })
   const downstreamCommandSchema = z.object({
     idempotencyKey: z.string().uuid(),
@@ -564,6 +578,57 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
+  app.get('/api/workflows/:workflowSessionId/pou/whakapapa/review-draft', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      reply.header('cache-control', 'no-store')
+      return { review: await reviewDraftRepository.findForKaimahi(user, params.data.workflowSessionId) }
+    } catch (error) {
+      if (error instanceof ReviewDraftUnavailableError) return reply.code(404).send({ error: 'not_found' })
+      request.log.warn({ category: 'review_draft_lookup_failed' }, 'Whakapapa review draft lookup failed')
+      return reply.code(503).send({ error: 'review_draft_unavailable' })
+    }
+  })
+
+  app.post('/api/workflows/:workflowSessionId/pou/whakapapa/review-drafts/:reviewDraftId/reviewed', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
+    const params = reviewDraftParamsSchema.safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      await reviewDraftRepository.markReviewed(user, params.data.workflowSessionId, params.data.reviewDraftId)
+      return reply.code(204).send()
+    } catch (error) {
+      if (error instanceof ReviewDraftUnavailableError) return reply.code(409).send({ error: 'review_draft_unavailable' })
+      return reply.code(503).send({ error: 'review_draft_unavailable' })
+    }
+  })
+
+  app.put('/api/workflows/:workflowSessionId/pou/whakapapa/review-draft', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const body = reviewDraftEditSchema.safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      const { reviewDraftId, expectedRevision, ...content } = body.data
+      const draft = await reviewDraftRepository.edit(user, params.data.workflowSessionId, { reviewDraftId, expectedRevision, content })
+      return { draft }
+    } catch (error) {
+      if (error instanceof StaleReviewDraftError) return reply.code(409).send({ error: 'stale_review_draft', currentRevision: error.currentRevision })
+      if (error instanceof ReviewDraftUnavailableError) return reply.code(409).send({ error: 'review_draft_unavailable' })
+      return reply.code(503).send({ error: 'review_draft_unavailable' })
+    }
+  })
+
   app.post('/api/workflows/:workflowSessionId/pou/:pouId/conversations', async (request, reply) => {
     if (!requireTrustedOrigin(request, reply)) return reply
     const user = await requireKaimahi(request, reply)
@@ -670,7 +735,24 @@ export async function createApplication(dependencies: AppDependencies): Promise<
               })
               return reply.code(202).send({ accepted: true, replayed: false, superseded: outcome.superseded })
             }
-            const assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
+            // Narrative synthesis has its own bounded, noncanonical contract.
+            // Its failure cannot discard a valid Phase 5B assessment result.
+            let reviewResult: Awaited<ReturnType<ConversationReviewDraftProvider['generateWhakapapaReviewDraft']>> | undefined
+            let reviewFailure: 'provider_unavailable' | 'invalid_output' | undefined
+            if (!conversationReviewDraftProvider) reviewFailure = 'provider_unavailable'
+            else {
+              try { reviewResult = await conversationReviewDraftProvider.generateWhakapapaReviewDraft({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection }) }
+              catch { reviewFailure = 'invalid_output' }
+            }
+            let assessment
+            try {
+              assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
+            } catch (error) {
+              // A usable narrative remains explicitly noncanonical even where a
+              // separate safety interpretation was unavailable.
+              if (reviewResult && reviewDraftRepository) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+              throw error
+            }
             const outcome = await safetyAssessmentRepository.ingest({
               deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
               agentReference: event.agentReference, branchReference: event.branchReference, environment: event.environment,
@@ -680,6 +762,10 @@ export async function createApplication(dependencies: AppDependencies): Promise<
               assessments: assessment.assessment.assessments,
             })
             if (outcome.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
+            if (reviewDraftRepository) {
+              if (reviewResult) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+              else if (reviewFailure) await reviewDraftRepository.recordFailed({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, category: reviewFailure })
+            }
             return reply.code(outcome.replayed ? 200 : 202).send({ accepted: true, replayed: outcome.replayed, superseded: outcome.superseded })
           } catch (error) {
             await safetyAssessmentRepository.releaseReservedDelivery({ provider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash })

@@ -107,6 +107,24 @@ export interface WhakapapaAssessmentCandidate {
   canonicalBroadClass: SafetyBroadClass | null
 }
 
+export interface WhakapapaReviewDraft {
+  id: string
+  revisionId: string
+  revision: number
+  overallSummary: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  evidenceTurnIds: string[]
+  generatedAt: string
+}
+
+export interface WhakapapaReviewDraftState {
+  status: 'analysing' | 'ready' | 'failed' | 'manual'
+  draft: WhakapapaReviewDraft | null
+  assessmentCompleted: boolean
+  hasReviewableCandidate: boolean
+}
+
 export interface WorkflowAction {
   id: string
   pouId: WorkflowPouId | null
@@ -219,6 +237,20 @@ export async function getWhakapapaAssessmentCandidates(workflowId: string): Prom
   // An empty response is treated as no completed assessment. This keeps the
   // manual Whakapapa review available through an interrupted/older response.
   return Array.isArray(payload.candidates) ? payload.candidates : []
+}
+
+export async function getWhakapapaReviewDraft(workflowId: string): Promise<WhakapapaReviewDraftState> {
+  const payload = await requestJson<{ review: WhakapapaReviewDraftState }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-draft`)
+  return payload.review
+}
+
+export async function markWhakapapaReviewDraftReviewed(workflowId: string, reviewDraftId: string): Promise<void> {
+  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-drafts/${encodeURIComponent(reviewDraftId)}/reviewed`, { method: 'POST' })
+}
+
+export async function editWhakapapaReviewDraft(workflowId: string, input: { reviewDraftId: string; expectedRevision: number; overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] }): Promise<WhakapapaReviewDraft> {
+  const payload = await requestJson<{ draft: WhakapapaReviewDraft }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-draft`, { method: 'PUT', body: JSON.stringify(input) })
+  return payload.draft
 }
 
 export async function reviewWhakapapaAssessmentCandidate(workflowId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {

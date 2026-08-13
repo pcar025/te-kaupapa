@@ -40,6 +40,7 @@ import {
   type SafetyDecisionCode,
 } from '../safety/domain.js'
 import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
+import type { PostgresConversationReviewDraftRepository } from '../review-drafts/repository.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -306,6 +307,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     private readonly now: () => Date = () => new Date(),
     private readonly referenceGenerator: () => string = generateWorkflowReference,
     private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
+    private readonly reviewDrafts?: PostgresConversationReviewDraftRepository,
   ) {}
 
   async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
@@ -628,6 +630,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             ))
             .limit(1)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
+          if (input.command.pouId === 'whakapapa' && this.reviewDrafts) {
+            await this.reviewDrafts.requireRevisionForConfirmation(tx, { actor: input.actor, workflowSessionId: workflow.id, reviewDraftRevisionId: input.command.reviewDraftRevisionId })
+          }
+          if (input.command.reviewDraftRevisionId) {
+            if (input.command.pouId !== 'whakapapa' || !this.reviewDrafts) throw new WorkflowTransitionError('The supplied review draft is not available for this Pou.')
+            await this.reviewDrafts.confirmCanonical(tx, { actor: input.actor, workflowSessionId: workflow.id, reviewDraftRevisionId: input.command.reviewDraftRevisionId, timestamp })
+          }
           const next = checkpointAfterPouReview({
             stage: workflow.currentStage as WorkflowStage,
             currentPouId: workflow.currentPouId as WorkflowPouId | null,

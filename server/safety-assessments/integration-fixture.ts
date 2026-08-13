@@ -12,6 +12,7 @@ import { approvedWhakapapaPilotV01, contentHash, providerProjection, type Provid
 import { PostgresSafetyAssessmentRepository } from './repository.js'
 import { PostgresTranscriptRepository } from '../transcripts/repository.js'
 import { PostgresWorkflowRepository } from '../workflows/repository.js'
+import { PostgresConversationReviewDraftRepository } from '../review-drafts/repository.js'
 
 const now = new Date('2026-08-12T00:00:00.000Z')
 const secret = 'integration-webhook-secret-with-sufficient-length'
@@ -39,7 +40,7 @@ export async function withPhase5BTestContext<T>(body: (context: any) => Promise<
     const [storedSpec] = await connection.db.insert(schema.safetySpecificationVersions).values({ organisationId, specificationCode: spec.specificationCode, specificationVersion: spec.specificationVersion, pouId: 'whakapapa', approvalStatus: spec.approvalStatus, contentHash: specHash, ruleManifestHash: contentHash(projection.rules), specification: spec, sourceDocumentCode: spec.sourceDocumentCode, sourceDocumentStatus: spec.sourceDocumentStatus, sourceReference: spec.sourceReference, sourceDocumentHash: spec.sourceDocumentHash, derivedAt: now, approvedForPilotBy: userId, approvedForPilotAt: now }).returning(); const [storedProjection] = await connection.db.insert(schema.providerAssessmentProjections).values({ organisationId, pouId: 'whakapapa', specificationId: storedSpec!.id, projectionCode: projection.projectionCode, projectionVersion: projection.projectionVersion, projectionHash, provider: 'elevenlabs', providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test', projection }).returning()
     await connection.db.insert(schema.workflowConversations).values({ id: conversationId, organisationId, workflowSessionId: workflowId, pouId: 'whakapapa', startedByUserId: userId, provider: 'elevenlabs', providerConversationId, providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test', conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'ended', startIdempotencyKey: randomUUID(), requestFingerprint: 'fixture', authorizedAt: now, endedAt: now, terminationReason: 'user_ended' })
     const [run] = await connection.db.insert(schema.conversationSafetyAssessmentRuns).values({ workflowConversationId: conversationId, organisationId, workflowSessionId: workflowId, pouId: 'whakapapa', specificationId: storedSpec!.id, specificationCode: spec.specificationCode, specificationVersion: spec.specificationVersion, specificationHash: specHash, ruleManifestHash: contentHash(projection.rules), projectionId: storedProjection!.id, projectionCode: projection.projectionCode, projectionVersion: projection.projectionVersion, projectionHash, provider: 'elevenlabs', providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test', specificationSnapshot: spec, projectionSnapshot: projection }).returning()
-    const repository = new PostgresSafetyAssessmentRepository(connection.db, () => now); const transcriptRepository = new PostgresTranscriptRepository(connection.db, () => now); const workflowRepository = new PostgresWorkflowRepository(connection.db, () => now, undefined, repository)
+    const repository = new PostgresSafetyAssessmentRepository(connection.db, () => now); const transcriptRepository = new PostgresTranscriptRepository(connection.db, () => now); const reviewDraftRepository = new PostgresConversationReviewDraftRepository(connection.db, () => now); const workflowRepository = new PostgresWorkflowRepository(connection.db, () => now, undefined, repository, reviewDraftRepository)
     let assessmentCalls = 0
     const assessmentResult = (evidenceTurnId: string) => ({ assessments: projection.rules.map((rule, index): ProviderRuleAssessment => ({ ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: index === 0 ? 'possible_concern' : 'no_candidate_concern', candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: index === 0 ? [rule.concernIndicators[0]!.code] : [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: index === 0 ? [evidenceTurnId] : [] })) })
     const conversationAssessmentProvider = {
@@ -55,17 +56,27 @@ export async function withPhase5BTestContext<T>(body: (context: any) => Promise<
         return { assessment, provider: 'test-assessment-provider', model: 'test-assessment-model', configurationHash: 'a'.repeat(64), schemaVersion: '1', assessmentStartedAt: now, assessmentCompletedAt: now }
       },
     }
-    const app = await createApplication({ config: configuration, repository: auth, workflowRepository, safetyAssessmentRepository: repository, transcriptRepository, conversationAssessmentProvider, now: () => now })
+    const conversationReviewDraftProvider = {
+      generateWhakapapaReviewDraft: async ({ transcriptTurns }: { transcriptTurns: Array<{ id: string; text: string }> }) => ({ draft: { overallSummary: 'Synthetic Whakapapa review draft.', strengthsSummary: transcriptTurns[0]?.text.includes('strength') ? 'A strength was explored.' : null, areasForAttentionSummary: transcriptTurns[0]?.text.includes('ambiguous') ? 'Further exploration may be useful.' : null, evidenceTurnIds: transcriptTurns.length ? [transcriptTurns[0]!.id] : [] }, provider: 'test-review-provider', model: 'test-review-model', configurationHash: 'b'.repeat(64), schemaVersion: '1', generatedAt: now }),
+    }
+    const app = await createApplication({ config: configuration, repository: auth, workflowRepository, safetyAssessmentRepository: repository, transcriptRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, now: () => now })
     const payload = (overrides: Record<string, unknown> = {}) => {
       return JSON.stringify({ type: 'post_call_transcription', event_id: `delivery-${randomUUID()}`, event_timestamp: Math.floor(now.getTime() / 1000), data: { conversation_id: providerConversationId, agent_id: 'agent-test', branch_id: 'branch-test', version_id: 'version-test', environment: 'test', transcript: 'Synthetic Whakapapa reflection with no identifiable content.', ...overrides } })
     }
     const request = (raw: string) => app.inject({ method: 'POST', url: '/api/integrations/elevenlabs/post-call', headers: { 'content-type': 'application/json', 'elevenlabs-signature': `t=${Math.floor(now.getTime() / 1000)},v0=${createHmac('sha256', secret).update(`${Math.floor(now.getTime() / 1000)}.${raw}`).digest('hex')}` }, payload: raw })
-    try { return await body({ connection, app, actor, workflowId, conversationId, providerConversationId, specification: spec, projection, storedSpec, storedProjection, run, repository, transcriptRepository, workflowRepository, payload, request, assessmentCallCount: () => assessmentCalls, canonicalSnapshot: () => canonicalSnapshot(connection.db, workflowId) }) } finally { await app.close() }
+    try { return await body({ connection, app, actor, workflowId, conversationId, providerConversationId, specification: spec, projection, storedSpec, storedProjection, run, repository, transcriptRepository, reviewDraftRepository, workflowRepository, payload, request, assessmentCallCount: () => assessmentCalls, canonicalSnapshot: () => canonicalSnapshot(connection.db, workflowId) }) } finally { await app.close() }
   }, async (connection) => {
     const ids = sql`select id from organisation where slug like 'safety-%'`
     await connection.db.execute(sql`alter table safety_specification_version disable trigger safety_specification_version_immutable`)
     await connection.db.execute(sql`alter table provider_assessment_projection disable trigger provider_assessment_projection_immutable`)
+    await connection.db.execute(sql`alter table conversation_review_draft disable trigger conversation_review_draft_immutable`)
+    await connection.db.execute(sql`alter table conversation_review_draft_revision disable trigger conversation_review_draft_revision_immutable`)
+    await connection.db.execute(sql`alter table workflow_pou_review disable trigger workflow_pou_review_immutable`)
     try {
+      await connection.db.execute(sql`delete from workflow_pou_review where organisation_id in (${ids})`)
+      await connection.db.execute(sql`delete from conversation_review_draft_view where review_draft_id in (select id from conversation_review_draft where organisation_id in (${ids}))`)
+      await connection.db.execute(sql`delete from conversation_review_draft_revision where review_draft_id in (select id from conversation_review_draft where organisation_id in (${ids}))`)
+      await connection.db.execute(sql`delete from conversation_review_draft where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from provider_assessment_review where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from conversation_provider_rule_assessment where assessment_run_id in (select id from conversation_safety_assessment_run where organisation_id in (${ids}))`)
       await connection.db.execute(sql`delete from provider_assessment_delivery where assessment_run_id in (select id from conversation_safety_assessment_run where organisation_id in (${ids}))`)
@@ -88,6 +99,9 @@ export async function withPhase5BTestContext<T>(body: (context: any) => Promise<
     } finally {
       await connection.db.execute(sql`alter table safety_specification_version enable trigger safety_specification_version_immutable`)
       await connection.db.execute(sql`alter table provider_assessment_projection enable trigger provider_assessment_projection_immutable`)
+      await connection.db.execute(sql`alter table conversation_review_draft enable trigger conversation_review_draft_immutable`)
+      await connection.db.execute(sql`alter table conversation_review_draft_revision enable trigger conversation_review_draft_revision_immutable`)
+      await connection.db.execute(sql`alter table workflow_pou_review enable trigger workflow_pou_review_immutable`)
     }
   })
 }
