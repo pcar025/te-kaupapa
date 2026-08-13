@@ -11,12 +11,14 @@ import { OpenAIConversationAssessmentProvider } from './safety-assessments/asses
 import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import { OpenAIConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
+import { PostgresOrganisationPouSpecificationRepository } from './pou-specifications/repository.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
 const safetyAssessmentRepository = new PostgresSafetyAssessmentRepository(database.db)
 const transcriptRepository = new PostgresTranscriptRepository(database.db)
 const reviewDraftRepository = new PostgresConversationReviewDraftRepository(database.db)
+const pouSpecificationRepository = new PostgresOrganisationPouSpecificationRepository(database.db)
 const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository)
 const conversationService = new ConversationService(
   workflowRepository,
@@ -28,6 +30,7 @@ const conversationService = new ConversationService(
     environment: config.elevenlabs.agentEnvironment,
   } : undefined,
   safetyAssessmentRepository,
+  pouSpecificationRepository,
 )
 const app = await createApplication({
   config,

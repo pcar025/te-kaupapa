@@ -6,6 +6,7 @@ import type { AuthenticatedUser } from '../domain/auth.js'
 import * as schema from '../db/schema.js'
 import { assertWhakapapaConversationEligibility, type ConversationStatus, type ConversationTerminationReason, type ConversationWorkflowState } from './domain.js'
 import type { AssessmentStartPin, ConversationAssessmentRunWriter } from '../safety-assessments/repository.js'
+import type { PouSpecificationStartPin } from '../pou-specifications/repository.js'
 
 type ConversationDatabase = NodePgDatabase<typeof schema>
 
@@ -46,6 +47,7 @@ export interface PrepareConversationInput {
   idempotencyKey: string
   requestFingerprint: string
   assessmentPin?: AssessmentStartPin | null
+  pouSpecificationPin?: PouSpecificationStartPin | null
 }
 
 export interface PreparedConversation {
@@ -185,6 +187,16 @@ export class PostgresConversationRepository implements ConversationRepository {
           providerBranchReference: created.providerBranchReference,
           providerEnvironment: created.providerEnvironment,
         }, input.assessmentPin)
+        if (input.pouSpecificationPin) {
+          const pin = input.pouSpecificationPin
+          await tx.insert(schema.workflowConversationPouSpecificationPins).values({
+            workflowConversationId: created.id, organisationId: created.organisationId, workflowSessionId: created.workflowSessionId, pouId: 'whakapapa',
+            specificationId: pin.specificationId, specificationHash: pin.specificationHash,
+            conversationGuidanceProjectionId: pin.conversationGuidanceProjectionId, conversationGuidanceProjectionHash: pin.conversationGuidanceProjectionHash,
+            pouReviewProjectionId: pin.pouReviewProjectionId, pouReviewProjectionHash: pin.pouReviewProjectionHash,
+            specificationSnapshot: pin.specification, conversationGuidanceProjectionSnapshot: pin.conversationGuidanceProjection, pouReviewProjectionSnapshot: pin.pouReviewProjection, createdAt: timestamp,
+          })
+        }
         return { conversation: asRecord(created), created: true }
       })
     } catch (error) {

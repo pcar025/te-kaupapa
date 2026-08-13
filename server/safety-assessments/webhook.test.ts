@@ -52,4 +52,14 @@ describe('ElevenLabs post-call webhook boundary', () => {
       expect.objectContaining({ ordinal: 2, speaker: 'kaimahi', text: 'Synthetic Kaimahi turn', providerSequence: 2 }),
     ])
   })
+
+  it('extracts only the two dynamic-variable provenance values when the provider includes them', () => {
+    const event = JSON.parse(payload.toString('utf8'))
+    event.data.conversation_initiation_client_data = {
+      dynamic_variables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance', ignored: 'not retained' },
+    }
+    const parsed = parseElevenLabsPostCallTranscript(Buffer.from(JSON.stringify(event)))
+    expect(parsed.dynamicVariableProvenance).toEqual({ pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' })
+    expect(JSON.stringify(parsed.dynamicVariableProvenance)).not.toContain('ignored')
+  })
 })

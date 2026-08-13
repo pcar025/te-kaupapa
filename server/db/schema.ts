@@ -64,6 +64,9 @@ export const providerAssessmentDeliveryStatus = pgEnum('provider_assessment_deli
 export const conversationTranscriptSpeaker = pgEnum('conversation_transcript_speaker', ['kaimahi', 'assistant', 'unknown'])
 export const conversationReviewDraftStatus = pgEnum('conversation_review_draft_status', ['generated', 'failed'])
 export const conversationReviewDraftRevisionSource = pgEnum('conversation_review_draft_revision_source', ['generated', 'edited'])
+export const organisationPouSpecificationApprovalStatus = pgEnum('organisation_pou_specification_approval_status', ['draft_derived', 'approved_for_pilot'])
+export const pouEvidenceScope = pgEnum('pou_evidence_scope', ['current_conversation', 'application_state', 'longitudinal'])
+export const pouReviewCriterionStatus = pgEnum('pou_review_criterion_status', ['evidenced', 'partially_evidenced', 'not_explored', 'insufficient_information', 'not_applicable'])
 export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
@@ -411,6 +414,132 @@ export const safetySpecificationActivations = pgTable(
   ],
 )
 
+/**
+ * Organisation-owned SME policy. This deliberately contains provider-neutral
+ * Pou meaning; concrete conversation, narrative-review, and safety artefacts
+ * are separate deterministic projections of the same approved version.
+ */
+export const organisationPouSpecificationVersions = pgTable(
+  'organisation_pou_specification_version',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull().references(() => organisations.id),
+    specificationCode: text('specification_code').notNull(),
+    specificationVersion: text('specification_version').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    approvalStatus: organisationPouSpecificationApprovalStatus('approval_status').notNull(),
+    contentHash: text('content_hash').notNull(),
+    specification: jsonb('specification').notNull(),
+    sourceDocumentCode: text('source_document_code').notNull(),
+    sourceDocumentStatus: text('source_document_status').notNull(),
+    sourceReference: text('source_reference').notNull(),
+    sourceDocumentHash: text('source_document_hash').notNull(),
+    derivedAt: timestamp('derived_at', { withTimezone: true }).notNull(),
+    approvedForPilotBy: uuid('approved_for_pilot_by'),
+    approvedForPilotAt: timestamp('approved_for_pilot_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.approvedForPilotBy, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_specification_approval_actor_organisation_fk' }),
+    uniqueIndex('organisation_pou_specification_organisation_code_version_uq').on(table.organisationId, table.specificationCode, table.specificationVersion),
+    uniqueIndex('organisation_pou_specification_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    check('organisation_pou_specification_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('organisation_pou_specification_hash_format', sql`length(${table.contentHash}) = 64 and length(${table.sourceDocumentHash}) = 64`),
+    check('organisation_pou_specification_approval_fields', sql`(${table.approvalStatus} = 'draft_derived' and ${table.approvedForPilotBy} is null and ${table.approvedForPilotAt} is null) or (${table.approvalStatus} = 'approved_for_pilot' and ${table.approvedForPilotBy} is not null and ${table.approvedForPilotAt} is not null)`),
+  ],
+)
+
+export const organisationPouSpecificationActivations = pgTable(
+  'organisation_pou_specification_activation',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull().references(() => organisations.id),
+    pouId: workflowPouId('pou_id').notNull(),
+    specificationId: uuid('specification_id').notNull(),
+    conversationGuidanceProjectionId: uuid('conversation_guidance_projection_id').notNull(),
+    pouReviewProjectionId: uuid('pou_review_projection_id').notNull(),
+    safetyLinkId: uuid('safety_link_id').notNull(),
+    activatedByUserId: uuid('activated_by_user_id').notNull(),
+    activatedAt: timestamp('activated_at', { withTimezone: true }).defaultNow().notNull(),
+    deactivatedAt: timestamp('deactivated_at', { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'organisation_pou_specification_activation_specification_scope_fk' }),
+    foreignKey({ columns: [table.conversationGuidanceProjectionId, table.organisationId, table.pouId], foreignColumns: [conversationGuidanceProjections.id, conversationGuidanceProjections.organisationId, conversationGuidanceProjections.pouId], name: 'organisation_pou_specification_activation_guidance_scope_fk' }),
+    foreignKey({ columns: [table.pouReviewProjectionId, table.organisationId, table.pouId], foreignColumns: [pouReviewProjections.id, pouReviewProjections.organisationId, pouReviewProjections.pouId], name: 'organisation_pou_specification_activation_review_scope_fk' }),
+    foreignKey({ columns: [table.safetyLinkId, table.organisationId, table.pouId], foreignColumns: [organisationPouSafetySpecificationLinks.id, organisationPouSafetySpecificationLinks.organisationId, organisationPouSafetySpecificationLinks.pouId], name: 'organisation_pou_specification_activation_safety_link_scope_fk' }),
+    foreignKey({ columns: [table.activatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_specification_activation_actor_organisation_fk' }),
+    uniqueIndex('organisation_pou_specification_one_active_uq').on(table.organisationId, table.pouId).where(sql`${table.deactivatedAt} is null`),
+    check('organisation_pou_specification_activation_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+  ],
+)
+
+export const conversationGuidanceProjections = pgTable(
+  'conversation_guidance_projection',
+  {
+    id: uuid('id').defaultRandom().primaryKey(), organisationId: uuid('organisation_id').notNull(), pouId: workflowPouId('pou_id').notNull(), specificationId: uuid('specification_id').notNull(),
+    projectionCode: text('projection_code').notNull(), projectionVersion: text('projection_version').notNull(), projectionHash: text('projection_hash').notNull(), projection: jsonb('projection').notNull(), createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'conversation_guidance_projection_specification_scope_fk' }),
+    uniqueIndex('conversation_guidance_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
+    uniqueIndex('conversation_guidance_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    check('conversation_guidance_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`), check('conversation_guidance_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
+  ],
+)
+
+export const pouReviewProjections = pgTable(
+  'pou_review_projection',
+  {
+    id: uuid('id').defaultRandom().primaryKey(), organisationId: uuid('organisation_id').notNull(), pouId: workflowPouId('pou_id').notNull(), specificationId: uuid('specification_id').notNull(),
+    projectionCode: text('projection_code').notNull(), projectionVersion: text('projection_version').notNull(), projectionHash: text('projection_hash').notNull(), projection: jsonb('projection').notNull(), createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'pou_review_projection_specification_scope_fk' }),
+    uniqueIndex('pou_review_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
+    uniqueIndex('pou_review_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    check('pou_review_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`), check('pou_review_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
+  ],
+)
+
+/** Links the existing immutable Phase 5B policy to the same organisation Pou version. */
+export const organisationPouSafetySpecificationLinks = pgTable(
+  'organisation_pou_safety_specification_link',
+  {
+    id: uuid('id').defaultRandom().primaryKey(), organisationId: uuid('organisation_id').notNull(), pouId: workflowPouId('pou_id').notNull(),
+    organisationPouSpecificationId: uuid('organisation_pou_specification_id').notNull(), safetySpecificationId: uuid('safety_specification_id').notNull(), safetyProjectionId: uuid('safety_projection_id').notNull(), createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.organisationPouSpecificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'organisation_pou_safety_link_pou_specification_scope_fk' }),
+    foreignKey({ columns: [table.safetySpecificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'organisation_pou_safety_link_safety_specification_scope_fk' }),
+    foreignKey({ columns: [table.safetyProjectionId, table.organisationId, table.pouId], foreignColumns: [providerAssessmentProjections.id, providerAssessmentProjections.organisationId, providerAssessmentProjections.pouId], name: 'organisation_pou_safety_link_safety_projection_scope_fk' }),
+    uniqueIndex('organisation_pou_safety_link_specification_uq').on(table.organisationPouSpecificationId),
+    uniqueIndex('organisation_pou_safety_link_safety_specification_uq').on(table.safetySpecificationId),
+    uniqueIndex('organisation_pou_safety_link_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
+    check('organisation_pou_safety_link_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+  ],
+)
+
+/** Immutable specification/guidance pin for every post-activation conversation. */
+export const workflowConversationPouSpecificationPins = pgTable(
+  'workflow_conversation_pou_specification_pin',
+  {
+    workflowConversationId: uuid('workflow_conversation_id').primaryKey(), organisationId: uuid('organisation_id').notNull(), workflowSessionId: uuid('workflow_session_id').notNull(), pouId: workflowPouId('pou_id').notNull(),
+    specificationId: uuid('specification_id').notNull(), specificationHash: text('specification_hash').notNull(),
+    conversationGuidanceProjectionId: uuid('conversation_guidance_projection_id').notNull(), conversationGuidanceProjectionHash: text('conversation_guidance_projection_hash').notNull(),
+    pouReviewProjectionId: uuid('pou_review_projection_id').notNull(), pouReviewProjectionHash: text('pou_review_projection_hash').notNull(),
+    specificationSnapshot: jsonb('specification_snapshot').notNull(), conversationGuidanceProjectionSnapshot: jsonb('conversation_guidance_projection_snapshot').notNull(), pouReviewProjectionSnapshot: jsonb('pou_review_projection_snapshot').notNull(), createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowConversationId, table.organisationId, table.workflowSessionId, table.pouId], foreignColumns: [workflowConversations.id, workflowConversations.organisationId, workflowConversations.workflowSessionId, workflowConversations.pouId], name: 'conversation_pou_specification_pin_conversation_scope_fk' }),
+    foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'conversation_pou_specification_pin_specification_scope_fk' }),
+    foreignKey({ columns: [table.conversationGuidanceProjectionId, table.organisationId, table.pouId], foreignColumns: [conversationGuidanceProjections.id, conversationGuidanceProjections.organisationId, conversationGuidanceProjections.pouId], name: 'conversation_pou_specification_pin_guidance_scope_fk' }),
+    foreignKey({ columns: [table.pouReviewProjectionId, table.organisationId, table.pouId], foreignColumns: [pouReviewProjections.id, pouReviewProjections.organisationId, pouReviewProjections.pouId], name: 'conversation_pou_specification_pin_review_scope_fk' }),
+    check('conversation_pou_specification_pin_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
+    check('conversation_pou_specification_pin_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.conversationGuidanceProjectionHash}) = 64 and length(${table.pouReviewProjectionHash}) = 64`),
+  ],
+)
+
 export const conversationSafetyAssessmentRuns = pgTable(
   'conversation_safety_assessment_run',
   {
@@ -568,6 +697,29 @@ export const conversationReviewDraftRevisions = pgTable(
     check('review_draft_revision_positive', sql`${table.revision} > 0`),
     check('review_draft_revision_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
     check('review_draft_revision_source_actor', sql`(${table.source} = 'generated' and ${table.revision} = 1 and ${table.createdByUserId} is null) or (${table.source} = 'edited' and ${table.revision} > 1 and ${table.createdByUserId} is not null)`),
+  ],
+)
+
+/**
+ * Bounded evidence status only. No transcript text, rationale, provider raw
+ * output, or safety decision is stored here. A new narrative revision carries
+ * a copied set so future human criterion corrections can also be append-only.
+ */
+export const conversationReviewDraftCriterionAssessments = pgTable(
+  'conversation_review_draft_criterion_assessment',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    reviewDraftRevisionId: uuid('review_draft_revision_id').notNull(),
+    criterionCode: text('criterion_code').notNull(),
+    status: pouReviewCriterionStatus('status').notNull(),
+    evidenceTurnIds: jsonb('evidence_turn_ids').notNull(),
+    missingInformationCodes: jsonb('missing_information_codes').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.reviewDraftRevisionId], foreignColumns: [conversationReviewDraftRevisions.id], name: 'review_draft_criterion_revision_fk' }),
+    uniqueIndex('review_draft_criterion_revision_code_uq').on(table.reviewDraftRevisionId, table.criterionCode),
+    check('review_draft_criterion_code_length', sql`length(${table.criterionCode}) between 2 and 120`),
   ],
 )
 

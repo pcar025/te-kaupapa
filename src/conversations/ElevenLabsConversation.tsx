@@ -180,7 +180,14 @@ function VoiceController({
       releaseTracks(preflightStream.current)
       preflightStream.current = null
       setUiStateSafely('connecting')
-      startSession({ conversationToken: started.authorization.conversationToken, connectionType: 'webrtc' })
+      startSession({
+        conversationToken: started.authorization.conversationToken,
+        connectionType: 'webrtc',
+        // The server-selected values are passed unchanged. They are
+        // conversation context only, never canonical policy or input to a
+        // post-call safety/review decision.
+        dynamicVariables: started.authorization.dynamicVariables,
+      })
     } catch (error) {
       if (error instanceof ConversationApiError && (error.code === 'conversation_start_in_progress' || error.code === 'authorization_already_issued')) {
         releaseTracks(preflightStream.current)

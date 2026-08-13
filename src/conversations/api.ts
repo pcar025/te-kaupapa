@@ -40,7 +40,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function startWhakapapaConversation(workflowId: string, idempotencyKey: string): Promise<{
   conversation: ConversationMetadata
-  authorization: { transport: 'webrtc'; conversationToken: string }
+  authorization: { transport: 'webrtc'; conversationToken: string; dynamicVariables: { pou_name: string; pou_guidance: string } }
 }> {
   return requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/conversations`, {
     method: 'POST',

@@ -19,6 +19,8 @@ import {
   ConversationRepositoryError,
 } from './repository.js'
 import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
+import { PouSpecificationUnavailableError, type PostgresOrganisationPouSpecificationRepository } from '../pou-specifications/repository.js'
+import { conversationRuntimeDynamicVariables, type ConversationRuntimeDynamicVariables } from '../pou-specifications/domain.js'
 
 export interface ElevenLabsConversationConfiguration {
   agentId: string
@@ -30,6 +32,7 @@ export interface ConversationStartResult {
   kind: 'authorized'
   conversation: ConversationRecord
   conversationToken: string
+  dynamicVariables: ConversationRuntimeDynamicVariables
 }
 
 export interface ConversationApplicationService {
@@ -74,6 +77,7 @@ export class ConversationService implements ConversationApplicationService {
     private readonly provider: ConversationProvider | undefined,
     private readonly elevenlabs: ElevenLabsConversationConfiguration | undefined,
     private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
+    private readonly pouSpecifications?: PostgresOrganisationPouSpecificationRepository,
   ) {}
 
   async start(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId, idempotencyKey: string): Promise<ConversationStartResult> {
@@ -96,6 +100,9 @@ export class ConversationService implements ConversationApplicationService {
           environment: this.elevenlabs.environment,
         })
       : null
+    if (!assessmentPin || !this.pouSpecifications) throw new PouSpecificationUnavailableError('An approved organisation Pou specification is required before starting this reflection.')
+    const pouSpecificationPin = await this.pouSpecifications.resolveActivePin(actor.organisation.id, assessmentPin)
+    const dynamicVariables = conversationRuntimeDynamicVariables(pouSpecificationPin.conversationGuidanceProjection)
     const prepared = await this.conversationRepository.prepare({
       actor,
       workflowSessionId,
@@ -109,6 +116,7 @@ export class ConversationService implements ConversationApplicationService {
       idempotencyKey,
       requestFingerprint: fingerprint,
       assessmentPin,
+      pouSpecificationPin,
     })
     if (!prepared.created) {
       if (prepared.conversation.status === 'preparing') throw new ConversationStartInProgressError()
@@ -118,7 +126,7 @@ export class ConversationService implements ConversationApplicationService {
     try {
       const authorization = await this.provider.authorizeConversation(this.elevenlabs)
       const conversation = await this.conversationRepository.authorize(prepared.conversation.id, authorization.providerConversationId)
-      return { kind: 'authorized', conversation, conversationToken: authorization.conversationToken }
+      return { kind: 'authorized', conversation, conversationToken: authorization.conversationToken, dynamicVariables }
     } catch (error) {
       try {
         await this.conversationRepository.terminate(prepared.conversation.id, 'failed', 'startup_failed')

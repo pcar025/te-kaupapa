@@ -13,8 +13,22 @@ import { PostgresSafetyAssessmentRepository } from './repository.js'
 import { SafetyProvisioningService } from './provisioning.js'
 import { PostgresWorkflowRepository } from '../workflows/repository.js'
 import { contentHash } from './domain.js'
+import { PostgresOrganisationPouSpecificationRepository } from '../pou-specifications/repository.js'
 
 const POU_CONFIRMATION_GATE_LOCK_ID = 549012684
+
+function postgresImmutableCause(error: unknown): { code?: unknown; message?: unknown } | undefined {
+  const seen = new Set<unknown>()
+  const visit = (value: unknown): { code?: unknown; message?: unknown } | undefined => {
+    if (!value || typeof value !== 'object' || seen.has(value)) return undefined
+    seen.add(value)
+    const record = value as { code?: unknown; message?: unknown; cause?: unknown; errors?: unknown[] }
+    if (record.code === 'P0001' && record.message === 'organisation Pou specification provenance is immutable') return record
+    const nested = visit(record.cause)
+    return nested ?? (Array.isArray(record.errors) ? record.errors.map(visit).find(Boolean) : undefined)
+  }
+  return visit(error)
+}
 
 function pause(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
@@ -29,8 +43,8 @@ async function waitForBlockedDatabaseWork(connection: ReturnType<typeof createDa
   throw new Error(`Expected ${count} database operation(s) to be blocked at the test gate.`)
 }
 
-function pouReviewCommand(expectedVersion: number) {
-  return { type: 'pou-review-confirmed' as const, idempotencyKey: randomUUID(), expectedVersion, pouId: 'whakapapa' as const, userSelectedConcern: 'watch' as const, note: 'Ordinary Kaimahi Pou review.', referralSuggested: false, supervisorReviewSuggested: false }
+function pouReviewCommand(expectedVersion: number, reviewDraftRevisionId?: string) {
+  return { type: 'pou-review-confirmed' as const, idempotencyKey: randomUUID(), expectedVersion, pouId: 'whakapapa' as const, userSelectedConcern: 'watch' as const, note: 'Ordinary Kaimahi Pou review.', referralSuggested: false, supervisorReviewSuggested: false, ...(reviewDraftRevisionId ? { reviewDraftRevisionId } : {}) }
 }
 
 function candidateConfirmationCommand(assessmentId: string, expectedVersion: number) {
@@ -39,25 +53,17 @@ function candidateConfirmationCommand(assessmentId: string, expectedVersion: num
 
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary integration', () => {
   it('resolves an approved active policy and starts a Whakapapa conversation with its exact pin', async () => {
-    await withPhase5BTestContext(async ({ connection, actor, workflowId, specification, repository, workflowRepository }) => {
-      const activeSpecification = { ...specification, specificationCode: `active-${randomUUID()}` }
-      const provisioned = await new SafetyProvisioningService(connection.db, () => new Date('2026-08-12T00:00:00.000Z')).provisionAndActivate({
-        organisationId: actor.organisation.id,
-        specification: activeSpecification,
-        projection: { projectionCode: `active-projection-${randomUUID()}`, projectionVersion: '1' },
-        conversationProvider: { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' },
-        operatorUserId: actor.id,
-      })
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, specification, repository, workflowRepository, storedSpec, storedProjection }) => {
       const pin = await repository.resolveActivePin(actor.organisation.id, { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
-      expect(pin).toMatchObject({ specificationId: provisioned.specificationId, projectionId: provisioned.projectionId, specificationHash: contentHash(activeSpecification) })
+      expect(pin).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, specificationHash: contentHash(specification) })
 
       const conversations = new PostgresConversationRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), repository)
-      const service = new ConversationService(workflowRepository, conversations, { authorizeConversation: async () => ({ providerConversationId: `provider-${randomUUID()}`, conversationToken: 'test-only-token' }) }, { agentId: 'agent-test', branchId: 'branch-test', environment: 'test' }, repository)
+      const service = new ConversationService(workflowRepository, conversations, { authorizeConversation: async () => ({ providerConversationId: `provider-${randomUUID()}`, conversationToken: 'test-only-token' }) }, { agentId: 'agent-test', branchId: 'branch-test', environment: 'test' }, repository, new PostgresOrganisationPouSpecificationRepository(connection.db))
       const started = await service.start(actor, workflowId, 'whakapapa', randomUUID())
       const [run] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, started.conversation.id))
 
       expect(started.conversation).toMatchObject({ status: 'authorized', pouId: 'whakapapa' })
-      expect(run).toMatchObject({ specificationId: provisioned.specificationId, projectionId: provisioned.projectionId, status: 'pending' })
+      expect(run).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, status: 'pending' })
     })
   })
 
@@ -103,7 +109,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       } as typeof workflowRepository
       let authorizationCalls = 0
       const authorizeConversation = async () => { authorizationCalls += 1; return { providerConversationId: `provider-${randomUUID()}`, conversationToken: 'test-only-token' } }
-      const service = new ConversationService(delayedWorkflowRepository, new PostgresConversationRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), repository), { authorizeConversation }, { agentId: 'agent-test', branchId: 'branch-test', environment: 'test' }, repository)
+      const service = new ConversationService(delayedWorkflowRepository, new PostgresConversationRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), repository), { authorizeConversation }, { agentId: 'agent-test', branchId: 'branch-test', environment: 'test' }, repository, new PostgresOrganisationPouSpecificationRepository(connection.db))
       const started = service.start(actor, workflowId, 'whakapapa', randomUUID())
       try {
         await initialRead
@@ -122,7 +128,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
   })
 
   it('keeps a signed provider delivery noncanonical, private, idempotent, and conflict-safe', async () => {
-    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, payload, request, assessmentCallCount, canonicalSnapshot, storedSpec, storedProjection }) => {
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, payload, request, assessmentCallCount, canonicalSnapshot, storedSpec, storedProjection, storedOrganisationSpecification, storedGuidance, storedReview }) => {
       const raw = payload()
       const before = await canonicalSnapshot()
       const [first, duplicate] = await Promise.all([request(raw), request(raw)])
@@ -149,6 +155,17 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       await expect(connection.db.execute(sql`delete from safety_specification_version where id = ${storedSpec.id}`)).rejects.toThrow()
       await expect(connection.db.execute(sql`update provider_assessment_projection set projection_code = 'mutated' where id = ${storedProjection.id}`)).rejects.toThrow()
       await expect(connection.db.execute(sql`delete from provider_assessment_projection where id = ${storedProjection.id}`)).rejects.toThrow()
+      for (const rejection of [
+        connection.db.execute(sql`update organisation_pou_specification_version set specification_code = 'mutated' where id = ${storedOrganisationSpecification.id}`),
+        connection.db.execute(sql`update conversation_guidance_projection set projection_code = 'mutated' where id = ${storedGuidance.id}`),
+        connection.db.execute(sql`update pou_review_projection set projection_code = 'mutated' where id = ${storedReview.id}`),
+      ]) {
+        let error: unknown
+        try { await rejection } catch (caught) { error = caught }
+        expect(postgresImmutableCause(error)).toMatchObject({ code: 'P0001', message: 'organisation Pou specification provenance is immutable' })
+      }
+      const [unchangedSpecification] = await connection.db.select().from(schema.organisationPouSpecificationVersions).where(eq(schema.organisationPouSpecificationVersions.id, storedOrganisationSpecification.id))
+      expect(unchangedSpecification?.specificationCode).toBe(storedOrganisationSpecification.specificationCode)
       const triggers = await connection.db.execute(sql`select count(*)::int as count from pg_trigger t join pg_class c on c.oid=t.tgrelid where not t.tgisinternal and c.relname in ('conversation_provider_rule_assessment','conversation_safety_assessment_run','provider_assessment_delivery')`)
       expect(Number(triggers.rows[0]?.count ?? 0)).toBe(0)
     })
@@ -301,11 +318,12 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
   })
 
   it('12B. ordinary Whakapapa Pou confirmation supersedes candidates without creating candidate-derived canonical state', async () => {
-    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, workflowRepository, payload, request, canonicalSnapshot }) => {
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, reviewDraftRepository, workflowRepository, payload, request, canonicalSnapshot }) => {
       expect((await request(payload())).statusCode).toBe(202)
       const [candidate] = await repository.listReviewable(actor, workflowId)
       const before = await canonicalSnapshot()
-      const confirmed = await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })
+      const draft = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const confirmed = await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2, draft.draft!.revisionId) })
       const [superseded] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
       const after = await canonicalSnapshot()
 
@@ -318,12 +336,13 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
   })
 
   it('12C. late provider delivery and direct stale-ID confirmation cannot resurrect a Pou-confirmed run', async () => {
-    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, workflowRepository, payload, request, canonicalSnapshot }) => {
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, reviewDraftRepository, workflowRepository, payload, request, canonicalSnapshot }) => {
       expect((await request(payload())).statusCode).toBe(202)
       const [retainedBeforeConfirmation] = await connection.db.select().from(schema.conversationTranscripts)
       const [retainedTurnBeforeConfirmation] = await connection.db.select().from(schema.conversationTranscriptTurns)
       const [candidate] = await repository.listReviewable(actor, workflowId)
-      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })
+      const draft = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2, draft.draft!.revisionId) })
       const afterPouConfirmation = await canonicalSnapshot()
       const beforeDeliveries = await connection.db.select().from(schema.providerAssessmentDeliveries).where(eq(schema.providerAssessmentDeliveries.assessmentRunId, run.id))
       const late = await request(payload())

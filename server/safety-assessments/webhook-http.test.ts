@@ -8,6 +8,7 @@ import type { AuthRepository } from '../db/repository.js'
 import type { PostgresSafetyAssessmentRepository } from './repository.js'
 import type { ConversationAssessmentProvider } from './assessment-provider.js'
 import { ElevenLabsWebhookSignatureError } from './webhook.js'
+import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection } from '../pou-specifications/domain.js'
 
 const now = new Date('2026-08-12T00:00:00.000Z')
 const secret = 'test-webhook-secret-with-sufficient-length'
@@ -28,11 +29,13 @@ function body(extra: Record<string, unknown> = {}) {
 }
 function signature(raw: string) { const timestamp = Math.floor(now.getTime() / 1000); return `t=${timestamp},v0=${createHmac('sha256', secret).update(`${timestamp}.${raw}`).digest('hex')}` }
 function webhookDependencies(ingest: ReturnType<typeof vi.fn>, assess = vi.fn(async () => ({ assessment: { assessments: [] }, provider: 'openai', model: 'test-model', configurationHash: 'a'.repeat(64), schemaVersion: '1', assessmentStartedAt: now, assessmentCompletedAt: now }))) {
+  const specification = approvedWhakapapaOrganisationPouV01({ approvedForPilotBy: '11111111-1111-4111-8111-111111111111', approvedForPilotAt: now.toISOString() })
+  const guidanceProjection = conversationGuidanceProjection(specification, { projectionCode: 'test-guidance', projectionVersion: '1' })
   const transcriptRepository = {
     retainForConversation: vi.fn(async (input: { turns: Array<{ id: string; ordinal: number; speaker: 'unknown'; text: string }> }) => ({ transcriptId: '33333333-3333-4333-8333-333333333333', turns: input.turns })),
   }
   return {
-    safetyAssessmentRepository: { resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: {}, superseded: false, requiresAssessment: true }), reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }), releaseReservedDelivery: async () => {}, ingest } as unknown as PostgresSafetyAssessmentRepository,
+    safetyAssessmentRepository: { resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: {}, guidanceProjection, superseded: false, requiresAssessment: true }), reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }), releaseReservedDelivery: async () => {}, ingest } as unknown as PostgresSafetyAssessmentRepository,
     transcriptRepository: transcriptRepository as any,
     conversationAssessmentProvider: { assessPouConversation: assess } as unknown as ConversationAssessmentProvider,
   }
@@ -76,6 +79,20 @@ describe('post-call HTTP raw-body boundary', () => {
       await app.close()
       write.mockRestore()
     }
+  })
+
+  it('rejects provider-exposed dynamic variables that differ from the server-pinned guidance before persistence or assessment', async () => {
+    const ingest = vi.fn(async (_input: unknown) => ({ replayed: false, superseded: false }))
+    const assess = vi.fn()
+    const app = await createApplication({ config, repository: auth, ...webhookDependencies(ingest, assess), now: () => now })
+    const event = JSON.parse(body())
+    event.data.conversation_initiation_client_data = { dynamic_variables: { pou_name: 'Whakapapa', pou_guidance: 'tampered browser value' } }
+    const raw = JSON.stringify(event)
+    try {
+      expect((await app.inject({ method: 'POST', url: '/api/integrations/elevenlabs/post-call', headers: { 'content-type': 'application/json', 'elevenlabs-signature': signature(raw) }, payload: raw })).statusCode).toBe(400)
+      expect(ingest).not.toHaveBeenCalled()
+      expect(assess).not.toHaveBeenCalled()
+    } finally { await app.close() }
   })
 
   it('logs only a bounded rejection category when signature verification fails', async () => {

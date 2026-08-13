@@ -390,7 +390,7 @@ class FakeConversationService implements ConversationApplicationService {
       conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
       authorizedAt: new Date('2026-08-11T00:00:00.000Z'), connectedAt: null, endedAt: null, terminationReason: null, createdAt: new Date('2026-08-11T00:00:00.000Z'), updatedAt: new Date('2026-08-11T00:00:00.000Z'),
     }
-    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token' }
+    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } }
   }
 
   async acknowledgeClientConnected(_actor: AuthenticatedUser, conversationId: string, providerConversationId: string) {
@@ -726,7 +726,7 @@ describe('authenticated application shell API', () => {
     expect(started.headers['cache-control']).toBe('no-store')
     expect(started.json()).toMatchObject({
       conversation: { pouId: 'whakapapa', status: 'authorized', providerConversationId: 'provider-conversation-id' },
-      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token' },
+      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } },
     })
     expect(JSON.stringify(started.json())).not.toContain('server-selected-agent')
     expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'whakapapa', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])

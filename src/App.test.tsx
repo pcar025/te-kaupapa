@@ -42,6 +42,12 @@ function completedWorkflowWithSafety(safety: Workflow['safety'], overrides: Part
 
 configure({ asyncUtilTimeout: 5000 })
 
+const manualWhakapapaReview = { review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }
+
+function interactionCalls() {
+  return vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith('/interactions') && (init as RequestInit | undefined)?.method === 'POST')
+}
+
 afterEach(() => cleanup())
 
 beforeEach(() => {
@@ -102,7 +108,7 @@ describe('approved application smoke paths', () => {
   it('does not promote a Pou concern or its considerations without explicit safety confirmation', async () => {
     const initial = workflowFixture()
     const acknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) }))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ ...manualWhakapapaReview, workflow: acknowledged, acknowledgement: { replayed: false } }) }))
     function Harness() { const [workflow, setWorkflow] = useState(initial); return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} /> }
     const user = userEvent.setup()
     render(<Harness />)
@@ -110,8 +116,8 @@ describe('approved application smoke paths', () => {
     await user.click(screen.getByRole('button', { name: 'Referral pathway recommended' }))
     await user.click(screen.getByRole('button', { name: 'Consider supervisor review' }))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(1))
-    const command = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(1))
+    const command = JSON.parse(String(interactionCalls()[0]?.[1]?.body))
     expect(command).toMatchObject({ type: 'pou-review-confirmed', userSelectedConcern: 'urgent', referralSuggested: true, supervisorReviewSuggested: true })
     expect(command.type).not.toBe('safety-observation-confirmed')
     expect(command.type).not.toBe('supervisor-review-requested')
@@ -122,7 +128,7 @@ describe('approved application smoke paths', () => {
     const pouAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
     const safetyAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4, safety: { ...emptySafety, observations: [{ id: 'e73e9be5-7247-4fb4-a745-5b0e24e86e30', assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'urgent', contextNote: null, status: 'active', currentRevision: 1, confirmedAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', retractedAt: null }], indicators: { ...emptySafety.indicators, activeObservationCount: 1, urgentObservationCount: 1 } } })
     let calls = 0
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: ++calls === 1 ? pouAcknowledged : safetyAcknowledged, acknowledgement: { replayed: false } }) })))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => Promise.resolve({ ok: true, status: 200, json: async () => init?.method === 'POST' ? ({ workflow: ++calls === 1 ? pouAcknowledged : safetyAcknowledged, acknowledgement: { replayed: false } }) : manualWhakapapaReview })))
     function Harness() { const [workflow, setWorkflow] = useState(initial); return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} /> }
     const user = userEvent.setup()
     render(<Harness />)
@@ -130,12 +136,12 @@ describe('approved application smoke paths', () => {
     await user.click(screen.getByRole('button', { name: 'Record this as a safety concern' }))
     expect(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }).hasAttribute('disabled')).toBe(false)
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
-    expect(vi.mocked(fetch)).not.toHaveBeenCalled()
+    expect(interactionCalls()).toHaveLength(0)
     await user.click(screen.getByLabelText('Practice quality'))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2))
-    const first = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body))
-    const second = JSON.parse(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(2))
+    const first = JSON.parse(String(interactionCalls()[0]?.[1]?.body))
+    const second = JSON.parse(String(interactionCalls()[1]?.[1]?.body))
     expect(first.type).toBe('pou-review-confirmed')
     expect(second).toMatchObject({ type: 'safety-observation-confirmed', expectedVersion: 3, observation: { assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'urgent' } })
   })
@@ -145,7 +151,8 @@ describe('approved application smoke paths', () => {
     const pouAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
     const safetyAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4, safety: { ...emptySafety, observations: [{ id: 'e73e9be5-7247-4fb4-a745-5b0e24e86e30', assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'whanau_safety', concernLevel: 'urgent', contextNote: null, status: 'active', currentRevision: 1, confirmedAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', retractedAt: null }], indicators: { ...emptySafety.indicators, activeObservationCount: 1, urgentObservationCount: 1 } } })
     let calls = 0
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') return Promise.resolve({ ok: true, status: 200, json: async () => manualWhakapapaReview })
       calls += 1
       if (calls === 1) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: pouAcknowledged, acknowledgement: { replayed: false } }) })
       if (calls === 2) return Promise.resolve({ ok: false, status: 503, json: async () => ({ error: 'persistence_unavailable' }) })
@@ -159,11 +166,11 @@ describe('approved application smoke paths', () => {
     await user.click(screen.getByLabelText('Whānau safety'))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
     expect(await screen.findByText('A safety concern has not yet been saved.')).toBeTruthy()
-    const failedSafetyCommand = String(vi.mocked(fetch).mock.calls[1]?.[1]?.body)
+    const failedSafetyCommand = String(interactionCalls()[1]?.[1]?.body)
     await user.click(screen.getByRole('button', { name: 'Try again' }))
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(3))
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[2]?.[1]?.body)).type).toBe('safety-observation-confirmed')
-    expect(String(vi.mocked(fetch).mock.calls[2]?.[1]?.body)).toBe(failedSafetyCommand)
+    await waitFor(() => expect(interactionCalls()).toHaveLength(3))
+    expect(JSON.parse(String(interactionCalls()[2]?.[1]?.body)).type).toBe('safety-observation-confirmed')
+    expect(String(interactionCalls()[2]?.[1]?.body)).toBe(failedSafetyCommand)
     expect(screen.queryByText('A safety concern has not yet been saved.')).toBeNull()
   })
 
@@ -173,6 +180,7 @@ describe('approved application smoke paths', () => {
     const latest = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4 })
     let calls = 0
     vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).endsWith('/review-draft')) return Promise.resolve({ ok: true, status: 200, json: async () => manualWhakapapaReview })
       if (init?.method !== 'POST') return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: latest }) })
       calls += 1
       if (calls === 1) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: pouAcknowledged, acknowledgement: { replayed: false } }) })
@@ -187,18 +195,16 @@ describe('approved application smoke paths', () => {
     await user.click(screen.getByLabelText('Whānau safety'))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
     expect(await screen.findByText('A safety concern has not yet been saved.')).toBeTruthy()
-    const failedSafetyCommand = String(vi.mocked(fetch).mock.calls[1]?.[1]?.body)
+    const failedSafetyCommand = String(interactionCalls()[1]?.[1]?.body)
     await user.click(screen.getByRole('button', { name: /Hoki/i }))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
     expect(await screen.findByRole('button', { name: 'Review safety concern' })).toBeTruthy()
     expect(screen.getByText(/A safety concern has not yet been saved\. Review and reconfirm it from the current workflow\./)).toBeTruthy()
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(4))
-    expect(String(vi.mocked(fetch).mock.calls[3]?.[0])).toBe(`/api/workflows/${initial.id}`)
-    const commands = vi.mocked(fetch).mock.calls
-      .filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
-      .map(([, init]) => JSON.parse(String((init as RequestInit).body)))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(3))
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/workflows/${initial.id}`)).toBe(true)
+    const commands = interactionCalls().map(([, init]) => JSON.parse(String((init as RequestInit).body)))
     expect(commands.map((command) => command.type)).toEqual(['pou-review-confirmed', 'safety-observation-confirmed', 'pou-review-confirmed'])
-    expect(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body)).toBe(failedSafetyCommand)
+    expect(String(interactionCalls()[1]?.[1]?.body)).toBe(failedSafetyCommand)
     expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
   })
 
@@ -207,14 +213,14 @@ describe('approved application smoke paths', () => {
     const pouAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
     const requestAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4, safety: { ...emptySafety, supervisorReviewRequests: [{ id: 'd3306df2-03f5-43c3-8539-239b17c6a9e1', pouId: 'whakapapa', requestNote: null, requestedAt: '2026-08-10T00:00:00.000Z' }], indicators: { ...emptySafety.indicators, manualReviewRequestCount: 1 } } })
     let calls = 0
-    vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: ++calls === 1 ? pouAcknowledged : requestAcknowledged, acknowledgement: { replayed: false } }) })))
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => Promise.resolve({ ok: true, status: 200, json: async () => init?.method === 'POST' ? ({ workflow: ++calls === 1 ? pouAcknowledged : requestAcknowledged, acknowledgement: { replayed: false } }) : manualWhakapapaReview })))
     function Harness() { const [workflow, setWorkflow] = useState(initial); return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} /> }
     const user = userEvent.setup()
     render(<Harness />)
     await user.click(screen.getByRole('button', { name: 'Request supervisor review' }))
     await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
-    await waitFor(() => expect(vi.mocked(fetch)).toHaveBeenCalledTimes(2))
-    const second = JSON.parse(String(vi.mocked(fetch).mock.calls[1]?.[1]?.body))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(2))
+    const second = JSON.parse(String(interactionCalls()[1]?.[1]?.body))
     expect(second).toMatchObject({ type: 'supervisor-review-requested', expectedVersion: 3, pouId: 'whakapapa' })
     expect(second.type).not.toBe('safety-observation-confirmed')
   })

@@ -5,6 +5,10 @@ import type { WorkflowRepository, WorkflowView } from '../workflows/repository.j
 import type { ConversationRecord, ConversationRepository, PrepareConversationInput } from './repository.js'
 import { ConversationAuthorizationAlreadyIssuedError, ConversationService, ProviderConversationMismatchError } from './service.js'
 import type { ConversationProvider } from './provider.js'
+import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from '../pou-specifications/domain.js'
+import { approvedWhakapapaPilotV01, contentHash, providerProjection } from '../safety-assessments/domain.js'
+import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
+import type { PostgresOrganisationPouSpecificationRepository } from '../pou-specifications/repository.js'
 
 const actor: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -77,44 +81,60 @@ class AuthorizationWriteFailureRepository extends FakeConversationRepository {
 
 const fakeWorkflowRepository = { findById: async () => workflow } as unknown as WorkflowRepository
 const fakeProvider: ConversationProvider = { authorizeConversation: async () => ({ providerConversationId: 'provider-id', conversationToken: 'temporary-token' }) }
+const approvedPouSpecification = approvedWhakapapaOrganisationPouV01({ approvedForPilotBy: actor.id, approvedForPilotAt: '2026-08-13T00:00:00.000Z' })
+const guidanceProjection = conversationGuidanceProjection(approvedPouSpecification, { projectionCode: 'test-guidance', projectionVersion: '1' })
+const reviewProjection = pouReviewProjection(approvedPouSpecification, { projectionCode: 'test-review', projectionVersion: '1' })
+const approvedSafetySpecification = approvedWhakapapaPilotV01({ approvedForPilotBy: actor.id, approvedForPilotAt: '2026-08-13T00:00:00.000Z' })
+const safetyProjection = providerProjection(approvedSafetySpecification, { projectionCode: 'test-safety', projectionVersion: '1' })
+const safetyAssessments = {
+  resolveActivePin: async () => ({ specificationId: 'da60ad9e-8f8d-4d9d-a565-0da571850337', specification: approvedSafetySpecification, specificationHash: contentHash(approvedSafetySpecification), ruleManifestHash: contentHash(safetyProjection.rules), projectionId: 'd0c07164-6d8f-4ee0-a087-ea7fc36f38e9', projection: safetyProjection, projectionHash: contentHash(safetyProjection) }),
+} as unknown as PostgresSafetyAssessmentRepository
+const pouSpecifications = {
+  resolveActivePin: async () => ({ specificationId: 'ccf4b2cf-e3f7-4a97-a242-ac6053644e42', specification: approvedPouSpecification, specificationHash: contentHash(approvedPouSpecification), conversationGuidanceProjectionId: 'c86a610d-e6d7-499d-9192-30f174f43a23', conversationGuidanceProjection: guidanceProjection, conversationGuidanceProjectionHash: contentHash(guidanceProjection), pouReviewProjectionId: 'dff5cce8-8ec0-4cd4-936a-b0e24c1b269c', pouReviewProjection: reviewProjection, pouReviewProjectionHash: contentHash(reviewProjection) }),
+} as unknown as PostgresOrganisationPouSpecificationRepository
+
+function service(repository: ConversationRepository, provider: ConversationProvider = fakeProvider) {
+  return new ConversationService(fakeWorkflowRepository, repository, provider, { agentId: 'agent', branchId: 'branch', environment: 'staging' }, safetyAssessments, pouSpecifications)
+}
 
 describe('ConversationService', () => {
   it('authorizes Whakapapa without changing the workflow and makes a client-connected acknowledgement active', async () => {
     const repository = new FakeConversationRepository()
-    const service = new ConversationService(fakeWorkflowRepository, repository, fakeProvider, { agentId: 'agent', branchId: 'branch', environment: 'staging' })
-    const started = await service.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
+    const application = service(repository)
+    const started = await application.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
     expect(started.conversation.status).toBe('authorized')
     expect(started.conversation.conversationSpecificationCode).toBe('whakapapa-reflection')
     expect(started.conversationToken).toBe('temporary-token')
-    await expect(service.acknowledgeClientConnected(actor, started.conversation.id, 'provider-id')).resolves.toMatchObject({ status: 'active' })
+    expect(started.dynamicVariables).toEqual({ pou_name: 'Whakapapa', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
+    await expect(application.acknowledgeClientConnected(actor, started.conversation.id, 'provider-id')).resolves.toMatchObject({ status: 'active' })
   })
 
   it('does not reissue a token for a repeated start and terminates provider-ID mismatches', async () => {
     const repository = new FakeConversationRepository()
-    const service = new ConversationService(fakeWorkflowRepository, repository, fakeProvider, { agentId: 'agent', branchId: 'branch', environment: 'staging' })
-    const started = await service.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
-    await expect(service.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')).rejects.toEqual(expect.any(ConversationAuthorizationAlreadyIssuedError))
-    await expect(service.acknowledgeClientConnected(actor, started.conversation.id, 'wrong-provider-id')).rejects.toEqual(expect.any(ProviderConversationMismatchError))
+    const application = service(repository)
+    const started = await application.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
+    await expect(application.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')).rejects.toEqual(expect.any(ConversationAuthorizationAlreadyIssuedError))
+    await expect(application.acknowledgeClientConnected(actor, started.conversation.id, 'wrong-provider-id')).rejects.toEqual(expect.any(ProviderConversationMismatchError))
     expect(repository.current).toMatchObject({ status: 'failed', terminationReason: 'provider_id_mismatch' })
   })
 
   it('makes a terminal end idempotent without changing workflow state', async () => {
     const repository = new FakeConversationRepository()
-    const service = new ConversationService(fakeWorkflowRepository, repository, fakeProvider, { agentId: 'agent', branchId: 'branch', environment: 'staging' })
-    const started = await service.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
-    const ended = await service.end(actor, started.conversation.id, 'user_ended')
-    await expect(service.end(actor, started.conversation.id, 'user_ended')).resolves.toEqual(ended)
+    const application = service(repository)
+    const started = await application.start(actor, workflow.id, 'whakapapa', 'a65c619a-9f17-4e01-8b7e-64de443d7bca')
+    const ended = await application.end(actor, started.conversation.id, 'user_ended')
+    await expect(application.end(actor, started.conversation.id, 'user_ended')).resolves.toEqual(ended)
     expect(workflow).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2 })
   })
 
   it('does not return or reissue a provider token when authorization persistence fails', async () => {
     const repository = new AuthorizationWriteFailureRepository()
     const authorizeConversation = vi.fn(async () => ({ providerConversationId: 'provider-id', conversationToken: 'temporary-token' }))
-    const service = new ConversationService(fakeWorkflowRepository, repository, { authorizeConversation }, { agentId: 'agent', branchId: 'branch', environment: 'staging' })
+    const application = service(repository, { authorizeConversation })
     const idempotencyKey = 'a65c619a-9f17-4e01-8b7e-64de443d7bca'
-    await expect(service.start(actor, workflow.id, 'whakapapa', idempotencyKey)).rejects.toThrow('authorization persistence failed')
+    await expect(application.start(actor, workflow.id, 'whakapapa', idempotencyKey)).rejects.toThrow('authorization persistence failed')
     expect(repository.current).toMatchObject({ status: 'failed', terminationReason: 'startup_failed' })
-    await expect(service.start(actor, workflow.id, 'whakapapa', idempotencyKey)).rejects.toEqual(expect.any(ConversationAuthorizationAlreadyIssuedError))
+    await expect(application.start(actor, workflow.id, 'whakapapa', idempotencyKey)).rejects.toEqual(expect.any(ConversationAuthorizationAlreadyIssuedError))
     expect(authorizeConversation).toHaveBeenCalledTimes(1)
   })
 })

@@ -20,6 +20,7 @@ export interface ElevenLabsWebhookVerifier {
 export class ElevenLabsWebhookSignatureError extends Error {}
 export class ElevenLabsWebhookUnsupportedEventError extends Error {}
 export class ElevenLabsWebhookEnvelopeError extends Error {}
+export class ElevenLabsGuidanceProvenanceMismatchError extends Error {}
 
 export class ElevenLabsHmacWebhookVerifier implements ElevenLabsWebhookVerifier {
   constructor(private readonly secret: string, private readonly maximumAgeSeconds: number) {}
@@ -50,6 +51,7 @@ const eventSchema = z.object({
   // available.
   event_id: z.string().min(1).max(255).optional(),
   event_timestamp: z.union([z.number().finite().nonnegative(), z.string().min(1).max(128)]).optional(),
+  conversation_initiation_client_data: z.unknown().optional(),
   data: z.object({
     conversation_id: z.string().min(1).max(255),
     agent_id: z.string().min(1).max(255),
@@ -67,8 +69,26 @@ const eventSchema = z.object({
       z.string().min(1).max(120_000),
       z.array(providerTranscriptTurnSchema).min(1).max(200),
     ]),
+    conversation_initiation_client_data: z.unknown().optional(),
   }).passthrough(),
 }).passthrough()
+
+function dynamicVariableProvenance(value: unknown): { pou_name: string; pou_guidance: string } | null {
+  if (value === undefined) return null
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation provenance is malformed.')
+  }
+  const dynamicVariables = (value as { dynamic_variables?: unknown }).dynamic_variables
+  if (typeof dynamicVariables !== 'object' || dynamicVariables === null || Array.isArray(dynamicVariables)) {
+    throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation dynamic variables are unavailable.')
+  }
+  const pouName = (dynamicVariables as { pou_name?: unknown }).pou_name
+  const pouGuidance = (dynamicVariables as { pou_guidance?: unknown }).pou_guidance
+  if (typeof pouName !== 'string' || pouName.length === 0 || pouName.length > 240 || typeof pouGuidance !== 'string' || pouGuidance.length === 0 || pouGuidance.length > 4_000) {
+    throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation dynamic variables are invalid.')
+  }
+  return { pou_name: pouName, pou_guidance: pouGuidance }
+}
 
 export function parseElevenLabsPostCallTranscript(rawBody: Buffer) {
   const event = eventSchema.parse(JSON.parse(rawBody.toString('utf8')))
@@ -77,12 +97,17 @@ export function parseElevenLabsPostCallTranscript(rawBody: Buffer) {
     ? undefined
     : `post_call_transcription:${event.data.conversation_id}:${event.event_timestamp}`)
   if (!deliveryId) throw new ElevenLabsWebhookEnvelopeError('Provider delivery identity is missing.')
+  // The post-call contract has surfaced this value under both the event and
+  // data envelope across provider interfaces. It remains transient: retain
+  // only the two expected values long enough to verify their hash.
+  const initiation = event.data.conversation_initiation_client_data ?? event.conversation_initiation_client_data
   return {
     deliveryId,
     providerConversationId: event.data.conversation_id,
     agentReference: event.data.agent_id,
     branchReference: event.data.branch_id ?? null,
     environment: event.data.environment,
+    dynamicVariableProvenance: dynamicVariableProvenance(initiation),
     transientTranscript: typeof event.data.transcript === 'string'
       ? event.data.transcript
       : event.data.transcript.map((turn): ElevenLabsTranscriptTurn => ({ role: turn.role, message: turn.message })),

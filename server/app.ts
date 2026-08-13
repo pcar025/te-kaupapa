@@ -44,12 +44,13 @@ import {
 import { contentHash } from './safety-assessments/domain.js'
 import { AssessmentCandidateUnavailableError, PostgresSafetyAssessmentRepository, ProviderDeliveryConflictError, SafetyAssessmentValidationError } from './safety-assessments/repository.js'
 import { ConversationAssessmentProviderError, type ConversationAssessmentProvider } from './safety-assessments/assessment-provider.js'
-import { ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
+import { ElevenLabsGuidanceProvenanceMismatchError, ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
 import { normaliseSignedTranscript } from './transcripts/domain.js'
 import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import type { ConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-drafts/domain.js'
+import { conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
@@ -70,8 +71,9 @@ const transactionSchema = z.object({
   issuedAt: z.number().int(),
 })
 
-function providerWebhookRejectionReason(error: unknown): 'signature' | 'invalid_json' | 'unsupported_event' | 'schema_validation' | 'assessment_validation' | 'assessment_provider' | 'unexpected' {
+function providerWebhookRejectionReason(error: unknown): 'signature' | 'guidance_provenance_mismatch' | 'invalid_json' | 'unsupported_event' | 'schema_validation' | 'assessment_validation' | 'assessment_provider' | 'unexpected' {
   if (error instanceof ElevenLabsWebhookSignatureError) return 'signature'
+  if (error instanceof ElevenLabsGuidanceProvenanceMismatchError) return 'guidance_provenance_mismatch'
   if (error instanceof SyntaxError) return 'invalid_json'
   if (error instanceof ElevenLabsWebhookUnsupportedEventError) return 'unsupported_event'
   if (error instanceof ElevenLabsWebhookEnvelopeError) return 'schema_validation'
@@ -642,7 +644,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       reply.header('cache-control', 'no-store')
       return reply.code(201).send({
         conversation: publicConversation(result.conversation),
-        authorization: { transport: 'webrtc', conversationToken: result.conversationToken },
+        authorization: { transport: 'webrtc', conversationToken: result.conversationToken, dynamicVariables: result.dynamicVariables },
       })
     } catch (error) {
       return conversationFailure(error, request, reply)
@@ -717,6 +719,13 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             branchReference: event.branchReference,
             environment: event.environment,
           })
+          if (event.dynamicVariableProvenance) {
+            if (!pin.guidanceProjection) throw new ElevenLabsGuidanceProvenanceMismatchError('No pinned conversation guidance exists for provenance verification.')
+            const expectedDynamicVariables = conversationRuntimeDynamicVariables(pin.guidanceProjection)
+            if (contentHash(event.dynamicVariableProvenance) !== contentHash(expectedDynamicVariables)) {
+              throw new ElevenLabsGuidanceProvenanceMismatchError('Provider conversation guidance did not match the server-pinned projection.')
+            }
+          }
           const reservation = await safetyAssessmentRepository.reserveDelivery({ provider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, assessmentRunId: pin.runId })
           if (reservation.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
           if (reservation.replayed) return reply.code(200).send({ accepted: true, replayed: true, superseded: pin.superseded })
@@ -740,8 +749,9 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             let reviewResult: Awaited<ReturnType<ConversationReviewDraftProvider['generateWhakapapaReviewDraft']>> | undefined
             let reviewFailure: 'provider_unavailable' | 'invalid_output' | undefined
             if (!conversationReviewDraftProvider) reviewFailure = 'provider_unavailable'
+            else if (!pin.reviewProjection) reviewFailure = 'invalid_output'
             else {
-              try { reviewResult = await conversationReviewDraftProvider.generateWhakapapaReviewDraft({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection }) }
+              try { reviewResult = await conversationReviewDraftProvider.generateWhakapapaReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection }) }
               catch { reviewFailure = 'invalid_output' }
             }
             let assessment

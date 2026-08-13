@@ -55,7 +55,7 @@ describe('ElevenLabsConversation', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: null }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('active') }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
 
@@ -66,7 +66,7 @@ describe('ElevenLabsConversation', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /begin voice reflection/i }))
     await waitFor(() => expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({ audio: true }))
-    await waitFor(() => expect(sdk.startSession).toHaveBeenCalledWith({ conversationToken: 'temporary-token', connectionType: 'webrtc' }))
+    await waitFor(() => expect(sdk.startSession).toHaveBeenCalledWith({ conversationToken: 'temporary-token', connectionType: 'webrtc', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } }))
     expect(fetchMock.mock.calls[1]?.[0]).toBe(`/api/workflows/${workflowId}/pou/whakapapa/conversations`)
     expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' })
     expect(stop).toHaveBeenCalledTimes(1)
@@ -81,7 +81,7 @@ describe('ElevenLabsConversation', () => {
     const proceed = vi.fn()
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: null }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('active') }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('ended') }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -124,7 +124,7 @@ describe('ElevenLabsConversation', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: null }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('active') }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('ended') }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -151,7 +151,7 @@ describe('ElevenLabsConversation', () => {
   it('does not reconcile twice when endSession synchronously triggers onDisconnect', async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: null }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('active') }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('ended') }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
@@ -206,7 +206,7 @@ describe('ElevenLabsConversation', () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } })
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: null }), { status: 200 }))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token' } }), { status: 201 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata(), authorization: { transport: 'webrtc', conversationToken: 'temporary-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } } }), { status: 201 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ conversation: metadata('active') }), { status: 200 }))
       .mockImplementationOnce((_input: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
         ;(init?.signal as AbortSignal).addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')))

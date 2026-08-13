@@ -15,6 +15,7 @@ import {
   type ProviderRuleAssessment,
   type SafetySpecificationVersion,
 } from './domain.js'
+import { conversationGuidanceProjection, organisationPouSpecificationSchema, pouReviewProjection, type ConversationGuidanceProjection, type PouReviewProjection } from '../pou-specifications/domain.js'
 
 type SafetyDatabase = NodePgDatabase<typeof schema>
 export type SafetyTransaction = Parameters<Parameters<SafetyDatabase['transaction']>[0]>[0]
@@ -118,10 +119,11 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     agentReference: string
     branchReference: string | null
     environment: string
-  }): Promise<{ runId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa'; projection: ProviderAssessmentProjection; superseded: boolean; requiresAssessment: boolean }> {
-    const rows = await this.db.select({ run: schema.conversationSafetyAssessmentRuns, conversation: schema.workflowConversations })
+  }): Promise<{ runId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa'; projection: ProviderAssessmentProjection; guidanceProjection: ConversationGuidanceProjection | null; reviewProjection: PouReviewProjection | null; superseded: boolean; requiresAssessment: boolean }> {
+    const rows = await this.db.select({ run: schema.conversationSafetyAssessmentRuns, conversation: schema.workflowConversations, pouPin: schema.workflowConversationPouSpecificationPins })
       .from(schema.conversationSafetyAssessmentRuns)
       .innerJoin(schema.workflowConversations, eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, schema.workflowConversations.id))
+      .leftJoin(schema.workflowConversationPouSpecificationPins, eq(schema.workflowConversationPouSpecificationPins.workflowConversationId, schema.workflowConversations.id))
       .where(and(
         eq(schema.workflowConversations.provider, 'elevenlabs'),
         eq(schema.workflowConversations.providerConversationId, input.providerConversationId),
@@ -138,7 +140,21 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     if (contentHash(specification) !== row.run.specificationHash || contentHash(projection.rules) !== row.run.ruleManifestHash || contentHash(projection) !== row.run.projectionHash) {
       throw new SafetyAssessmentValidationError('Pinned historical assessment content does not match its hashes.')
     }
-    return { runId: row.run.id, workflowConversationId: row.run.workflowConversationId, organisationId: row.run.organisationId, workflowSessionId: row.run.workflowSessionId, pouId: 'whakapapa', projection, superseded: row.run.status === 'superseded', requiresAssessment: row.run.status === 'pending' }
+    const pinnedSpecification = row.pouPin ? organisationPouSpecificationSchema.parse(row.pouPin.specificationSnapshot) : null
+    const guidanceProjection = row.pouPin?.conversationGuidanceProjectionSnapshot as ConversationGuidanceProjection | undefined
+    const reviewProjection = row.pouPin?.pouReviewProjectionSnapshot as PouReviewProjection | undefined
+    if (pinnedSpecification && guidanceProjection && reviewProjection) {
+      const expectedGuidance = conversationGuidanceProjection(pinnedSpecification, { projectionCode: guidanceProjection.projectionCode, projectionVersion: guidanceProjection.projectionVersion })
+      const expectedReview = pouReviewProjection(pinnedSpecification, { projectionCode: reviewProjection.projectionCode, projectionVersion: reviewProjection.projectionVersion })
+      const linkedRules = pinnedSpecification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
+      const assessmentRules = specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
+      if (contentHash(pinnedSpecification) !== row.pouPin!.specificationHash || guidanceProjection.specificationHash !== row.pouPin!.specificationHash || reviewProjection.specificationHash !== row.pouPin!.specificationHash || contentHash(guidanceProjection) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(reviewProjection) !== row.pouPin!.pouReviewProjectionHash || contentHash(expectedGuidance) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(expectedReview) !== row.pouPin!.pouReviewProjectionHash || linkedRules.join('|') !== assessmentRules.join('|')) {
+        throw new SafetyAssessmentValidationError('Pinned conversation, review, and safety projection provenance is invalid.')
+      }
+    } else if (row.pouPin || guidanceProjection || reviewProjection) {
+      throw new SafetyAssessmentValidationError('Pinned organisation Pou provenance is incomplete.')
+    }
+    return { runId: row.run.id, workflowConversationId: row.run.workflowConversationId, organisationId: row.run.organisationId, workflowSessionId: row.run.workflowSessionId, pouId: 'whakapapa', projection, guidanceProjection: guidanceProjection ?? null, reviewProjection: reviewProjection ?? null, superseded: row.run.status === 'superseded', requiresAssessment: row.run.status === 'pending' }
   }
 
   /**

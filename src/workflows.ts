@@ -115,6 +115,12 @@ export interface WhakapapaReviewDraft {
   strengthsSummary: string | null
   areasForAttentionSummary: string | null
   evidenceTurnIds: string[]
+  criterionAssessments?: Array<{
+    criterionCode: string
+    status: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
+    evidenceTurnIds: string[]
+    missingInformationCodes: string[]
+  }>
   generatedAt: string
 }
 
