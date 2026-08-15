@@ -30,11 +30,11 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
-  getWhakapapaAssessmentCandidates,
-  getWhakapapaReviewDraft,
-  markWhakapapaReviewDraftReviewed,
-  editWhakapapaReviewDraft,
-  reviewWhakapapaAssessmentCandidate,
+  getPouAssessmentCandidates,
+  getPouReviewDraft,
+  markPouReviewDraftReviewed,
+  editPouReviewDraft,
+  reviewPouAssessmentCandidate,
   submitWorkflowCommand,
   type Workflow,
   type WorkflowAction,
@@ -42,9 +42,9 @@ import {
   type WorkflowReferral,
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
-  type WhakapapaAssessmentCandidate,
-  type WhakapapaReviewDraft,
-  type WhakapapaReviewDraftState,
+  type PouAssessmentCandidate,
+  type PouReviewDraft,
+  type PouReviewDraftState,
 } from '../workflows'
 import { VoiceChunkBoundary, VoiceChunkLoading } from '../conversations/VoiceChunkBoundary'
 
@@ -70,6 +70,24 @@ type PendingSafetySave = {
   idempotencyKey: string
   source: SafetyDraft
   retryable: boolean
+}
+
+/** Binds a human confirmation to the Pou that displayed the scoped candidate. */
+export function candidateConfirmationCommand(
+  candidate: PouAssessmentCandidate,
+  concernLevel: SafetyObservationConcernLevel,
+  pouId: (typeof TE_WAHAROA_POU)[number]['id'],
+  expectedVersion: number,
+) {
+  if (!candidate.canonicalBroadClass) return null
+  return {
+    type: 'safety-observation-confirmed' as const,
+    observationId: crypto.randomUUID(),
+    idempotencyKey: crypto.randomUUID(),
+    expectedVersion,
+    candidateAssessmentId: candidate.id,
+    observation: { assessmentContext: 'pou' as const, pouId, broadClass: candidate.canonicalBroadClass, concernLevel },
+  }
 }
 
 const SAFETY_CLASS_OPTIONS: Array<{ id: SafetyBroadClass; label: string }> = [
@@ -1703,16 +1721,13 @@ function PouConversationStage({
   pouIdx: number
   workflowId: string
 }) {
-  if (pouIdx === 0) {
-    return (
-      <VoiceChunkBoundary onProceedToReview={onNext}>
-        <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
-          <ElevenLabsConversation workflowId={workflowId} onProceedToReview={onNext} />
-        </Suspense>
-      </VoiceChunkBoundary>
-    )
-  }
-  return <GuidedReflectionStage data={data} onChange={onChange} onNext={onNext} pouIdx={pouIdx} />
+  return (
+    <VoiceChunkBoundary onProceedToReview={onNext}>
+      <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
+        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onProceedToReview={onNext} />
+      </Suspense>
+    </VoiceChunkBoundary>
+  )
 }
 
 // ─── Single Pou Review Stage ──────────────────────────────────────────────────
@@ -1727,19 +1742,21 @@ const CONCERN_META: Record<ConcernLevel, { label: string; color: string; bg: str
   urgent: { label: 'Urgent concern', color: 'var(--color-concern)', bg: '#fee8e6' },
 }
 
-function WhakapapaAssessmentCandidates({
+export function PouAssessmentCandidates({
   workflowId,
+  pouId,
   onConfirm,
 }: {
   workflowId: string
-  onConfirm: (candidate: WhakapapaAssessmentCandidate, level: SafetyObservationConcernLevel) => void
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
+  onConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => void
 }) {
-  const [candidates, setCandidates] = useState<WhakapapaAssessmentCandidate[]>([])
+  const [candidates, setCandidates] = useState<PouAssessmentCandidate[]>([])
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
   const [selected, setSelected] = useState<Record<string, SafetyObservationConcernLevel | undefined>>({})
   const load = () => {
     setState('loading')
-    void getWhakapapaAssessmentCandidates(workflowId).then((items) => { setCandidates(items); setState('idle') }).catch(() => setState('failed'))
+    void getPouAssessmentCandidates(workflowId, pouId).then((items) => { setCandidates(items); setState('idle') }).catch(() => setState('failed'))
   }
   if (!candidates.length && state === 'idle') return <div className="flex justify-between gap-3 px-4 py-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>You can check for a completed reflection assessment. Manual review remains available.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
   return <div className="space-y-3" aria-live="polite">
@@ -1753,48 +1770,50 @@ function WhakapapaAssessmentCandidates({
       {candidate.matchedConcernIndicatorCodes.length > 0 && <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>Matched concern indicators: {candidate.matchedConcernIndicatorCodes.join(', ')}</p>}
       {candidate.matchedProtectiveIndicatorCodes.length > 0 && <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>Relevant protective indicators: {candidate.matchedProtectiveIndicatorCodes.join(', ')}</p>}
       <fieldset><legend className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS?</legend><div className="grid grid-cols-2 gap-1.5">{candidate.permittedHumanConcernLevels.map((level) => <button type="button" key={level} onClick={() => setSelected((current) => ({ ...current, [candidate.id]: level }))} className="px-3 py-2 text-left text-xs" style={{ backgroundColor: selected[candidate.id] === level ? 'var(--color-caution-light)' : 'var(--color-ground)', borderLeft: `3px solid ${selected[candidate.id] === level ? 'var(--color-caution)' : 'var(--color-border)'}`, fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>
-      <div className="flex gap-3"><button type="button" disabled={!selected[candidate.id]} onClick={() => selected[candidate.id] && onConfirm(candidate, selected[candidate.id]!)} className="text-xs disabled:opacity-40" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Confirm concern</button><button type="button" onClick={() => void reviewWhakapapaAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Dismiss suggestion</button></div>
-    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.missingInformationCodes.join(', ')}</p><button type="button" onClick={() => void reviewWhakapapaAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge</button></div> : null)}
+      <div className="flex gap-3"><button type="button" disabled={!selected[candidate.id]} onClick={() => selected[candidate.id] && onConfirm(candidate, selected[candidate.id]!, pouId)} className="text-xs disabled:opacity-40" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Confirm concern</button><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Dismiss suggestion</button></div>
+    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.missingInformationCodes.join(', ')}</p><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge</button></div> : null)}
   </div>
 }
 
-export function WhakapapaNarrativeReview({
+export function PouNarrativeReview({
   workflowId,
+  pouId,
   onDraftState,
 }: {
   workflowId: string
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
   onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean }) => void
 }) {
-  const [review, setReview] = useState<WhakapapaReviewDraftState | null>(null)
-  const [draft, setDraft] = useState<WhakapapaReviewDraft | null>(null)
+  const [review, setReview] = useState<PouReviewDraftState | null>(null)
+  const [draft, setDraft] = useState<PouReviewDraft | null>(null)
   const [loadError, setLoadError] = useState(false)
   const [saveError, setSaveError] = useState<'failed' | 'ambiguous' | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const load = (preserveLocalDraftOnFailure = false) => {
     setLoadError(false)
-    void getWhakapapaReviewDraft(workflowId).then((next) => {
+    void getPouReviewDraft(workflowId, pouId).then((next) => {
       setReview(next)
       setDraft(next.draft)
       setDirty(false)
       setSaveError(null)
       onDraftState({ reviewDraftRevisionId: next.draft?.revisionId, hasUnsavedChanges: false, loaded: true })
-      if (next.draft) void markWhakapapaReviewDraftReviewed(workflowId, next.draft.id).catch(() => undefined)
+      if (next.draft) void markPouReviewDraftReviewed(workflowId, pouId, next.draft.id).catch(() => undefined)
     }).catch(() => {
       if (preserveLocalDraftOnFailure && draft) {
         setSaveError('ambiguous')
         return
       }
       setLoadError(true)
-      onDraftState({ hasUnsavedChanges: false, loaded: true })
+      onDraftState({ hasUnsavedChanges: false, loaded: false })
     })
   }
-  useEffect(() => { load() }, [workflowId])
+  useEffect(() => { load() }, [workflowId, pouId])
   useEffect(() => {
     if (review?.status !== 'analysing') return
     const timer = window.setTimeout(load, 4_000)
     return () => window.clearTimeout(timer)
-  }, [review?.status, workflowId])
+  }, [review?.status, workflowId, pouId])
   const update = (field: 'overallSummary' | 'strengthsSummary' | 'areasForAttentionSummary', value: string) => {
     if (!draft) return
     const next = { ...draft, [field]: value.trim() ? value : null }
@@ -1803,14 +1822,14 @@ export function WhakapapaNarrativeReview({
   const save = () => {
     if (!draft) return
     setSaving(true)
-    void editWhakapapaReviewDraft(workflowId, { reviewDraftId: draft.id, expectedRevision: draft.revision, overallSummary: draft.overallSummary, strengthsSummary: draft.strengthsSummary, areasForAttentionSummary: draft.areasForAttentionSummary, evidenceTurnIds: draft.evidenceTurnIds })
+    void editPouReviewDraft(workflowId, pouId, { reviewDraftId: draft.id, expectedRevision: draft.revision, overallSummary: draft.overallSummary, strengthsSummary: draft.strengthsSummary, areasForAttentionSummary: draft.areasForAttentionSummary, evidenceTurnIds: draft.evidenceTurnIds })
       .then((saved) => { setDraft(saved); setDirty(false); setSaveError(null); onDraftState({ reviewDraftRevisionId: saved.revisionId, hasUnsavedChanges: false, loaded: true }) })
       .catch((error) => setSaveError(error instanceof WorkflowApiError && error.code === 'stale_review_draft' ? 'ambiguous' : 'failed')).finally(() => setSaving(false))
   }
   if (loadError) return <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>The reflection review could not be loaded. Manual Pou review remains available.</p><button type="button" onClick={() => load()} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
   if (!review || review.status === 'analysing') return <div aria-live="polite" style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Analysing your reflection…</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Your Pou review remains yours to complete.</p></div>
   if (review.status === 'failed') return <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>A reflection draft could not be prepared.</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Manual Pou review remains available. This does not change any safety decision.</p></div>
-  if (review.status === 'manual' || !draft) return <div style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Manual Whakapapa review</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>No reflection draft is available. Complete your own Pou review below.</p></div>
+  if (review.status === 'manual' || !draft) return <div style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Manual {TE_WAHAROA_POU.find((pou) => pou.id === pouId)?.reo} review</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>No reflection draft is available. Complete your own Pou review below.</p></div>
   return <div className="space-y-3" aria-live="polite">
     <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
       <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.08em' }}>WHAT WE HEARD — REVIEW DRAFT</p>
@@ -1823,7 +1842,7 @@ export function WhakapapaNarrativeReview({
       </div>
       <p className="text-xs mt-2 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Not explored is not evidence that an issue is absent. This evidence review does not make a safety decision.</p>
     </div>}
-    {([['overallSummary', 'WHAKAPAPA — IDENTITY CONTEXT'], ['strengthsSummary', 'TIAKI — STRENGTHS'], ['areasForAttentionSummary', 'KĀ ORA ANA — AREAS FOR ATTENTION']] as const).map(([field, label]) => <div key={field} style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>{label}</p><textarea value={draft[field] ?? ''} disabled={saving} onChange={(event) => update(field, event.target.value)} placeholder="Not identified in this reflection" rows={field === 'overallSummary' ? 4 : 3} className="w-full resize-none text-sm leading-relaxed outline-none disabled:opacity-70" style={{ color: 'var(--color-ink-secondary)', backgroundColor: 'transparent', fontFamily: 'var(--font-body)' }} /></div>)}
+    {([['overallSummary', 'OVERALL REFLECTION'], ['strengthsSummary', 'STRENGTHS / PROTECTIVE FACTORS'], ['areasForAttentionSummary', 'AREAS FOR ATTENTION']] as const).map(([field, label]) => <div key={field} style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>{label}</p><textarea value={draft[field] ?? ''} disabled={saving} onChange={(event) => update(field, event.target.value)} placeholder="Not identified in this reflection" rows={field === 'overallSummary' ? 4 : 3} className="w-full resize-none text-sm leading-relaxed outline-none disabled:opacity-70" style={{ color: 'var(--color-ink-secondary)', backgroundColor: 'transparent', fontFamily: 'var(--font-body)' }} /></div>)}
     {saveError === 'failed' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Your review changes could not be saved. They are still shown here and have not been confirmed.</p><button type="button" onClick={save} disabled={saving} className="text-xs mt-2 disabled:opacity-50" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try saving again</button></div>}
     {saveError === 'ambiguous' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>We could not confirm whether your changes were saved. Your wording is still shown here and has not been confirmed.</p><button type="button" onClick={() => load(true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Load current saved review</button></div>}
     {dirty && <button type="button" onClick={save} disabled={saving} className="w-full px-4 py-3 text-sm disabled:opacity-50" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{saving ? 'Saving review…' : 'Save review changes'}</button>}
@@ -1831,7 +1850,15 @@ export function WhakapapaNarrativeReview({
   </div>
 }
 
-function SinglePouReviewStage({
+/** Phase 5C test/import compatibility; all active Pou now use the generic view. */
+export function WhakapapaNarrativeReview(props: {
+  workflowId: string
+  onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean }) => void
+}) {
+  return <PouNarrativeReview workflowId={props.workflowId} onDraftState={props.onDraftState} pouId="whakapapa" />
+}
+
+export function SinglePouReviewStage({
   pouIdx,
   checkpoint,
   onConfirm,
@@ -1851,7 +1878,7 @@ function SinglePouReviewStage({
     reviewDraftRevisionId?: string
   }, safetyDraft?: SafetyDraft, supervisorReviewRequest?: { note?: string }) => void
   workflowId: string
-  onCandidateConfirm: (candidate: WhakapapaAssessmentCandidate, level: SafetyObservationConcernLevel) => void
+  onCandidateConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
@@ -1868,11 +1895,11 @@ function SinglePouReviewStage({
   const [supervisorRequestNote, setSupervisorRequestNote] = useState('')
   const [reviewDraftRevisionId, setReviewDraftRevisionId] = useState<string | undefined>()
   const [hasUnsavedReviewDraftChanges, setHasUnsavedReviewDraftChanges] = useState(false)
-  const [reviewDraftLoaded, setReviewDraftLoaded] = useState(pouIdx !== 0)
+  const [reviewDraftLoaded, setReviewDraftLoaded] = useState(false)
 
   const handleConfirm = () => {
     if (recordSafety && !safetyClass) return
-    if (pouIdx === 0 && !reviewDraftLoaded) return
+    if (!reviewDraftLoaded) return
     if (hasUnsavedReviewDraftChanges) return
     onConfirm({
       userSelectedConcern: concern,
@@ -1931,8 +1958,8 @@ function SinglePouReviewStage({
       </div>
 
       <div className="px-5 pt-5 space-y-5">
-        {pouIdx === 0 && <WhakapapaNarrativeReview workflowId={workflowId} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded) }} />}
-        {pouIdx === 0 && <WhakapapaAssessmentCandidates workflowId={workflowId} onConfirm={onCandidateConfirm} />}
+        <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded) }} />
+        <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onConfirm={onCandidateConfirm} />
         {/* What was discussed */}
         {pouIdx !== 0 && <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
           <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
@@ -2128,12 +2155,12 @@ function SinglePouReviewStage({
         {/* Confirm CTA */}
         <button
           onClick={handleConfirm}
-          disabled={hasUnsavedReviewDraftChanges || (pouIdx === 0 && !reviewDraftLoaded)}
+          disabled={hasUnsavedReviewDraftChanges || !reviewDraftLoaded}
           className="w-full transition-all active:opacity-85 disabled:opacity-50"
           style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}
         >
           <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>
-            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : pouIdx === 0 && !reviewDraftLoaded ? 'Loading reflection review…' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
+            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
           </p>
         </button>
         <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
@@ -6019,16 +6046,9 @@ export function SessionShell({
     void attempt()
   }
 
-  const confirmAssessmentCandidate = (candidate: WhakapapaAssessmentCandidate, concernLevel: SafetyObservationConcernLevel) => {
-    if (!candidate.canonicalBroadClass) return
-    const command = {
-      type: 'safety-observation-confirmed' as const,
-      observationId: crypto.randomUUID(),
-      idempotencyKey: crypto.randomUUID(),
-      expectedVersion: workflow.version,
-      candidateAssessmentId: candidate.id,
-      observation: { assessmentContext: 'pou' as const, pouId: 'whakapapa' as const, broadClass: candidate.canonicalBroadClass, concernLevel },
-    }
+  const confirmAssessmentCandidate = (candidate: PouAssessmentCandidate, concernLevel: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => {
+    const command = candidateConfirmationCommand(candidate, concernLevel, pouId, workflow.version)
+    if (!command) return
     retrySubmission.current = async () => {
       const result = await submitWorkflowCommand(workflow.id, command)
       onWorkflowChange(result.workflow)

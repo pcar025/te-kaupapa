@@ -360,7 +360,6 @@ export const safetySpecificationVersions = pgTable(
     foreignKey({ columns: [table.approvedForPilotBy, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'safety_specification_approval_actor_organisation_fk' }),
     uniqueIndex('safety_specification_organisation_code_version_uq').on(table.organisationId, table.specificationCode, table.specificationVersion),
     uniqueIndex('safety_specification_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
-    check('safety_specification_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('safety_specification_hash_format', sql`length(${table.contentHash}) = 64 and length(${table.ruleManifestHash}) = 64 and length(${table.sourceDocumentHash}) = 64`),
     check('safety_specification_approval_fields', sql`(${table.approvalStatus} = 'draft_derived' and ${table.approvedForPilotBy} is null and ${table.approvedForPilotAt} is null) or (${table.approvalStatus} = 'approved_for_pilot' and ${table.approvedForPilotBy} is not null and ${table.approvedForPilotAt} is not null)`),
   ],
@@ -388,7 +387,6 @@ export const providerAssessmentProjections = pgTable(
     uniqueIndex('provider_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
     uniqueIndex('provider_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
     index('provider_projection_provider_agent_idx').on(table.provider, table.providerAgentReference, table.providerEnvironment),
-    check('provider_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('provider_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
   ],
 )
@@ -410,7 +408,6 @@ export const safetySpecificationActivations = pgTable(
     foreignKey({ columns: [table.projectionId, table.organisationId, table.pouId], foreignColumns: [providerAssessmentProjections.id, providerAssessmentProjections.organisationId, providerAssessmentProjections.pouId], name: 'safety_activation_projection_organisation_pou_fk' }),
     foreignKey({ columns: [table.activatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'safety_activation_actor_organisation_fk' }),
     uniqueIndex('safety_activation_one_active_per_organisation_pou_uq').on(table.organisationId, table.pouId).where(sql`${table.deactivatedAt} is null`),
-    check('safety_activation_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
   ],
 )
 
@@ -443,7 +440,6 @@ export const organisationPouSpecificationVersions = pgTable(
     foreignKey({ columns: [table.approvedForPilotBy, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_specification_approval_actor_organisation_fk' }),
     uniqueIndex('organisation_pou_specification_organisation_code_version_uq').on(table.organisationId, table.specificationCode, table.specificationVersion),
     uniqueIndex('organisation_pou_specification_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
-    check('organisation_pou_specification_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('organisation_pou_specification_hash_format', sql`length(${table.contentHash}) = 64 and length(${table.sourceDocumentHash}) = 64`),
     check('organisation_pou_specification_approval_fields', sql`(${table.approvalStatus} = 'draft_derived' and ${table.approvedForPilotBy} is null and ${table.approvedForPilotAt} is null) or (${table.approvalStatus} = 'approved_for_pilot' and ${table.approvedForPilotBy} is not null and ${table.approvedForPilotAt} is not null)`),
   ],
@@ -470,7 +466,6 @@ export const organisationPouSpecificationActivations = pgTable(
     foreignKey({ columns: [table.safetyLinkId, table.organisationId, table.pouId], foreignColumns: [organisationPouSafetySpecificationLinks.id, organisationPouSafetySpecificationLinks.organisationId, organisationPouSafetySpecificationLinks.pouId], name: 'organisation_pou_specification_activation_safety_link_scope_fk' }),
     foreignKey({ columns: [table.activatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_specification_activation_actor_organisation_fk' }),
     uniqueIndex('organisation_pou_specification_one_active_uq').on(table.organisationId, table.pouId).where(sql`${table.deactivatedAt} is null`),
-    check('organisation_pou_specification_activation_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
   ],
 )
 
@@ -484,7 +479,7 @@ export const conversationGuidanceProjections = pgTable(
     foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'conversation_guidance_projection_specification_scope_fk' }),
     uniqueIndex('conversation_guidance_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
     uniqueIndex('conversation_guidance_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
-    check('conversation_guidance_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`), check('conversation_guidance_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
+    check('conversation_guidance_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
   ],
 )
 
@@ -498,7 +493,7 @@ export const pouReviewProjections = pgTable(
     foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'pou_review_projection_specification_scope_fk' }),
     uniqueIndex('pou_review_projection_organisation_code_version_uq').on(table.organisationId, table.projectionCode, table.projectionVersion),
     uniqueIndex('pou_review_projection_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
-    check('pou_review_projection_whakapapa_only', sql`${table.pouId} = 'whakapapa'`), check('pou_review_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
+    check('pou_review_projection_hash_format', sql`length(${table.projectionHash}) = 64`),
   ],
 )
 
@@ -516,7 +511,6 @@ export const organisationPouSafetySpecificationLinks = pgTable(
     uniqueIndex('organisation_pou_safety_link_specification_uq').on(table.organisationPouSpecificationId),
     uniqueIndex('organisation_pou_safety_link_safety_specification_uq').on(table.safetySpecificationId),
     uniqueIndex('organisation_pou_safety_link_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
-    check('organisation_pou_safety_link_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
   ],
 )
 
@@ -535,7 +529,6 @@ export const workflowConversationPouSpecificationPins = pgTable(
     foreignKey({ columns: [table.specificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'conversation_pou_specification_pin_specification_scope_fk' }),
     foreignKey({ columns: [table.conversationGuidanceProjectionId, table.organisationId, table.pouId], foreignColumns: [conversationGuidanceProjections.id, conversationGuidanceProjections.organisationId, conversationGuidanceProjections.pouId], name: 'conversation_pou_specification_pin_guidance_scope_fk' }),
     foreignKey({ columns: [table.pouReviewProjectionId, table.organisationId, table.pouId], foreignColumns: [pouReviewProjections.id, pouReviewProjections.organisationId, pouReviewProjections.pouId], name: 'conversation_pou_specification_pin_review_scope_fk' }),
-    check('conversation_pou_specification_pin_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('conversation_pou_specification_pin_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.conversationGuidanceProjectionHash}) = 64 and length(${table.pouReviewProjectionHash}) = 64`),
   ],
 )
@@ -586,7 +579,6 @@ export const conversationSafetyAssessmentRuns = pgTable(
     uniqueIndex('assessment_run_one_per_conversation_uq').on(table.workflowConversationId),
     uniqueIndex('assessment_run_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
     index('assessment_run_workflow_pou_status_idx').on(table.workflowSessionId, table.pouId, table.status),
-    check('assessment_run_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('assessment_run_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.ruleManifestHash}) = 64 and length(${table.projectionHash}) = 64`),
     check('assessment_run_status_timestamps', sql`(${table.status} = 'pending' and ${table.receivedAt} is null and ${table.supersededAt} is null) or (${table.status} = 'received' and ${table.receivedAt} is not null and ${table.supersededAt} is null) or (${table.status} = 'superseded' and ${table.supersededAt} is not null)`),
   ],
@@ -615,7 +607,6 @@ export const conversationTranscripts = pgTable(
     foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'transcript_checkpoint_organisation_fk' }),
     uniqueIndex('transcript_one_per_workflow_conversation_uq').on(table.workflowConversationId),
     uniqueIndex('transcript_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
-    check('transcript_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
   ],
 )
 
@@ -670,7 +661,6 @@ export const conversationReviewDrafts = pgTable(
     foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'review_draft_checkpoint_organisation_fk' }),
     uniqueIndex('review_draft_one_per_assessment_run_uq').on(table.assessmentRunId),
     uniqueIndex('review_draft_id_organisation_workflow_uq').on(table.id, table.organisationId, table.workflowSessionId),
-    check('review_draft_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('review_draft_hash_format', sql`length(${table.specificationHash}) = 64 and length(${table.projectionHash}) = 64 and (${table.providerConfigHash} is null or length(${table.providerConfigHash}) = 64)`),
     check('review_draft_status_lifecycle', sql`(${table.status} = 'generated' and ${table.generatedAt} is not null and ${table.failedAt} is null and ${table.provider} is not null and ${table.providerModel} is not null and ${table.providerConfigHash} is not null and ${table.schemaVersion} is not null and ${table.failureCategory} is null) or (${table.status} = 'failed' and ${table.generatedAt} is null and ${table.failedAt} is not null and ${table.provider} is null and ${table.providerModel} is null and ${table.providerConfigHash} is null and ${table.schemaVersion} is null and ${table.failureCategory} is not null)`),
   ],
@@ -758,7 +748,6 @@ export const workflowPouReviews = pgTable(
     foreignKey({ columns: [table.reviewDraftRevisionId], foreignColumns: [conversationReviewDraftRevisions.id], name: 'workflow_pou_review_revision_fk' }),
     foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_pou_review_confirming_user_organisation_fk' }),
     uniqueIndex('workflow_pou_review_session_pou_uq').on(table.workflowSessionId, table.pouId),
-    check('workflow_pou_review_whakapapa_only', sql`${table.pouId} = 'whakapapa'`),
     check('workflow_pou_review_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
   ],
 )

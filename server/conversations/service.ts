@@ -2,11 +2,11 @@ import type { WorkflowPouId } from '../../shared/workflow.js'
 import type { AuthenticatedUser } from '../domain/auth.js'
 import { workflowRequestFingerprint, type WorkflowRepository } from '../workflows/repository.js'
 import {
-  assertWhakapapaConversationEligibility,
+  assertConversationEligibility,
   CONVERSATION_PROVIDER,
   isTerminalConversationStatus,
   type ConversationTerminationReason,
-  WHAKAPAPA_CONVERSATION_SPECIFICATION,
+  conversationSpecificationForPou,
 } from './domain.js'
 import {
   ConversationProviderAuthorizationError,
@@ -84,16 +84,17 @@ export class ConversationService implements ConversationApplicationService {
     if (!this.provider || !this.elevenlabs) throw new ConversationProviderUnavailableError()
     const workflow = await this.workflowRepository.findById(actor, workflowSessionId)
     if (!workflow) throw new ConversationNotFoundError()
-    assertWhakapapaConversationEligibility(workflow, pouId)
+    assertConversationEligibility(workflow, pouId)
 
+    const conversationSpecification = conversationSpecificationForPou(pouId)
     const fingerprint = workflowRequestFingerprint({
-      type: 'whakapapa-conversation-started',
+      type: 'pou-conversation-started',
       workflowSessionId,
       pouId,
-      conversationSpecification: WHAKAPAPA_CONVERSATION_SPECIFICATION,
+      conversationSpecification,
     })
     const assessmentPin = this.safetyAssessments
-      ? await this.safetyAssessments.resolveActivePin(actor.organisation.id, {
+      ? await this.safetyAssessments.resolveActivePin(actor.organisation.id, pouId, {
           provider: CONVERSATION_PROVIDER,
           agentReference: this.elevenlabs.agentId,
           branchReference: this.elevenlabs.branchId,
@@ -101,7 +102,7 @@ export class ConversationService implements ConversationApplicationService {
         })
       : null
     if (!assessmentPin || !this.pouSpecifications) throw new PouSpecificationUnavailableError('An approved organisation Pou specification is required before starting this reflection.')
-    const pouSpecificationPin = await this.pouSpecifications.resolveActivePin(actor.organisation.id, assessmentPin)
+    const pouSpecificationPin = await this.pouSpecifications.resolveActivePin(actor.organisation.id, pouId, assessmentPin)
     const dynamicVariables = conversationRuntimeDynamicVariables(pouSpecificationPin.conversationGuidanceProjection)
     const prepared = await this.conversationRepository.prepare({
       actor,
@@ -111,8 +112,8 @@ export class ConversationService implements ConversationApplicationService {
       providerAgentReference: this.elevenlabs.agentId,
       providerBranchReference: this.elevenlabs.branchId,
       providerEnvironment: this.elevenlabs.environment,
-      conversationSpecificationCode: WHAKAPAPA_CONVERSATION_SPECIFICATION.code,
-      conversationSpecificationVersion: WHAKAPAPA_CONVERSATION_SPECIFICATION.version,
+      conversationSpecificationCode: conversationSpecification.code,
+      conversationSpecificationVersion: conversationSpecification.version,
       idempotencyKey,
       requestFingerprint: fingerprint,
       assessmentPin,
@@ -159,7 +160,6 @@ export class ConversationService implements ConversationApplicationService {
   async current(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId): Promise<ConversationRecord | null> {
     const workflow = await this.workflowRepository.findById(actor, workflowSessionId)
     if (!workflow) throw new ConversationNotFoundError()
-    if (pouId !== 'whakapapa') return null
     return this.conversationRepository.findCurrent(actor, workflowSessionId, pouId)
   }
 

@@ -8,7 +8,7 @@ import type { AuthRepository } from '../db/repository.js'
 import type { PostgresSafetyAssessmentRepository } from './repository.js'
 import type { ConversationAssessmentProvider } from './assessment-provider.js'
 import { ElevenLabsWebhookSignatureError } from './webhook.js'
-import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection } from '../pou-specifications/domain.js'
+import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from '../pou-specifications/domain.js'
 
 const now = new Date('2026-08-12T00:00:00.000Z')
 const secret = 'test-webhook-secret-with-sufficient-length'
@@ -35,7 +35,7 @@ function webhookDependencies(ingest: ReturnType<typeof vi.fn>, assess = vi.fn(as
     retainForConversation: vi.fn(async (input: { turns: Array<{ id: string; ordinal: number; speaker: 'unknown'; text: string }> }) => ({ transcriptId: '33333333-3333-4333-8333-333333333333', turns: input.turns })),
   }
   return {
-    safetyAssessmentRepository: { resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: {}, guidanceProjection, superseded: false, requiresAssessment: true }), reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }), releaseReservedDelivery: async () => {}, ingest } as unknown as PostgresSafetyAssessmentRepository,
+    safetyAssessmentRepository: { resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: { rules: [] }, guidanceProjection, superseded: false, requiresAssessment: true }), reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }), releaseReservedDelivery: async () => {}, ingest } as unknown as PostgresSafetyAssessmentRepository,
     transcriptRepository: transcriptRepository as any,
     conversationAssessmentProvider: { assessPouConversation: assess } as unknown as ConversationAssessmentProvider,
   }
@@ -136,6 +136,38 @@ describe('post-call HTTP raw-body boundary', () => {
       expect((await retryApp.inject({ method: 'POST', url: '/api/integrations/elevenlabs/post-call', headers: { 'content-type': 'application/json', 'elevenlabs-signature': signature(raw) }, payload: raw })).statusCode).toBe(202)
       expect(assess).not.toHaveBeenCalled()
     } finally { await retryApp.close() }
+  })
+
+  it('generates a noncanonical review for an approved Pou with an empty safety manifest without calling a safety provider', async () => {
+    const ingest = vi.fn(async () => ({ replayed: false, superseded: false }))
+    const specification = approvedWhakapapaOrganisationPouV01({ approvedForPilotBy: '11111111-1111-4111-8111-111111111111', approvedForPilotAt: now.toISOString() })
+    const guidanceProjection = conversationGuidanceProjection(specification, { projectionCode: 'test-guidance', projectionVersion: '1' })
+    const reviewProjection = pouReviewProjection(specification, { projectionCode: 'test-review', projectionVersion: '1' })
+    const generatePouReviewDraft = vi.fn(async () => ({
+      draft: { overallSummary: 'Bounded noncanonical review.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [] },
+      criterionAssessments: reviewProjection.criteria.map((criterion) => ({ criterionCode: criterion.criterionCode, status: 'not_explored' as const, evidenceTurnIds: [], missingInformationCodes: [criterion.missingInformationCodes[0]!] })),
+      provider: 'test-review-provider', model: 'test-review-model', configurationHash: 'b'.repeat(64), schemaVersion: '1', generatedAt: now,
+    }))
+    const recordGenerated = vi.fn(async () => {})
+    const repository = {
+      resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: { rules: [] }, guidanceProjection, reviewProjection, superseded: false, requiresAssessment: true }),
+      reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }),
+      releaseReservedDelivery: async () => {}, ingest,
+    } as unknown as PostgresSafetyAssessmentRepository
+    const app = await createApplication({
+      config, repository: auth, safetyAssessmentRepository: repository,
+      transcriptRepository: { retainForConversation: vi.fn(async (input: { turns: any[] }) => ({ transcriptId: '33333333-3333-4333-8333-333333333333', turns: input.turns })) } as any,
+      conversationReviewDraftProvider: { generatePouReviewDraft } as any,
+      reviewDraftRepository: { recordGenerated } as any,
+      now: () => now,
+    })
+    const raw = body()
+    try {
+      expect((await app.inject({ method: 'POST', url: '/api/integrations/elevenlabs/post-call', headers: { 'content-type': 'application/json', 'elevenlabs-signature': signature(raw) }, payload: raw })).statusCode).toBe(202)
+      expect(generatePouReviewDraft).toHaveBeenCalledOnce()
+      expect(ingest).toHaveBeenCalledWith(expect.objectContaining({ assessments: [] }))
+      expect(recordGenerated).toHaveBeenCalledOnce()
+    } finally { await app.close() }
   })
 
   it('accepts a bounded signed post-call envelope larger than 32 KiB without passing its transcript to ingestion', async () => {

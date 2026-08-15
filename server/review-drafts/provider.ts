@@ -19,7 +19,7 @@ export interface ConversationReviewDraftResult {
   generatedAt: Date
 }
 export interface ConversationReviewDraftProvider {
-  generateWhakapapaReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult>
+  generatePouReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult>
 }
 export class ConversationReviewDraftProviderError extends Error {}
 
@@ -43,18 +43,18 @@ function outputSchema(turns: TranscriptTurn[], projection: PouReviewProjection):
 }
 
 function prompt(projection: PouReviewProjection): string {
-  return `Create a concise, practitioner-facing Whakapapa Pou review draft from only the supplied ordered transcript turns. This is a noncanonical narrative aid, not a safety assessment or a decision. Use neutral, nonjudgmental language and preserve uncertainty. Do not infer facts from silence: an unmentioned criterion must be not_explored or insufficient_information, never evidence that a concern is absent. Do not include diagnosis, concern level, risk severity, action, referral, escalation, supervisor decision, safety clearance, quotation, rationale, or workflow decision. At least one narrative field must be present, but use null where the source does not support that aspect. Return exactly one structured assessment for every supplied current-conversation criterion. evidenceTurnIds must refer only to direct supplied support. Review policy: ${JSON.stringify({ specificationCode: projection.specificationCode, specificationVersion: projection.specificationVersion, criteria: projection.criteria, synthesisGuidance: projection.synthesisGuidance })}`
+  return `Create a concise, practitioner-facing ${projection.pouId} Pou review draft from only the supplied ordered transcript turns. This is a noncanonical narrative aid, not a safety assessment or a decision. Use neutral, nonjudgmental language and preserve uncertainty. Do not infer facts from silence: an unmentioned criterion must be not_explored or insufficient_information, never evidence that a concern is absent. Do not include diagnosis, concern level, risk severity, action, referral, escalation, supervisor decision, safety clearance, quotation, rationale, or workflow decision. At least one narrative field must be present, but use null where the source does not support that aspect. Return exactly one structured assessment for every supplied current-conversation criterion. evidenceTurnIds must refer only to direct supplied support. Review policy: ${JSON.stringify({ specificationCode: projection.specificationCode, specificationVersion: projection.specificationVersion, pouId: projection.pouId, criteria: projection.criteria, synthesisGuidance: projection.synthesisGuidance })}`
 }
 
 export class OpenAIConversationReviewDraftProvider implements ConversationReviewDraftProvider {
   constructor(private readonly configuration: { apiKey: string; model: string }, private readonly request: typeof fetch = fetch, private readonly now: () => Date = () => new Date()) {}
 
-  async generateWhakapapaReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult> {
+  async generatePouReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult> {
     let response: Response
     try {
       response = await this.request('https://api.openai.com/v1/responses', {
         method: 'POST', headers: { authorization: `Bearer ${this.configuration.apiKey}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ model: this.configuration.model, store: false, background: false, input: [{ role: 'system', content: prompt(input.reviewProjection) }, { role: 'user', content: assessmentTranscriptInput(input.transcriptTurns) }], text: { format: { type: 'json_schema', name: 'te_kaupapa_whakapapa_review_draft', strict: true, schema: outputSchema(input.transcriptTurns, input.reviewProjection) } } }),
+        body: JSON.stringify({ model: this.configuration.model, store: false, background: false, input: [{ role: 'system', content: prompt(input.reviewProjection) }, { role: 'user', content: assessmentTranscriptInput(input.transcriptTurns) }], text: { format: { type: 'json_schema', name: 'te_kaupapa_pou_review_draft', strict: true, schema: outputSchema(input.transcriptTurns, input.reviewProjection) } } }),
       })
     } catch { throw new ConversationReviewDraftProviderError('Review draft provider request failed.') }
     if (!response.ok) throw new ConversationReviewDraftProviderError(`Review draft provider rejected the request: HTTP ${response.status}.`)
@@ -72,5 +72,10 @@ export class OpenAIConversationReviewDraftProvider implements ConversationReview
     let criterionAssessments: ReviewCriterionAssessment[]
     try { criterionAssessments = validateReviewCriterionAssessments(input.reviewProjection, output.data.criterionAssessments as ReviewCriterionAssessment[], turnIds) } catch { throw new ConversationReviewDraftProviderError('Review draft provider evidence did not match the pinned criterion contract.') }
     return { draft: draft.data, criterionAssessments, provider: 'openai', model: this.configuration.model, configurationHash: contentHash({ provider: 'openai', model: this.configuration.model, promptTemplateVersion: REVIEW_PROMPT_TEMPLATE_VERSION, prompt: prompt(input.reviewProjection), structuredOutputSchema: outputSchema(input.transcriptTurns, input.reviewProjection), schemaVersion: '2' }), schemaVersion: '2', generatedAt: this.now() }
+  }
+
+  /** Backwards-compatible Phase 5C entry point. */
+  generateWhakapapaReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult> {
+    return this.generatePouReviewDraft(input)
   }
 }

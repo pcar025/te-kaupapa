@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 
 import { z } from 'zod'
 
-import { SAFETY_BROAD_CLASSES, SAFETY_OBSERVATION_CONCERN_LEVELS, type SafetyBroadClass, type SafetyObservationConcernLevel, type WorkflowPouId } from '../../shared/workflow.js'
+import { SAFETY_BROAD_CLASSES, SAFETY_OBSERVATION_CONCERN_LEVELS, WORKFLOW_POU_IDS, type SafetyBroadClass, type SafetyObservationConcernLevel, type WorkflowPouId } from '../../shared/workflow.js'
 
 export const SAFETY_EVIDENCE_SCOPES = ['current_conversation', 'application_state', 'longitudinal'] as const
 export const PROVIDER_ASSESSMENT_OUTCOMES = ['no_candidate_concern', 'possible_concern', 'insufficient_information', 'not_applicable'] as const
@@ -18,7 +18,7 @@ export const safetyRuleSchema = z.object({
   title: z.string().min(1).max(300),
   purpose: z.string().min(1).max(2000),
   definition: z.string().min(1).max(4000),
-  pouId: z.literal('whakapapa'),
+  pouId: z.enum(WORKFLOW_POU_IDS),
   evidenceScope: z.enum(SAFETY_EVIDENCE_SCOPES),
   sourceItemReferences: z.array(z.string().min(1).max(300)).min(1).max(20),
   protectiveIndicators: z.array(indicator).max(20),
@@ -48,7 +48,7 @@ export const safetySpecificationSchema = z.object({
   schemaVersion: z.literal(1),
   specificationCode: code,
   specificationVersion: z.string().regex(/^\d+\.\d+(?:\.\d+)?$/),
-  pouId: z.literal('whakapapa'),
+  pouId: z.enum(WORKFLOW_POU_IDS),
   sourceDocumentCode: z.string().min(1).max(160),
   sourceDocumentStatus: z.enum(['draft', 'approved']),
   sourceReference: z.string().min(1).max(500),
@@ -57,7 +57,8 @@ export const safetySpecificationSchema = z.object({
   approvalStatus: z.enum(['draft_derived', 'approved_for_pilot']),
   approvedForPilotBy: z.string().uuid().nullable(),
   approvedForPilotAt: z.string().datetime().nullable(),
-  rules: z.array(safetyRuleSchema).min(1).max(50),
+  /** A reviewed Pou may intentionally have no bounded runtime safety rule. */
+  rules: z.array(safetyRuleSchema).max(50),
 }).strict().superRefine((specification, context) => {
   const keys = specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`)
   if (new Set(keys).size !== keys.length) context.addIssue({ code: 'custom', message: 'Rule code and version pairs must be unique.' })
@@ -200,7 +201,7 @@ export function ruleForConfirmation(specification: SafetySpecificationVersion, r
 }
 
 export function assertConfirmationMapping(rule: SafetyRuleVersion, pouId: WorkflowPouId, broadClass: SafetyBroadClass, level: SafetyObservationConcernLevel): void {
-  if (pouId !== 'whakapapa' || rule.pouId !== 'whakapapa' || rule.canonicalBroadClass !== broadClass || !rule.permittedHumanConcernLevels.includes(level)) {
+  if (pouId !== rule.pouId || rule.canonicalBroadClass !== broadClass || !rule.permittedHumanConcernLevels.includes(level)) {
     throw new Error('The selected safety observation does not match the approved historical rule mapping.')
   }
 }

@@ -9,11 +9,16 @@ import { withPhase5BTestContext } from './integration-fixture.js'
 import { PostgresConversationRepository } from '../conversations/repository.js'
 import { ConversationService } from '../conversations/service.js'
 import { ConversationEligibilityError } from '../conversations/domain.js'
-import { PostgresSafetyAssessmentRepository } from './repository.js'
+import { PostgresSafetyAssessmentRepository, type SafetyTransaction } from './repository.js'
 import { SafetyProvisioningService } from './provisioning.js'
 import { PostgresWorkflowRepository } from '../workflows/repository.js'
 import { contentHash } from './domain.js'
 import { PostgresOrganisationPouSpecificationRepository } from '../pou-specifications/repository.js'
+import { OrganisationPouSpecificationProvisioningService } from '../pou-specifications/provisioning.js'
+import { organisationPouSpecificationFromRegistry } from '../pou-specifications/registry.js'
+import { safetySpecificationFromRegistry } from './registry.js'
+import { PHASE_5D_DRAFT_POU_SPECIFICATIONS } from '../pou-specifications/phase5d-specifications.js'
+import { PostgresTranscriptRepository } from '../transcripts/repository.js'
 
 const POU_CONFIRMATION_GATE_LOCK_ID = 549012684
 
@@ -54,7 +59,7 @@ function candidateConfirmationCommand(assessmentId: string, expectedVersion: num
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary integration', () => {
   it('resolves an approved active policy and starts a Whakapapa conversation with its exact pin', async () => {
     await withPhase5BTestContext(async ({ connection, actor, workflowId, specification, repository, workflowRepository, storedSpec, storedProjection }) => {
-      const pin = await repository.resolveActivePin(actor.organisation.id, { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
+      const pin = await repository.resolveActivePin(actor.organisation.id, 'whakapapa', { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
       expect(pin).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, specificationHash: contentHash(specification) })
 
       const conversations = new PostgresConversationRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), repository)
@@ -64,6 +69,60 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
 
       expect(started.conversation).toMatchObject({ status: 'authorized', pouId: 'whakapapa' })
       expect(run).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, status: 'pending' })
+    })
+  })
+
+  it('completes a real PostgreSQL ingestion for an approved Manaakitanga empty safety manifest', async () => {
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, repository }) => {
+      const now = new Date('2026-08-14T00:00:00.000Z')
+      const draft = PHASE_5D_DRAFT_POU_SPECIFICATIONS.find((specification) => specification.pouId === 'manaakitanga')
+      if (!draft) throw new Error('Expected the reviewed Manaakitanga draft specification.')
+      const approval = { approvedForPilotBy: actor.id, approvedForPilotAt: now.toISOString() }
+      const safetySpecification = safetySpecificationFromRegistry(`${draft.specificationCode}_SAFETY`, draft.specificationVersion, approval)
+      await new SafetyProvisioningService(connection.db, () => now).provisionAndActivate({
+        organisationId: actor.organisation.id, operatorUserId: actor.id, specification: safetySpecification,
+        projection: { projectionCode: `mana-safety-${randomUUID()}`, projectionVersion: '1' },
+        conversationProvider: { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' },
+      })
+      const organisationSpecification = organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval)
+      await new OrganisationPouSpecificationProvisioningService(connection.db, () => now).provisionAndActivate({
+        organisationId: actor.organisation.id, operatorUserId: actor.id, specification: organisationSpecification,
+        guidanceProjection: { projectionCode: `mana-guidance-${randomUUID()}`, projectionVersion: '1' },
+        reviewProjection: { projectionCode: `mana-review-${randomUUID()}`, projectionVersion: '1' },
+      })
+      const safetyPin = await repository.resolveActivePin(actor.organisation.id, 'manaakitanga', { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
+      if (!safetyPin) throw new Error('Expected the active Manaakitanga safety pin.')
+      expect(safetyPin.projection.rules).toEqual([])
+      await expect(new PostgresOrganisationPouSpecificationRepository(connection.db).resolveActivePin(actor.organisation.id, 'manaakitanga', safetyPin)).resolves.toMatchObject({ specification: { pouId: 'manaakitanga' } })
+
+      await connection.db.insert(schema.workflowPouCheckpoints).values({ workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'manaakitanga', ordinal: 2 })
+      const conversationId = randomUUID()
+      const providerConversationId = `provider-${randomUUID()}`
+      await connection.db.insert(schema.workflowConversations).values({
+        id: conversationId, organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'manaakitanga', startedByUserId: actor.id,
+        provider: 'elevenlabs', providerConversationId, providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test',
+        conversationSpecificationCode: 'te-waharoa-pou-reflection', conversationSpecificationVersion: 1, status: 'ended', startIdempotencyKey: randomUUID(), requestFingerprint: 'empty-manifest', authorizedAt: now, endedAt: now, terminationReason: 'user_ended',
+      })
+      await connection.db.transaction((tx: SafetyTransaction) => repository.createRun(tx, { id: conversationId, organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'manaakitanga', provider: 'elevenlabs', providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test' }, safetyPin))
+      const [run] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, conversationId))
+      if (!run) throw new Error('Expected a Manaakitanga assessment run.')
+      const turnId = randomUUID()
+      const transcript = await new PostgresTranscriptRepository(connection.db, () => now).retainForConversation({
+        organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'manaakitanga', workflowConversationId: conversationId, provider: 'elevenlabs', providerConversationId,
+        turns: [{ id: turnId, ordinal: 1, speaker: 'kaimahi', text: 'Synthetic Manaakitanga reflection.', providerSequence: null, providerTimestamp: null }],
+      })
+      const deliveryId = `delivery-${randomUUID()}`
+      await expect(repository.reserveDelivery({ provider: 'elevenlabs', deliveryId, payloadHash: 'a'.repeat(64), assessmentRunId: run.id })).resolves.toMatchObject({ reserved: true })
+      await expect(repository.ingest({
+        deliveryProvider: 'elevenlabs', deliveryId, payloadHash: 'a'.repeat(64), providerConversationId,
+        agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test', transcriptId: transcript.transcriptId, transcriptReceivedAt: now, assessments: [],
+      })).resolves.toEqual({ replayed: false, superseded: false })
+      const [storedRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const deliveries = await connection.db.select().from(schema.providerAssessmentDeliveries).where(eq(schema.providerAssessmentDeliveries.assessmentRunId, run.id))
+      const assessments = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id))
+      expect(storedRun).toMatchObject({ status: 'received' })
+      expect(deliveries).toMatchObject([{ status: 'completed' }])
+      expect(assessments).toEqual([])
     })
   })
 
@@ -84,7 +143,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       })
 
       expect(replacement.specificationId).toBe(initial.specificationId)
-      const active = await repository.resolveActivePin(actor.organisation.id, { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
+      const active = await repository.resolveActivePin(actor.organisation.id, 'whakapapa', { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
       expect(active).toMatchObject({ specificationId: initial.specificationId, projectionId: replacement.projectionId, specificationHash: contentHash(activeSpecification) })
       const activations: Array<{ projectionId: string; deactivatedAt: Date | null }> = await connection.db.select({ projectionId: schema.safetySpecificationActivations.projectionId, deactivatedAt: schema.safetySpecificationActivations.deactivatedAt })
         .from(schema.safetySpecificationActivations)
@@ -266,7 +325,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       const before = await canonicalSnapshot(); expect((await request(raw)).statusCode).toBe(202)
       const [stored] = await connection.db.select().from(schema.conversationProviderRuleAssessments); expect(stored).toMatchObject({ outcome: 'no_candidate_concern', candidateConcernLevel: null })
       expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
-      await expect(repository.prepareConfirmation(connection.db as any, actor, workflowId, stored!.id, 'practice_quality', 'low')).rejects.toThrow()
+      await expect(repository.prepareConfirmation(connection.db as any, actor, workflowId, stored!.id, 'whakapapa', 'practice_quality', 'low')).rejects.toThrow()
       expect(await canonicalSnapshot()).toEqual(before)
     })
   })
@@ -276,7 +335,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       const raw = payload({ transcript: 'Synthetic Whakapapa reflection [scenario:not-applicable]' })
       const before = await canonicalSnapshot(); expect((await request(raw)).statusCode).toBe(202)
       const stored = (await connection.db.select().from(schema.conversationProviderRuleAssessments)).find((assessment: typeof schema.conversationProviderRuleAssessments.$inferSelect) => assessment.ruleCode === 'WHAKAPAPA_CULTURAL_DISTRESS_003'); expect(stored).toMatchObject({ outcome: 'not_applicable', applicabilityReasonCode: 'no_explicit_cultural_identity_distress', candidateConcernLevel: null })
-      await expect(repository.prepareConfirmation(connection.db as any, actor, workflowId, stored!.id, 'practice_quality', 'low')).rejects.toThrow()
+      await expect(repository.prepareConfirmation(connection.db as any, actor, workflowId, stored!.id, 'whakapapa', 'practice_quality', 'low')).rejects.toThrow()
       expect(await canonicalSnapshot()).toEqual(before)
     })
   })

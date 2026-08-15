@@ -4,7 +4,7 @@ import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 import type { WorkflowPouId } from '../../shared/workflow.js'
 import type { AuthenticatedUser } from '../domain/auth.js'
 import * as schema from '../db/schema.js'
-import { assertWhakapapaConversationEligibility, type ConversationStatus, type ConversationTerminationReason, type ConversationWorkflowState } from './domain.js'
+import { assertConversationEligibility, type ConversationStatus, type ConversationTerminationReason, type ConversationWorkflowState } from './domain.js'
 import type { AssessmentStartPin, ConversationAssessmentRunWriter } from '../safety-assessments/repository.js'
 import type { PouSpecificationStartPin } from '../pou-specifications/repository.js'
 
@@ -152,7 +152,7 @@ export class PostgresConversationRepository implements ConversationRepository {
           currentPouId: lockedWorkflow.currentPouId as ConversationWorkflowState['currentPouId'],
           checkpoints: checkpoints.map((checkpoint) => ({ pouId: checkpoint.pouId as WorkflowPouId, progress: checkpoint.progress as 'not_started' | 'confirmed' })),
         }
-        assertWhakapapaConversationEligibility(workflowState, input.pouId)
+        assertConversationEligibility(workflowState, input.pouId)
 
         const timestamp = this.now()
         const [created] = await tx.insert(schema.workflowConversations).values({
@@ -181,7 +181,7 @@ export class PostgresConversationRepository implements ConversationRepository {
           id: created.id,
           organisationId: created.organisationId,
           workflowSessionId: created.workflowSessionId,
-          pouId: 'whakapapa',
+          pouId: created.pouId as WorkflowPouId,
           provider: created.provider,
           providerAgentReference: created.providerAgentReference,
           providerBranchReference: created.providerBranchReference,
@@ -190,7 +190,7 @@ export class PostgresConversationRepository implements ConversationRepository {
         if (input.pouSpecificationPin) {
           const pin = input.pouSpecificationPin
           await tx.insert(schema.workflowConversationPouSpecificationPins).values({
-            workflowConversationId: created.id, organisationId: created.organisationId, workflowSessionId: created.workflowSessionId, pouId: 'whakapapa',
+            workflowConversationId: created.id, organisationId: created.organisationId, workflowSessionId: created.workflowSessionId, pouId: created.pouId as WorkflowPouId,
             specificationId: pin.specificationId, specificationHash: pin.specificationHash,
             conversationGuidanceProjectionId: pin.conversationGuidanceProjectionId, conversationGuidanceProjectionHash: pin.conversationGuidanceProjectionHash,
             pouReviewProjectionId: pin.pouReviewProjectionId, pouReviewProjectionHash: pin.pouReviewProjectionHash,

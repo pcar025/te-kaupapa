@@ -38,15 +38,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T
 }
 
-export async function startWhakapapaConversation(workflowId: string, idempotencyKey: string): Promise<{
+export async function startPouConversation(workflowId: string, pouId: WorkflowPouId, idempotencyKey: string): Promise<{
   conversation: ConversationMetadata
   authorization: { transport: 'webrtc'; conversationToken: string; dynamicVariables: { pou_name: string; pou_guidance: string } }
 }> {
-  return requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/conversations`, {
+  return requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/conversations`, {
     method: 'POST',
     body: JSON.stringify({ idempotencyKey }),
   })
 }
+export const startWhakapapaConversation = (workflowId: string, idempotencyKey: string) => startPouConversation(workflowId, 'whakapapa', idempotencyKey)
 
 export async function acknowledgeConversationConnected(conversationId: string, providerConversationId: string): Promise<ConversationMetadata> {
   const payload = await requestJson<{ conversation: ConversationMetadata }>(`/api/conversations/${encodeURIComponent(conversationId)}/client-connected`, {
@@ -71,7 +72,8 @@ export async function endConversation(conversationId: string, reason: Conversati
   }
 }
 
-export async function getCurrentWhakapapaConversation(workflowId: string): Promise<ConversationMetadata | null> {
-  const payload = await requestJson<{ conversation: ConversationMetadata | null }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/conversation`)
+export async function getCurrentPouConversation(workflowId: string, pouId: WorkflowPouId): Promise<ConversationMetadata | null> {
+  const payload = await requestJson<{ conversation: ConversationMetadata | null }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/conversation`)
   return payload.conversation
 }
+export const getCurrentWhakapapaConversation = (workflowId: string) => getCurrentPouConversation(workflowId, 'whakapapa')

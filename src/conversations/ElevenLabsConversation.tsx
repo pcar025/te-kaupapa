@@ -1,12 +1,14 @@
 import { ConversationProvider, useConversationControls, useConversationMode, useConversationStatus } from '@elevenlabs/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
+import type { WorkflowPouId } from '../../shared/workflow'
+import { TE_WAHAROA_POU } from '../pou'
 
 import {
   acknowledgeConversationConnected,
   ConversationApiError,
   endConversation,
-  getCurrentWhakapapaConversation,
-  startWhakapapaConversation,
+  getCurrentPouConversation,
+  startPouConversation,
   type ConversationMetadata,
   type ConversationTerminationReason,
 } from './api'
@@ -51,10 +53,12 @@ function releaseTracks(stream: MediaStream | null): void {
 
 function VoiceController({
   workflowId,
+  pouId,
   onProceedToReview,
   registerProviderCallbacks,
 }: {
   workflowId: string
+  pouId: WorkflowPouId
   onProceedToReview: () => void
   registerProviderCallbacks: (callbacks: ProviderCallbacks) => void
 }) {
@@ -126,7 +130,7 @@ function VoiceController({
   useEffect(() => {
     let cancelled = false
     setUiStateSafely('checking_previous')
-    void getCurrentWhakapapaConversation(workflowId).then((current) => {
+    void getCurrentPouConversation(workflowId, pouId).then((current) => {
       if (cancelled) return
       if (current && ['preparing', 'authorized', 'active'].includes(current.status)) {
         conversationId.current = current.id
@@ -140,7 +144,7 @@ function VoiceController({
       if (!cancelled) setUiStateSafely('error')
     })
     return () => { cancelled = true }
-  }, [setUiStateSafely, workflowId])
+  }, [setUiStateSafely, workflowId, pouId])
 
   useEffect(() => {
     if (ending.current) return
@@ -169,7 +173,7 @@ function VoiceController({
 
     setUiStateSafely('requesting_authorization')
     try {
-      const started = await startWhakapapaConversation(workflowId, crypto.randomUUID())
+      const started = await startPouConversation(workflowId, pouId, crypto.randomUUID())
       if (ending.current) {
         void endConversation(started.conversation.id, 'navigation').catch(() => undefined)
         return
@@ -193,7 +197,7 @@ function VoiceController({
         releaseTracks(preflightStream.current)
         preflightStream.current = null
         try {
-          const current = await getCurrentWhakapapaConversation(workflowId)
+          const current = await getCurrentPouConversation(workflowId, pouId)
           if (current && ['preparing', 'authorized', 'active'].includes(current.status)) {
             conversationId.current = current.id
             providerConversationId.current = current.providerConversationId
@@ -289,9 +293,9 @@ function VoiceController({
   return (
     <div className="flex flex-col" style={{ minHeight: '82vh', fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-9 pb-7">
-        <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou 1 o 7 — Kōrero</p>
-        <h2 className="mb-3 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 500, color: 'var(--color-ink)' }}>Whakapapa</h2>
-        <p className="text-sm italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>A focused voice reflection for Whakapapa. The existing Pou review remains the place to record what you choose to confirm.</p>
+        <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou {TE_WAHAROA_POU.findIndex((pou) => pou.id === pouId) + 1} o 7 — Kōrero</p>
+        <h2 className="mb-3 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 500, color: 'var(--color-ink)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === pouId)?.reo}</h2>
+        <p className="text-sm italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>A focused voice reflection for this Pou. The existing Pou review remains the place to record what you choose to confirm.</p>
       </div>
 
       <div className="mx-6" style={{ height: 1, backgroundColor: 'var(--color-border)' }} />
@@ -345,7 +349,7 @@ function VoiceController({
   )
 }
 
-export default function ElevenLabsConversation({ workflowId, onProceedToReview }: { workflowId: string; onProceedToReview: () => void }) {
+export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa', onProceedToReview }: { workflowId: string; pouId?: WorkflowPouId; onProceedToReview: () => void }) {
   const callbacks = useRef<ProviderCallbacks>({})
   return (
     <ConversationProvider
@@ -354,7 +358,7 @@ export default function ElevenLabsConversation({ workflowId, onProceedToReview }
       onError={() => callbacks.current.onError?.()}
       onMessage={({ message, role }) => callbacks.current.onMessage?.(message, role)}
     >
-      <VoiceController workflowId={workflowId} onProceedToReview={onProceedToReview} registerProviderCallbacks={(next) => { callbacks.current = next }} />
+      <VoiceController workflowId={workflowId} pouId={pouId} onProceedToReview={onProceedToReview} registerProviderCallbacks={(next) => { callbacks.current = next }} />
     </ConversationProvider>
   )
 }

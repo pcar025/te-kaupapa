@@ -1,7 +1,7 @@
 import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
-import type { SafetyBroadClass, SafetyObservationConcernLevel } from '../../shared/workflow.js'
+import type { SafetyBroadClass, SafetyObservationConcernLevel, WorkflowPouId } from '../../shared/workflow.js'
 import type { AuthenticatedUser } from '../domain/auth.js'
 import * as schema from '../db/schema.js'
 import {
@@ -31,7 +31,7 @@ export interface AssessmentStartPin {
 }
 
 export interface ConversationAssessmentRunWriter {
-  createRun(tx: SafetyTransaction, conversation: { id: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa'; provider: string; providerAgentReference: string; providerBranchReference: string | null; providerEnvironment: string }, pin: AssessmentStartPin): Promise<void>
+  createRun(tx: SafetyTransaction, conversation: { id: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId; provider: string; providerAgentReference: string; providerBranchReference: string | null; providerEnvironment: string }, pin: AssessmentStartPin): Promise<void>
 }
 
 export class SafetyAssessmentValidationError extends Error {}
@@ -55,12 +55,12 @@ function isUniqueViolation(error: unknown): boolean {
 export class PostgresSafetyAssessmentRepository implements ConversationAssessmentRunWriter {
   constructor(private readonly db: SafetyDatabase, private readonly now: () => Date = () => new Date()) {}
 
-  async resolveActivePin(organisationId: string, provider: { provider: 'elevenlabs'; agentReference: string; branchReference: string | null; environment: string }): Promise<AssessmentStartPin | null> {
+  async resolveActivePin(organisationId: string, pouId: WorkflowPouId, provider: { provider: 'elevenlabs'; agentReference: string; branchReference: string | null; environment: string }): Promise<AssessmentStartPin | null> {
     const rows = await this.db.select({ activation: schema.safetySpecificationActivations, specification: schema.safetySpecificationVersions, projection: schema.providerAssessmentProjections })
       .from(schema.safetySpecificationActivations)
       .innerJoin(schema.safetySpecificationVersions, eq(schema.safetySpecificationActivations.specificationId, schema.safetySpecificationVersions.id))
       .innerJoin(schema.providerAssessmentProjections, eq(schema.safetySpecificationActivations.projectionId, schema.providerAssessmentProjections.id))
-      .where(and(eq(schema.safetySpecificationActivations.organisationId, organisationId), eq(schema.safetySpecificationActivations.pouId, 'whakapapa'), sql`${schema.safetySpecificationActivations.deactivatedAt} is null`))
+      .where(and(eq(schema.safetySpecificationActivations.organisationId, organisationId), eq(schema.safetySpecificationActivations.pouId, pouId), sql`${schema.safetySpecificationActivations.deactivatedAt} is null`))
       .limit(1)
     const row = rows[0]
     if (!row) return null
@@ -72,6 +72,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     }
     const specification = safetySpecificationSchema.parse(row.specification.specification)
     const projection = parseProjection(row.projection.projection)
+    if (specification.pouId !== pouId) throw new SafetyAssessmentValidationError('The active safety specification scope is invalid.')
     const expectedProjection = providerProjection(specification, {
       projectionCode: row.projection.projectionCode,
       projectionVersion: row.projection.projectionVersion,
@@ -82,7 +83,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     return { specificationId: row.specification.id, specification, specificationHash: row.specification.contentHash, ruleManifestHash: row.specification.ruleManifestHash, projectionId: row.projection.id, projection, projectionHash: row.projection.projectionHash }
   }
 
-  async createRun(tx: SafetyTransaction, conversation: { id: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa'; provider: string; providerAgentReference: string; providerBranchReference: string | null; providerEnvironment: string }, pin: AssessmentStartPin): Promise<void> {
+  async createRun(tx: SafetyTransaction, conversation: { id: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId; provider: string; providerAgentReference: string; providerBranchReference: string | null; providerEnvironment: string }, pin: AssessmentStartPin): Promise<void> {
     // A new conversation is the only current input for this Pou. Retain old
     // deliveries as bounded provenance, but make their candidates ineligible.
     await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(
@@ -100,7 +101,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     })
   }
 
-  async supersedeForPouConfirmation(tx: SafetyTransaction, organisationId: string, workflowSessionId: string, pouId: 'whakapapa'): Promise<void> {
+  async supersedeForPouConfirmation(tx: SafetyTransaction, organisationId: string, workflowSessionId: string, pouId: WorkflowPouId): Promise<void> {
     await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(
       eq(schema.conversationSafetyAssessmentRuns.organisationId, organisationId),
       eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId),
@@ -119,7 +120,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     agentReference: string
     branchReference: string | null
     environment: string
-  }): Promise<{ runId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa'; projection: ProviderAssessmentProjection; guidanceProjection: ConversationGuidanceProjection | null; reviewProjection: PouReviewProjection | null; superseded: boolean; requiresAssessment: boolean }> {
+  }): Promise<{ runId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId; projection: ProviderAssessmentProjection; guidanceProjection: ConversationGuidanceProjection | null; reviewProjection: PouReviewProjection | null; superseded: boolean; requiresAssessment: boolean }> {
     const rows = await this.db.select({ run: schema.conversationSafetyAssessmentRuns, conversation: schema.workflowConversations, pouPin: schema.workflowConversationPouSpecificationPins })
       .from(schema.conversationSafetyAssessmentRuns)
       .innerJoin(schema.workflowConversations, eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, schema.workflowConversations.id))
@@ -154,7 +155,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     } else if (row.pouPin || guidanceProjection || reviewProjection) {
       throw new SafetyAssessmentValidationError('Pinned organisation Pou provenance is incomplete.')
     }
-    return { runId: row.run.id, workflowConversationId: row.run.workflowConversationId, organisationId: row.run.organisationId, workflowSessionId: row.run.workflowSessionId, pouId: 'whakapapa', projection, guidanceProjection: guidanceProjection ?? null, reviewProjection: reviewProjection ?? null, superseded: row.run.status === 'superseded', requiresAssessment: row.run.status === 'pending' }
+    return { runId: row.run.id, workflowConversationId: row.run.workflowConversationId, organisationId: row.run.organisationId, workflowSessionId: row.run.workflowSessionId, pouId: row.run.pouId as WorkflowPouId, projection, guidanceProjection: guidanceProjection ?? null, reviewProjection: reviewProjection ?? null, superseded: row.run.status === 'superseded', requiresAssessment: row.run.status === 'pending' }
   }
 
   /**
@@ -264,19 +265,19 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
       const projection = parseProjection(run.projectionSnapshot)
       const specification = parseSpecification(run.specificationSnapshot)
       if (contentHash(specification) !== run.specificationHash || contentHash(projection.rules) !== run.ruleManifestHash || contentHash(projection) !== run.projectionHash) throw new SafetyAssessmentValidationError('Pinned historical assessment content does not match its hashes.')
-      const checkpoint = await tx.select().from(schema.workflowPouCheckpoints).where(and(eq(schema.workflowPouCheckpoints.workflowSessionId, run.workflowSessionId), eq(schema.workflowPouCheckpoints.pouId, 'whakapapa'))).limit(1)
-      const newer = await tx.select({ id: schema.conversationSafetyAssessmentRuns.id }).from(schema.conversationSafetyAssessmentRuns).innerJoin(schema.workflowConversations, eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, schema.workflowConversations.id)).where(and(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, run.workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, 'whakapapa'), ne(schema.conversationSafetyAssessmentRuns.id, run.id), sql`${schema.workflowConversations.createdAt} > ${conversation.createdAt}`)).limit(1)
+      const checkpoint = await tx.select().from(schema.workflowPouCheckpoints).where(and(eq(schema.workflowPouCheckpoints.workflowSessionId, run.workflowSessionId), eq(schema.workflowPouCheckpoints.pouId, run.pouId))).limit(1)
+      const newer = await tx.select({ id: schema.conversationSafetyAssessmentRuns.id }).from(schema.conversationSafetyAssessmentRuns).innerJoin(schema.workflowConversations, eq(schema.conversationSafetyAssessmentRuns.workflowConversationId, schema.workflowConversations.id)).where(and(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, run.workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, run.pouId), ne(schema.conversationSafetyAssessmentRuns.id, run.id), sql`${schema.workflowConversations.createdAt} > ${conversation.createdAt}`)).limit(1)
       const alreadyReceived = run.status === 'received'
       const superseded = checkpoint[0]?.progress === 'confirmed' || Boolean(newer[0]) || run.status === 'superseded'
       if (!existing[0]) throw new SafetyAssessmentValidationError('The provider delivery was not reserved.')
       const transcriptTurns = await tx.select({ id: schema.conversationTranscriptTurns.id }).from(schema.conversationTranscriptTurns).innerJoin(schema.conversationTranscripts, eq(schema.conversationTranscriptTurns.transcriptId, schema.conversationTranscripts.id)).where(and(
         eq(schema.conversationTranscripts.id, input.transcriptId), eq(schema.conversationTranscripts.workflowConversationId, conversation.id),
-        eq(schema.conversationTranscripts.organisationId, run.organisationId), eq(schema.conversationTranscripts.workflowSessionId, run.workflowSessionId), eq(schema.conversationTranscripts.pouId, 'whakapapa'),
+        eq(schema.conversationTranscripts.organisationId, run.organisationId), eq(schema.conversationTranscripts.workflowSessionId, run.workflowSessionId), eq(schema.conversationTranscripts.pouId, run.pouId),
       ))
       if (transcriptTurns.length === 0) throw new SafetyAssessmentValidationError('Retained transcript is unavailable for this assessment.')
       const permittedEvidenceTurnIds = new Set(transcriptTurns.map((turn) => turn.id))
       const assessments = superseded || alreadyReceived ? [] : validateProviderAssessmentSet(projection, input.assessments, permittedEvidenceTurnIds)
-      if (run.status === 'pending' && !superseded) {
+      if (run.status === 'pending' && !superseded && assessments.length > 0) {
         await tx.insert(schema.conversationProviderRuleAssessments).values(assessments.map((assessment) => ({
           assessmentRunId: run.id, ruleCode: assessment.ruleCode, ruleVersion: assessment.ruleVersion, evidenceScope: 'current_conversation' as const, outcome: assessment.outcome, candidateConcernLevel: assessment.candidateConcernLevel,
           matchedProtectiveIndicatorCodes: assessment.matchedProtectiveIndicatorCodes, matchedConcernIndicatorCodes: assessment.matchedConcernIndicatorCodes, missingInformationCodes: assessment.missingInformationCodes, uncertaintyReasonCodes: assessment.uncertaintyReasonCodes, applicabilityReasonCode: assessment.applicabilityReasonCode, createdAt: this.now(),
@@ -318,14 +319,14 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     }
   }
 
-  async listReviewable(actor: AuthenticatedUser, workflowSessionId: string): Promise<Array<{ id: string; outcome: string; title: string; description: string; ruleCode: string; ruleVersion: number; matchedProtectiveIndicatorCodes: string[]; matchedConcernIndicatorCodes: string[]; missingInformationCodes: string[]; permittedHumanConcernLevels: SafetyObservationConcernLevel[]; canonicalBroadClass: SafetyBroadClass | null }>> {
+  async listReviewable(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId = 'whakapapa'): Promise<Array<{ id: string; outcome: string; title: string; description: string; ruleCode: string; ruleVersion: number; matchedProtectiveIndicatorCodes: string[]; matchedConcernIndicatorCodes: string[]; missingInformationCodes: string[]; permittedHumanConcernLevels: SafetyObservationConcernLevel[]; canonicalBroadClass: SafetyBroadClass | null }>> {
     const rows = await this.db.select({ assessment: schema.conversationProviderRuleAssessments, run: schema.conversationSafetyAssessmentRuns, review: schema.providerAssessmentReviews })
       .from(schema.conversationProviderRuleAssessments)
       .innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationProviderRuleAssessments.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
       .innerJoin(schema.workflowSessions, and(eq(schema.workflowSessions.id, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowSessions.organisationId, schema.conversationSafetyAssessmentRuns.organisationId)))
       .innerJoin(schema.workflowPouCheckpoints, and(eq(schema.workflowPouCheckpoints.workflowSessionId, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowPouCheckpoints.pouId, schema.conversationSafetyAssessmentRuns.pouId)))
       .leftJoin(schema.providerAssessmentReviews, eq(schema.conversationProviderRuleAssessments.id, schema.providerAssessmentReviews.providerRuleAssessmentId))
-      .where(and(eq(schema.conversationSafetyAssessmentRuns.organisationId, actor.organisation.id), eq(schema.workflowSessions.kaimahiUserId, actor.id), eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, 'whakapapa'), eq(schema.conversationSafetyAssessmentRuns.status, 'received'), inArray(schema.conversationProviderRuleAssessments.outcome, ['possible_concern', 'insufficient_information']), sql`${schema.workflowPouCheckpoints.progress} <> 'confirmed'`, sql`${schema.providerAssessmentReviews.id} is null`))
+      .where(and(eq(schema.conversationSafetyAssessmentRuns.organisationId, actor.organisation.id), eq(schema.workflowSessions.kaimahiUserId, actor.id), eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, pouId), eq(schema.conversationSafetyAssessmentRuns.status, 'received'), inArray(schema.conversationProviderRuleAssessments.outcome, ['possible_concern', 'insufficient_information']), sql`${schema.workflowPouCheckpoints.progress} <> 'confirmed'`, sql`${schema.providerAssessmentReviews.id} is null`))
       .orderBy(desc(schema.conversationProviderRuleAssessments.createdAt))
     return rows.map(({ assessment, run }) => {
       const rule = parseSpecification(run.specificationSnapshot).rules.find((candidate) => candidate.ruleCode === assessment.ruleCode && candidate.ruleVersion === assessment.ruleVersion)
@@ -342,17 +343,18 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     })
   }
 
-  async prepareConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, broadClass: SafetyBroadClass, level: SafetyObservationConcernLevel): Promise<void> {
+  async prepareConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, pouId: WorkflowPouId, broadClass: SafetyBroadClass, level: SafetyObservationConcernLevel): Promise<void> {
     const candidate = await this.lockCandidate(tx, actor, workflowSessionId, assessmentId)
     if (candidate.assessment.outcome !== 'possible_concern') throw new AssessmentCandidateUnavailableError('Only a possible concern can be confirmed.')
+    if (candidate.run.pouId !== pouId) throw new AssessmentCandidateUnavailableError('The assessment is not available for this Pou.')
     const rule = ruleForConfirmation(parseSpecification(candidate.run.specificationSnapshot), candidate.assessment.ruleCode, candidate.assessment.ruleVersion)
-    assertConfirmationMapping(rule, 'whakapapa', broadClass, level)
+    assertConfirmationMapping(rule, candidate.run.pouId as WorkflowPouId, broadClass, level)
   }
 
   async finalizeConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, observationId: string): Promise<void> {
     const candidate = await this.lockCandidate(tx, actor, workflowSessionId, assessmentId)
     await tx.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessmentId, assessmentRunId: candidate.run.id, workflowSessionId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observationId, reviewedAt: this.now() })
-    await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, 'whakapapa'), sql`${schema.conversationSafetyAssessmentRuns.status} in ('pending', 'received')`))
+    await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, candidate.run.pouId), sql`${schema.conversationSafetyAssessmentRuns.status} in ('pending', 'received')`))
   }
 
   private async lockCandidate(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string) {
@@ -363,7 +365,7 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
       join workflow_pou_checkpoint checkpoint on checkpoint.workflow_session_id = r.workflow_session_id and checkpoint.organisation_id = r.organisation_id and checkpoint.pou_id = r.pou_id
       left join provider_assessment_review review on review.provider_rule_assessment_id = a.id
       where a.id = ${assessmentId} and r.workflow_session_id = ${workflowSessionId} and r.organisation_id = ${actor.organisation.id}
-        and workflow.kaimahi_user_id = ${actor.id} and r.pou_id = 'whakapapa' and r.status = 'received' and checkpoint.progress <> 'confirmed' and review.id is null
+        and workflow.kaimahi_user_id = ${actor.id} and r.status = 'received' and checkpoint.progress <> 'confirmed' and review.id is null
       for update of a, r, checkpoint
     `)
     const row = result.rows[0] as { id?: string } | undefined

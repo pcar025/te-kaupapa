@@ -466,7 +466,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           this.assertSafetyObservationSnapshot(input.command.observation)
           if (workflow.status === 'completed' || workflow.status === 'abandoned') throw new WorkflowTransitionError()
           if (input.command.candidateAssessmentId) {
-            if (!this.safetyAssessments || input.command.observation.assessmentContext !== 'pou' || input.command.observation.pouId !== 'whakapapa') {
+            const candidatePouId = input.command.observation.pouId
+            if (!this.safetyAssessments || input.command.observation.assessmentContext !== 'pou' || !candidatePouId) {
               throw new WorkflowValidationError('Candidate safety assessment confirmation is not available.')
             }
             await this.safetyAssessments.prepareConfirmation(
@@ -474,6 +475,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
               input.actor,
               workflow.id,
               input.command.candidateAssessmentId,
+              candidatePouId,
               input.command.observation.broadClass,
               input.command.observation.concernLevel,
             )
@@ -630,12 +632,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             ))
             .limit(1)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
-          if (input.command.pouId === 'whakapapa' && this.reviewDrafts) {
-            await this.reviewDrafts.requireRevisionForConfirmation(tx, { actor: input.actor, workflowSessionId: workflow.id, reviewDraftRevisionId: input.command.reviewDraftRevisionId })
+          if (this.reviewDrafts) {
+            await this.reviewDrafts.requireRevisionForConfirmation(tx, { actor: input.actor, workflowSessionId: workflow.id, pouId: input.command.pouId, reviewDraftRevisionId: input.command.reviewDraftRevisionId })
           }
           if (input.command.reviewDraftRevisionId) {
-            if (input.command.pouId !== 'whakapapa' || !this.reviewDrafts) throw new WorkflowTransitionError('The supplied review draft is not available for this Pou.')
-            await this.reviewDrafts.confirmCanonical(tx, { actor: input.actor, workflowSessionId: workflow.id, reviewDraftRevisionId: input.command.reviewDraftRevisionId, timestamp })
+            if (!this.reviewDrafts) throw new WorkflowTransitionError('The supplied review draft is not available for this Pou.')
+            await this.reviewDrafts.confirmCanonical(tx, { actor: input.actor, workflowSessionId: workflow.id, pouId: input.command.pouId, reviewDraftRevisionId: input.command.reviewDraftRevisionId, timestamp })
           }
           const next = checkpointAfterPouReview({
             stage: workflow.currentStage as WorkflowStage,
@@ -654,8 +656,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
             eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
           ))
-          if (input.command.pouId === 'whakapapa' && this.safetyAssessments) {
-            await this.safetyAssessments.supersedeForPouConfirmation(tx, input.actor.organisation.id, workflow.id, 'whakapapa')
+          if (this.safetyAssessments) {
+            await this.safetyAssessments.supersedeForPouConfirmation(tx, input.actor.organisation.id, workflow.id, input.command.pouId)
           }
           await tx.update(schema.workflowSessions).set({
             currentStage: next.stage,

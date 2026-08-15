@@ -111,3 +111,39 @@ ElevenLabs keeps a single stable human-maintained base prompt containing `{{pou_
 The controlled Zero Retention Mode provider record exposed an empty dynamic-variable object at read-back. This is an unresolved provider observability limitation, not evidence that the server or SDK omitted the values. Dynamic values are verified against the pin when provider initiation metadata includes them; their absence cannot substitute policy, safety rules, review criteria, or canonical workflow state because review and safety processing independently resolve the same pinned approved specification. The deferred provider-integration refinement is to confirm with ElevenLabs whether ZRM intentionally suppresses dynamic-variable receipt/read-back. ZRM must not be weakened, and no additional provider retention may be enabled for that investigation.
 
 This enhancement remains Whakapapa-only. It does not add Pou 2–7 configuration, a general SME configuration UI, a full provider prompt override, a WebSocket transport path, or Supervisor transcript UI.
+
+## Phase 5D: seven-Pou SME-driven rollout — draft-derived local POC gate
+
+Phase 5D generalises the already-proven conversation, retained-transcript, noncanonical review draft, human confirmation, and separate safety-candidate architecture across all seven Te Waharoa Pou. It is specification-driven: no Pou has a bespoke conversation, review, or safety workflow. The same immutable organisation-owned specification deterministically derives the server-pinned `ConversationGuidanceProjection`, `PouReviewProjection`, and its link to the separately immutable `SafetyAssessmentProjection`.
+
+The seven source-derived v0.1 templates cite `src/imports/pasted_text/te-waharoa-model-update.md` and its raw SHA-256 `b4c12e532d17b1a4a2e5facd24d0450686672e8124ec03a4162e54f77e9c8baa`:
+
+| Pou | code | source reference | template provenance |
+| --- | --- | --- | --- |
+| Whakapapa & Identity Safety | `whakapapa` | `#pou-1` | existing approved controlled pilot |
+| Manaakitanga & Duty of Care | `manaakitanga` | `#pou-2` | `draft_derived` v0.1 |
+| Tikanga & Ethical Practice | `tikanga` | `#pou-3` | `draft_derived` v0.1 |
+| Kaitiakitanga & Risk Management | `kaitiakitanga` | `#pou-4` | `draft_derived` v0.1 |
+| Pūkenga & Practitioner Capability | `puukenga` | `#pou-5` | `draft_derived` v0.1 |
+| Haepapa & Accountability | `haepapa` | `#pou-6` | `draft_derived` v0.1 |
+| Oranga & Protective Factors | `oranga` | `#pou-7` | `draft_derived` v0.1 |
+
+`draft_derived` means suitable only for controlled local SME-validation when a named product owner explicitly provisions and approves the exact immutable version. It is not formal client or SME policy. SME feedback creates a new immutable version (for example v0.2); it never edits v0.1.
+
+Only `CURRENT_CONVERSATION` criteria reach dynamic conversation guidance or transcript review. `APPLICATION_STATE` (including documentation/record checks) and `LONGITUDINAL` material remain visible in the source specification for future work but cannot be inferred from one spoken reflection. Every projected current-conversation criterion requires exactly one bounded review status: `evidenced`, `partially_evidenced`, `not_explored`, `insufficient_information`, or source-authorised `not_applicable`. Silence is never reassurance or a safety clearance.
+
+The source lists review attention and safety-flag examples for Pou 2–7, but it does not define bounded current-conversation indicators, canonical mappings, or human concern levels. Accordingly, their v0.1 local-POC safety manifests intentionally contain **zero formal runtime safety rules**. A review attention item never becomes a safety candidate. The existing Whakapapa three-rule safety policy remains unchanged. SME validation must decide, per Pou, which concerns—if any—should become formal safety rules, their bounded indicators, mapping, permitted human levels, and deterministic consequences.
+
+ElevenLabs still has one stable base prompt with `{{pou_name}}` and `{{pou_guidance}}`; Te Kaupapa resolves and pins those two values server-side for the authorised Pou. The Zero Retention Mode dynamic-variable read-back limitation remains **unverified provider observability**, not a reason to weaken ZRM or to make the provider authoritative. ElevenLabs remains the conversation and signed transcript-delivery provider; `ConversationReviewDraftProvider` and `ConversationAssessmentProvider` remain provider-neutral, server-side structured interpretation adapters. The transcript/evidence-turn boundary is unchanged, and Supervisor transcript UI and the SME editor remain deferred.
+
+The SME POC should ask: are the exploration areas right; what is good evidence; what is missing; what needs follow-up; what represents strength/protection; what needs attention; what is a formal safety concern; and which judgements always remain with Kaimahi.
+
+### Approved risk-based validation plan
+
+The controlled local POC uses a proportional validation strategy without weakening the normal workflow boundary:
+
+- Whakapapa and Manaakitanga each have a completed genuine controlled live proof.
+- Kaitiakitanga & Risk Management is the one remaining contrasting controlled live conversation proof. It is reached only by normal authenticated Pou review confirmations; no workflow stage is skipped and no database state is patched to reach it.
+- Tikanga, Pūkenga, Haepapa, and Oranga require complete automated/synthetic proof of approved specification activation, server-pinned guidance and review projections, no-safety-rule absence semantics, cross-Pou isolation, and the normal review/confirmation UI path. They do not require separate live WebRTC conversations unless that evidence exposes a real defect.
+
+This plan does not change retention governance, permit provider-originated canonical state, or turn draft-derived v0.1 material into formal SME policy.

@@ -1,7 +1,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { WhakapapaNarrativeReview } from './KaimahiSession'
+import { candidateConfirmationCommand, PouAssessmentCandidates, PouNarrativeReview, SinglePouReviewStage, WhakapapaNarrativeReview } from './KaimahiSession'
+import { TE_WAHAROA_POU } from '../pou'
 
 const workflowId = '11111111-1111-4111-8111-111111111111'
 
@@ -26,6 +27,83 @@ describe('WhakapapaNarrativeReview', () => {
     expect(screen.getByDisplayValue('Identity context was explored.')).toBeTruthy()
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('44444444-4444-4444-8444-444444444444')
+  })
+
+  it('uses generic narrative headings for Manaakitanga rather than Whakapapa labels', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft: { id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-14T00:00:00.000Z' } } }), { status: 200 })))
+    render(<PouNarrativeReview workflowId={workflowId} pouId="manaakitanga" onDraftState={() => undefined} />)
+    expect(await screen.findByText('OVERALL REFLECTION')).toBeTruthy()
+    expect(screen.getByText('STRENGTHS / PROTECTIVE FACTORS')).toBeTruthy()
+    expect(screen.queryByText(/WHAKAPAPA — IDENTITY CONTEXT/i)).toBeNull()
+  })
+
+  it('keeps the Manaakitanga confirmation disabled until its reflection draft has loaded', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(() => undefined)))
+    render(<SinglePouReviewStage
+      pouIdx={1}
+      workflowId={workflowId}
+      onConfirm={() => undefined}
+      onCandidateConfirm={() => undefined}
+      persistenceState="idle"
+      onRetry={() => undefined}
+      onReload={() => undefined}
+    />)
+    const confirmation = screen.getByRole('button', { name: 'Loading reflection review…' })
+    expect((confirmation as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('keeps the Manaakitanga confirmation disabled when its reflection review cannot be loaded', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'review_draft_unavailable' }), { status: 503 })))
+    render(<SinglePouReviewStage
+      pouIdx={1}
+      workflowId={workflowId}
+      onConfirm={() => undefined}
+      onCandidateConfirm={() => undefined}
+      persistenceState="idle"
+      onRetry={() => undefined}
+      onReload={() => undefined}
+    />)
+    expect(await screen.findByText(/reflection review could not be loaded/i)).toBeTruthy()
+    const confirmation = screen.getByRole('button', { name: 'Loading reflection review…' })
+    expect((confirmation as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it.each(TE_WAHAROA_POU)('smokes the normal manual-review confirmation path for $full without cross-Pou routing', async (pou) => {
+    const pouIdx = TE_WAHAROA_POU.findIndex((candidate) => candidate.id === pou.id)
+    const onConfirm = vi.fn()
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SinglePouReviewStage
+      pouIdx={pouIdx}
+      workflowId={workflowId}
+      onConfirm={onConfirm}
+      onCandidateConfirm={() => undefined}
+      persistenceState="idle"
+      onRetry={() => undefined}
+      onReload={() => undefined}
+    />)
+    expect(await screen.findByText(`Manual ${pou.reo} review`)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: pou.full })).toBeTruthy()
+    const confirmation = screen.getByRole('button', { name: pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou' })
+    expect((confirmation as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(confirmation)
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(`/pou/${pou.id}/review-draft`)
+    cleanup()
+  })
+
+  it('passes the current Pou into an explicit candidate confirmation and never falls back to Whakapapa', async () => {
+    const candidate = { id: '22222222-2222-4222-8222-222222222222', outcome: 'possible_concern' as const, title: 'Bounded candidate', description: 'Requires human review.', ruleCode: 'MANA_TEST_001', ruleVersion: 1, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: ['attention'], missingInformationCodes: [], permittedHumanConcernLevels: ['watch' as const], canonicalBroadClass: 'practice_quality' as const }
+    const command = candidateConfirmationCommand(candidate, 'watch', 'manaakitanga', 7)
+    expect(command?.observation).toMatchObject({ assessmentContext: 'pou', pouId: 'manaakitanga', broadClass: 'practice_quality', concernLevel: 'watch' })
+    const onConfirm = vi.fn()
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ candidates: [candidate] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" onConfirm={onConfirm} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Watch' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm concern' }))
+    expect(onConfirm).toHaveBeenCalledWith(candidate, 'watch', 'manaakitanga')
   })
 
   it('keeps manual review available when narrative generation failed', async () => {

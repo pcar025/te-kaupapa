@@ -5,10 +5,14 @@ import type { WorkflowRepository, WorkflowView } from '../workflows/repository.j
 import type { ConversationRecord, ConversationRepository, PrepareConversationInput } from './repository.js'
 import { ConversationAuthorizationAlreadyIssuedError, ConversationService, ProviderConversationMismatchError } from './service.js'
 import type { ConversationProvider } from './provider.js'
+import { PouSpecificationUnavailableError } from '../pou-specifications/repository.js'
 import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from '../pou-specifications/domain.js'
 import { approvedWhakapapaPilotV01, contentHash, providerProjection } from '../safety-assessments/domain.js'
 import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
 import type { PostgresOrganisationPouSpecificationRepository } from '../pou-specifications/repository.js'
+import { organisationPouSpecificationFromRegistry } from '../pou-specifications/registry.js'
+import { safetySpecificationFromRegistry } from '../safety-assessments/registry.js'
+import { PHASE_5D_DRAFT_POU_SPECIFICATIONS } from '../pou-specifications/phase5d-specifications.js'
 
 const actor: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -136,5 +140,55 @@ describe('ConversationService', () => {
     expect(repository.current).toMatchObject({ status: 'failed', terminationReason: 'startup_failed' })
     await expect(application.start(actor, workflow.id, 'whakapapa', idempotencyKey)).rejects.toEqual(expect.any(ConversationAuthorizationAlreadyIssuedError))
     expect(authorizeConversation).toHaveBeenCalledTimes(1)
+  })
+
+  it('authorizes an independently pinned Manaakitanga conversation with generic Pou guidance and no formal safety rules', async () => {
+    const repository = new FakeConversationRepository()
+    const approval = { approvedForPilotBy: actor.id, approvedForPilotAt: '2026-08-14T00:00:00.000Z' }
+    const draft = PHASE_5D_DRAFT_POU_SPECIFICATIONS.find((specification) => specification.pouId === 'manaakitanga')!
+    const manaSpecification = organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval)
+    const manaSafetySpecification = safetySpecificationFromRegistry(`${draft.specificationCode}_SAFETY`, draft.specificationVersion, approval)
+    const manaGuidance = conversationGuidanceProjection(manaSpecification, { projectionCode: 'mana-guidance', projectionVersion: '1' })
+    const manaReview = pouReviewProjection(manaSpecification, { projectionCode: 'mana-review', projectionVersion: '1' })
+    const manaSafety = providerProjection(manaSafetySpecification, { projectionCode: 'mana-safety', projectionVersion: '1' })
+    const manaWorkflow = {
+      ...workflow,
+      currentStage: 'pou-convo' as const,
+      currentPouId: 'manaakitanga' as const,
+      checkpoints: [{ pouId: 'manaakitanga' as const, ordinal: 2, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
+    }
+    const application = new ConversationService(
+      { findById: async () => manaWorkflow } as unknown as WorkflowRepository,
+      repository,
+      fakeProvider,
+      { agentId: 'agent', branchId: 'branch', environment: 'staging' },
+      { resolveActivePin: async () => ({ specificationId: 'safety-id', specification: manaSafetySpecification, specificationHash: contentHash(manaSafetySpecification), ruleManifestHash: contentHash(manaSafety.rules), projectionId: 'safety-projection-id', projection: manaSafety, projectionHash: contentHash(manaSafety) }) } as unknown as PostgresSafetyAssessmentRepository,
+      { resolveActivePin: async () => ({ specificationId: 'pou-id', specification: manaSpecification, specificationHash: contentHash(manaSpecification), conversationGuidanceProjectionId: 'guidance-id', conversationGuidanceProjection: manaGuidance, conversationGuidanceProjectionHash: contentHash(manaGuidance), pouReviewProjectionId: 'review-id', pouReviewProjection: manaReview, pouReviewProjectionHash: contentHash(manaReview) }) } as unknown as PostgresOrganisationPouSpecificationRepository,
+    )
+    const started = await application.start(actor, workflow.id, 'manaakitanga', '65c619a0-9f17-4e01-8b7e-64de443d7bca')
+    expect(started.conversation).toMatchObject({ pouId: 'manaakitanga', conversationSpecificationCode: 'te-waharoa-pou-reflection', conversationSpecificationVersion: 1 })
+    expect(started.dynamicVariables).toEqual({ pou_name: 'Manaakitanga & Duty of Care', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
+    expect(manaSafety.rules).toEqual([])
+  })
+
+  it('fails closed before provider authorization when a current Pou has no active safety specification', async () => {
+    const authorization = vi.fn(async () => ({ providerConversationId: 'provider-id', conversationToken: 'temporary-token' }))
+    const manaWorkflow = {
+      ...workflow,
+      currentStage: 'pou-convo' as const,
+      currentPouId: 'manaakitanga' as const,
+      checkpoints: [{ pouId: 'manaakitanga' as const, ordinal: 2, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
+    }
+    const application = new ConversationService(
+      { findById: async () => manaWorkflow } as unknown as WorkflowRepository,
+      new FakeConversationRepository(),
+      { authorizeConversation: authorization },
+      { agentId: 'agent', branchId: 'branch', environment: 'staging' },
+      { resolveActivePin: async () => null } as unknown as PostgresSafetyAssessmentRepository,
+      pouSpecifications,
+    )
+
+    await expect(application.start(actor, workflow.id, 'manaakitanga', 'e6dc16bb-4df0-4ffd-9517-7004c7d3d4e3')).rejects.toEqual(expect.any(PouSpecificationUnavailableError))
+    expect(authorization).not.toHaveBeenCalled()
   })
 })

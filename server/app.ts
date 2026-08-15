@@ -353,7 +353,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   const conversationStartSchema = z.object({ idempotencyKey: z.string().uuid() }).strict()
   const conversationParamsSchema = z.object({
     workflowSessionId: z.string().uuid(),
-    pouId: z.literal('whakapapa'),
+    pouId: z.enum(WORKFLOW_POU_IDS),
   })
   const conversationIdParamsSchema = z.object({ conversationId: z.string().uuid() })
   const clientConnectedSchema = z.object({ providerConversationId: z.string().trim().min(1).max(255) }).strict()
@@ -546,16 +546,16 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
-  app.get('/api/workflows/:workflowSessionId/pou/whakapapa/assessment-candidates', async (request, reply) => {
+  app.get('/api/workflows/:workflowSessionId/pou/:pouId/assessment-candidates', async (request, reply) => {
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
     if (!workflowRepository || !safetyAssessmentRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
-    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const params = z.object({ workflowSessionId: z.string().uuid(), pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
     if (!params.success) return reply.code(404).send({ error: 'not_found' })
     if (!await workflowRepository.findById(user, params.data.workflowSessionId)) return reply.code(404).send({ error: 'not_found' })
     try {
       reply.header('cache-control', 'no-store')
-      return { candidates: await safetyAssessmentRepository.listReviewable(user, params.data.workflowSessionId) }
+      return { candidates: await safetyAssessmentRepository.listReviewable(user, params.data.workflowSessionId, params.data.pouId) }
     } catch (error) {
       request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Safety assessment candidate lookup failed')
       return reply.code(503).send({ error: 'persistence_unavailable' })
@@ -580,15 +580,15 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
-  app.get('/api/workflows/:workflowSessionId/pou/whakapapa/review-draft', async (request, reply) => {
+  app.get('/api/workflows/:workflowSessionId/pou/:pouId/review-draft', async (request, reply) => {
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
     if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
-    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const params = z.object({ workflowSessionId: z.string().uuid(), pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
     if (!params.success) return reply.code(404).send({ error: 'not_found' })
     try {
       reply.header('cache-control', 'no-store')
-      return { review: await reviewDraftRepository.findForKaimahi(user, params.data.workflowSessionId) }
+      return { review: await reviewDraftRepository.findForKaimahi(user, params.data.workflowSessionId, params.data.pouId) }
     } catch (error) {
       if (error instanceof ReviewDraftUnavailableError) return reply.code(404).send({ error: 'not_found' })
       request.log.warn({ category: 'review_draft_lookup_failed' }, 'Whakapapa review draft lookup failed')
@@ -596,12 +596,12 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
-  app.post('/api/workflows/:workflowSessionId/pou/whakapapa/review-drafts/:reviewDraftId/reviewed', async (request, reply) => {
+  app.post('/api/workflows/:workflowSessionId/pou/:pouId/review-drafts/:reviewDraftId/reviewed', async (request, reply) => {
     if (!requireTrustedOrigin(request, reply)) return reply
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
     if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
-    const params = reviewDraftParamsSchema.safeParse(request.params)
+    const params = reviewDraftParamsSchema.extend({ pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
     if (!params.success) return reply.code(404).send({ error: 'not_found' })
     try {
       await reviewDraftRepository.markReviewed(user, params.data.workflowSessionId, params.data.reviewDraftId)
@@ -612,12 +612,12 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
-  app.put('/api/workflows/:workflowSessionId/pou/whakapapa/review-draft', async (request, reply) => {
+  app.put('/api/workflows/:workflowSessionId/pou/:pouId/review-draft', async (request, reply) => {
     if (!requireTrustedOrigin(request, reply)) return reply
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
     if (!reviewDraftRepository) return reply.code(503).send({ error: 'review_draft_unavailable' })
-    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const params = z.object({ workflowSessionId: z.string().uuid(), pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
     const body = reviewDraftEditSchema.safeParse(request.body)
     if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
     try {
@@ -709,7 +709,6 @@ export async function createApplication(dependencies: AppDependencies): Promise<
         if (!Buffer.isBuffer(request.body)) return reply.code(415).send({ error: 'unsupported_media_type' })
         try {
           verifier.verify(request.body, request.headers[elevenLabsSignatureHeader] as string | undefined, now())
-          if (!conversationAssessmentProvider) return reply.code(503).send({ error: 'assessment_provider_unavailable' })
           const event = parseElevenLabsPostCallTranscript(request.body)
           const payloadHash = contentHash(request.body.toString('utf8'))
           const transcriptReceivedAt = now()
@@ -746,35 +745,45 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             }
             // Narrative synthesis has its own bounded, noncanonical contract.
             // Its failure cannot discard a valid Phase 5B assessment result.
-            let reviewResult: Awaited<ReturnType<ConversationReviewDraftProvider['generateWhakapapaReviewDraft']>> | undefined
+            let reviewResult: Awaited<ReturnType<ConversationReviewDraftProvider['generatePouReviewDraft']>> | undefined
             let reviewFailure: 'provider_unavailable' | 'invalid_output' | undefined
             if (!conversationReviewDraftProvider) reviewFailure = 'provider_unavailable'
             else if (!pin.reviewProjection) reviewFailure = 'invalid_output'
             else {
-              try { reviewResult = await conversationReviewDraftProvider.generateWhakapapaReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection }) }
+              try { reviewResult = await conversationReviewDraftProvider.generatePouReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection }) }
               catch { reviewFailure = 'invalid_output' }
             }
-            let assessment
-            try {
-              assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
-            } catch (error) {
-              // A usable narrative remains explicitly noncanonical even where a
-              // separate safety interpretation was unavailable.
-              if (reviewResult && reviewDraftRepository) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
-              throw error
+            // A source-derived Pou with no approved bounded safety rule must
+            // still produce its review draft. It must not require a safety
+            // provider call merely because it has a pinned empty rule manifest.
+            const shouldAssessSafety = pin.projection.rules.length > 0
+            let assessment: Awaited<ReturnType<ConversationAssessmentProvider['assessPouConversation']>> | undefined
+            if (shouldAssessSafety) {
+              if (!conversationAssessmentProvider) throw new ConversationAssessmentProviderError('Assessment provider is unavailable.')
+              try {
+                assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
+              } catch (error) {
+                // A usable narrative remains explicitly noncanonical even where a
+                // separate safety interpretation was unavailable.
+                if (reviewResult && reviewDraftRepository) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+                throw error
+              }
             }
             const outcome = await safetyAssessmentRepository.ingest({
               deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
               agentReference: event.agentReference, branchReference: event.branchReference, environment: event.environment,
-              assessmentProvider: assessment.provider, assessmentProviderModel: assessment.model,
-              assessmentProviderConfigHash: assessment.configurationHash, assessmentSchemaVersion: assessment.schemaVersion,
-              transcriptReceivedAt, transcriptId: retainedTranscript.transcriptId, assessmentStartedAt: assessment.assessmentStartedAt, assessmentCompletedAt: assessment.assessmentCompletedAt,
-              assessments: assessment.assessment.assessments,
+              ...(assessment ? {
+                assessmentProvider: assessment.provider, assessmentProviderModel: assessment.model,
+                assessmentProviderConfigHash: assessment.configurationHash, assessmentSchemaVersion: assessment.schemaVersion,
+                assessmentStartedAt: assessment.assessmentStartedAt, assessmentCompletedAt: assessment.assessmentCompletedAt,
+              } : {}),
+              transcriptReceivedAt, transcriptId: retainedTranscript.transcriptId,
+              assessments: assessment?.assessment.assessments ?? [],
             })
             if (outcome.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
             if (reviewDraftRepository) {
-              if (reviewResult) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
-              else if (reviewFailure) await reviewDraftRepository.recordFailed({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, category: reviewFailure })
+              if (reviewResult) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+              else if (reviewFailure) await reviewDraftRepository.recordFailed({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, category: reviewFailure })
             }
             return reply.code(outcome.replayed ? 200 : 202).send({ accepted: true, replayed: outcome.replayed, superseded: outcome.superseded })
           } catch (error) {

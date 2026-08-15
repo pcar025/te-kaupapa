@@ -1,5 +1,6 @@
 import { z } from 'zod'
 
+import { WORKFLOW_POU_IDS, type WorkflowPouId } from '../../shared/workflow.js'
 import { contentHash } from '../safety-assessments/domain.js'
 
 export const POU_EVIDENCE_SCOPES = ['current_conversation', 'application_state', 'longitudinal'] as const
@@ -8,6 +9,18 @@ export const POU_REVIEW_CRITERION_STATUSES = ['evidenced', 'partially_evidenced'
 const code = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{1,119}$/)
 const sourceItemReference = z.string().min(1).max(300)
 const guidance = z.string().min(1).max(1_200)
+const pouId = z.enum(WORKFLOW_POU_IDS)
+
+/** Stable source terminology, kept server-side so runtime guidance is never browser-selected. */
+export const POU_DISPLAY_NAMES: Record<WorkflowPouId, string> = {
+  whakapapa: 'Whakapapa',
+  manaakitanga: 'Manaakitanga & Duty of Care',
+  tikanga: 'Tikanga & Ethical Practice',
+  kaitiakitanga: 'Kaitiakitanga & Risk Management',
+  puukenga: 'Pūkenga & Practitioner Capability',
+  haepapa: 'Haepapa & Accountability',
+  oranga: 'Oranga & Protective Factors',
+}
 
 export const pouEvidenceCriterionSchema = z.object({
   criterionCode: code,
@@ -26,7 +39,7 @@ export const organisationPouSpecificationSchema = z.object({
   schemaVersion: z.literal(1),
   specificationCode: code,
   specificationVersion: z.string().regex(/^\d+\.\d+(?:\.\d+)?$/),
-  pouId: z.literal('whakapapa'),
+  pouId,
   sourceDocumentCode: z.string().min(1).max(160),
   sourceDocumentStatus: z.enum(['draft', 'approved']),
   sourceReference: z.string().min(1).max(500),
@@ -39,7 +52,8 @@ export const organisationPouSpecificationSchema = z.object({
   conversationExplorationAreas: z.array(z.object({ code, label: z.string().min(1).max(240), intent: guidance, followUpGuidance: z.array(guidance).max(8), evidenceScope: z.enum(POU_EVIDENCE_SCOPES), sourceItemReferences: z.array(sourceItemReference).min(1).max(20) }).strict()).min(1).max(20),
   evidenceCriteria: z.array(pouEvidenceCriterionSchema).min(1).max(30),
   reviewSynthesisGuidance: z.array(guidance).min(1).max(12),
-  safetyRuleReferences: z.array(z.object({ ruleCode: code, ruleVersion: z.number().int().positive() }).strict()).min(1).max(50),
+  /** Empty only where the source has no bounded, approved runtime safety rule. */
+  safetyRuleReferences: z.array(z.object({ ruleCode: code, ruleVersion: z.number().int().positive() }).strict()).max(50),
 }).strict().superRefine((specification, context) => {
   const approved = specification.approvalStatus === 'approved_for_pilot'
   if (approved !== Boolean(specification.approvedForPilotBy && specification.approvedForPilotAt)) {
@@ -60,6 +74,7 @@ export interface ConversationGuidanceProjection {
   specificationCode: string
   specificationVersion: string
   specificationHash: string
+  pouId: WorkflowPouId
   purpose: string
   explorationAreas: Array<{ code: string; label: string; intent: string; followUpGuidance: string[] }>
   constraints: string[]
@@ -71,6 +86,7 @@ export interface PouReviewProjection {
   specificationCode: string
   specificationVersion: string
   specificationHash: string
+  pouId: WorkflowPouId
   criterionStatusVocabulary: typeof POU_REVIEW_CRITERION_STATUSES
   criteria: Array<Pick<PouEvidenceCriterion, 'criterionCode' | 'label' | 'description' | 'evidenceScope' | 'strengthsOrProtective' | 'areasForAttention' | 'missingInformationCodes' | 'applicabilityRule'>>
   synthesisGuidance: string[]
@@ -110,7 +126,7 @@ export function conversationRuntimeDynamicVariables(projection: ConversationGuid
   if (pou_guidance.length > MAX_RUNTIME_GUIDANCE_CHARACTERS) {
     throw new Error('The approved runtime Pou guidance exceeds its bounded contract.')
   }
-  return { pou_name: 'Whakapapa', pou_guidance }
+  return { pou_name: POU_DISPLAY_NAMES[projection.pouId], pou_guidance }
 }
 
 export function assertApprovedOrganisationPouSpecification(specification: OrganisationPouSpecificationVersion): OrganisationPouSpecificationVersion {
@@ -126,6 +142,7 @@ export function conversationGuidanceProjection(specification: OrganisationPouSpe
     specificationCode: parsed.specificationCode,
     specificationVersion: parsed.specificationVersion,
     specificationHash: contentHash(parsed),
+    pouId: parsed.pouId,
     purpose: parsed.purpose,
     explorationAreas: parsed.conversationExplorationAreas.filter((area) => area.evidenceScope === 'current_conversation').map(({ code, label, intent, followUpGuidance }) => ({ code, label, intent, followUpGuidance })),
     constraints: [
@@ -143,6 +160,7 @@ export function pouReviewProjection(specification: OrganisationPouSpecificationV
     specificationCode: parsed.specificationCode,
     specificationVersion: parsed.specificationVersion,
     specificationHash: contentHash(parsed),
+    pouId: parsed.pouId,
     criterionStatusVocabulary: POU_REVIEW_CRITERION_STATUSES,
     criteria: parsed.evidenceCriteria.filter((criterion) => criterion.evidenceScope === 'current_conversation').map(({ criterionCode, label, description, evidenceScope, strengthsOrProtective, areasForAttention, missingInformationCodes, applicabilityRule }) => ({ criterionCode, label, description, evidenceScope, strengthsOrProtective, areasForAttention, missingInformationCodes, applicabilityRule })),
     synthesisGuidance: parsed.reviewSynthesisGuidance,
@@ -173,4 +191,17 @@ export const WHAKAPAPA_ORGANISATION_POU_V01_DRAFT = organisationPouSpecification
 
 export function approvedWhakapapaOrganisationPouV01(approval: { approvedForPilotBy: string; approvedForPilotAt: string }): OrganisationPouSpecificationVersion {
   return organisationPouSpecificationSchema.parse({ ...WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, approvalStatus: 'approved_for_pilot', approvedForPilotBy: approval.approvedForPilotBy, approvedForPilotAt: approval.approvedForPilotAt })
+}
+
+/** Materialises only recorded operator approval; the source-derived template is never mutated. */
+export function approvedOrganisationPouSpecification(
+  draft: OrganisationPouSpecificationVersion,
+  approval: { approvedForPilotBy: string; approvedForPilotAt: string },
+): OrganisationPouSpecificationVersion {
+  return organisationPouSpecificationSchema.parse({
+    ...draft,
+    approvalStatus: 'approved_for_pilot',
+    approvedForPilotBy: approval.approvedForPilotBy,
+    approvedForPilotAt: approval.approvedForPilotAt,
+  })
 }

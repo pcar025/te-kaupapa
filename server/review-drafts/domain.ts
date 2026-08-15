@@ -6,7 +6,7 @@ import { POU_REVIEW_CRITERION_STATUSES, type PouReviewProjection } from '../pou-
  * Application-owned, noncanonical Whakapapa synthesis. This is deliberately
  * separate from the bounded safety-assessment contract.
  */
-export const whakapapaReviewDraftContentSchema = z.object({
+export const pouReviewDraftContentSchema = z.object({
   overallSummary: z.string().trim().min(1).max(1_200).nullable(),
   strengthsSummary: z.string().trim().min(1).max(900).nullable(),
   areasForAttentionSummary: z.string().trim().min(1).max(900).nullable(),
@@ -20,7 +20,10 @@ export const whakapapaReviewDraftContentSchema = z.object({
   }
 })
 
-export type WhakapapaReviewDraftContent = z.infer<typeof whakapapaReviewDraftContentSchema>
+export type PouReviewDraftContent = z.infer<typeof pouReviewDraftContentSchema>
+/** Historical name retained while call sites migrate to generic Pou review. */
+export const whakapapaReviewDraftContentSchema = pouReviewDraftContentSchema
+export type WhakapapaReviewDraftContent = PouReviewDraftContent
 
 export const reviewCriterionAssessmentSchema = z.object({
   criterionCode: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{1,119}$/),
@@ -59,5 +62,5 @@ export function validateReviewCriterionAssessments(projection: PouReviewProjecti
 export class ReviewDraftValidationError extends Error {}
 export class ReviewDraftUnavailableError extends Error {}
 export class StaleReviewDraftError extends Error {
-  constructor(public readonly currentRevision: number) { super('The Whakapapa review draft has changed.') }
+  constructor(public readonly currentRevision: number) { super('The Pou review draft has changed.') }
 }

@@ -93,7 +93,7 @@ export interface WorkflowSafetyState {
   indicators: WorkflowSafetyIndicators
 }
 
-export interface WhakapapaAssessmentCandidate {
+export interface PouAssessmentCandidate {
   id: string
   outcome: 'possible_concern' | 'insufficient_information' | 'no_candidate_concern' | 'not_applicable'
   title: string
@@ -106,8 +106,9 @@ export interface WhakapapaAssessmentCandidate {
   permittedHumanConcernLevels: SafetyObservationConcernLevel[]
   canonicalBroadClass: SafetyBroadClass | null
 }
+export type WhakapapaAssessmentCandidate = PouAssessmentCandidate
 
-export interface WhakapapaReviewDraft {
+export interface PouReviewDraft {
   id: string
   revisionId: string
   revision: number
@@ -123,13 +124,15 @@ export interface WhakapapaReviewDraft {
   }>
   generatedAt: string
 }
+export type WhakapapaReviewDraft = PouReviewDraft
 
-export interface WhakapapaReviewDraftState {
+export interface PouReviewDraftState {
   status: 'analysing' | 'ready' | 'failed' | 'manual'
-  draft: WhakapapaReviewDraft | null
+  draft: PouReviewDraft | null
   assessmentCompleted: boolean
   hasReviewableCandidate: boolean
 }
+export type WhakapapaReviewDraftState = PouReviewDraftState
 
 export interface WorkflowAction {
   id: string
@@ -238,30 +241,36 @@ export async function getWorkflow(workflowId: string): Promise<Workflow> {
   return payload.workflow
 }
 
-export async function getWhakapapaAssessmentCandidates(workflowId: string): Promise<WhakapapaAssessmentCandidate[]> {
-  const payload = await requestJson<{ candidates: WhakapapaAssessmentCandidate[] }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/assessment-candidates`)
-  // An empty response is treated as no completed assessment. This keeps the
-  // manual Whakapapa review available through an interrupted/older response.
+export async function getPouAssessmentCandidates(workflowId: string, pouId: WorkflowPouId): Promise<PouAssessmentCandidate[]> {
+  const payload = await requestJson<{ candidates: PouAssessmentCandidate[] }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/assessment-candidates`)
+  // An empty response keeps manual Pou review available through interruption.
   return Array.isArray(payload.candidates) ? payload.candidates : []
 }
 
-export async function getWhakapapaReviewDraft(workflowId: string): Promise<WhakapapaReviewDraftState> {
-  const payload = await requestJson<{ review: WhakapapaReviewDraftState }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-draft`)
+export const getWhakapapaAssessmentCandidates = (workflowId: string) => getPouAssessmentCandidates(workflowId, 'whakapapa')
+
+export async function getPouReviewDraft(workflowId: string, pouId: WorkflowPouId): Promise<PouReviewDraftState> {
+  const payload = await requestJson<{ review: PouReviewDraftState }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-draft`)
   return payload.review
 }
+export const getWhakapapaReviewDraft = (workflowId: string) => getPouReviewDraft(workflowId, 'whakapapa')
 
-export async function markWhakapapaReviewDraftReviewed(workflowId: string, reviewDraftId: string): Promise<void> {
-  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-drafts/${encodeURIComponent(reviewDraftId)}/reviewed`, { method: 'POST' })
+export async function markPouReviewDraftReviewed(workflowId: string, pouId: WorkflowPouId, reviewDraftId: string): Promise<void> {
+  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-drafts/${encodeURIComponent(reviewDraftId)}/reviewed`, { method: 'POST' })
 }
+export const markWhakapapaReviewDraftReviewed = (workflowId: string, reviewDraftId: string) => markPouReviewDraftReviewed(workflowId, 'whakapapa', reviewDraftId)
 
-export async function editWhakapapaReviewDraft(workflowId: string, input: { reviewDraftId: string; expectedRevision: number; overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] }): Promise<WhakapapaReviewDraft> {
-  const payload = await requestJson<{ draft: WhakapapaReviewDraft }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/whakapapa/review-draft`, { method: 'PUT', body: JSON.stringify(input) })
+export async function editPouReviewDraft(workflowId: string, pouId: WorkflowPouId, input: { reviewDraftId: string; expectedRevision: number; overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] }): Promise<PouReviewDraft> {
+  const payload = await requestJson<{ draft: PouReviewDraft }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-draft`, { method: 'PUT', body: JSON.stringify(input) })
   return payload.draft
 }
+export const editWhakapapaReviewDraft = (workflowId: string, input: Parameters<typeof editPouReviewDraft>[2]) => editPouReviewDraft(workflowId, 'whakapapa', input)
 
-export async function reviewWhakapapaAssessmentCandidate(workflowId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {
+export async function reviewPouAssessmentCandidate(workflowId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {
   await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/assessment-candidates/${encodeURIComponent(assessmentId)}/review`, { method: 'POST', body: JSON.stringify({ status }) })
 }
+/** Historical Phase 5B name retained for existing callers. */
+export const reviewWhakapapaAssessmentCandidate = reviewPouAssessmentCandidate
 
 export async function submitWorkflowCommand(workflowId: string, command: WorkflowCommand): Promise<{ workflow: Workflow; replayed: boolean }> {
   const payload = await requestJson<{ workflow: Workflow; acknowledgement: { replayed: boolean } }>(

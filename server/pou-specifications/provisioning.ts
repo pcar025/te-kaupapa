@@ -85,7 +85,7 @@ export class OrganisationPouSpecificationProvisioningService {
         inner join safety_specification_version specification on specification.id = activation.specification_id
         inner join provider_assessment_projection projection on projection.id = activation.projection_id
         where activation.organisation_id = ${input.organisationId}
-          and activation.pou_id = 'whakapapa'
+          and activation.pou_id = ${specification.pouId}
           and activation.deactivated_at is null
         for update
       `)
@@ -98,7 +98,7 @@ export class OrganisationPouSpecificationProvisioningService {
         projection?: unknown
       } | undefined
       if (!safetyRow?.specification_id || !safetyRow.projection_id || !safetyRow.specification_hash || !safetyRow.projection_hash) {
-        throw new OrganisationPouSpecificationProvisioningError('No active approved Whakapapa safety activation is available for linkage.')
+        throw new OrganisationPouSpecificationProvisioningError('No active approved safety activation is available for linkage.')
       }
 
       const safetySpecification = safetySpecificationSchema.parse(safetyRow.specification)

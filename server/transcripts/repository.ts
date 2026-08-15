@@ -1,6 +1,7 @@
 import { and, asc, eq } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
+import type { WorkflowPouId } from '../../shared/workflow.js'
 import * as schema from '../db/schema.js'
 import { transcriptTurnSchema, type TranscriptTurn } from './domain.js'
 
@@ -14,7 +15,7 @@ export class PostgresTranscriptRepository {
   async retainForConversation(input: {
     organisationId: string
     workflowSessionId: string
-    pouId: 'whakapapa'
+    pouId: WorkflowPouId
     workflowConversationId: string
     provider: string
     providerConversationId: string
@@ -52,7 +53,7 @@ export class PostgresTranscriptRepository {
     })
   }
 
-  async turnsForAssessment(input: { transcriptId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: 'whakapapa' }): Promise<TranscriptTurn[]> {
+  async turnsForAssessment(input: { transcriptId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId }): Promise<TranscriptTurn[]> {
     const transcripts = await this.db.select().from(schema.conversationTranscripts).where(and(
       eq(schema.conversationTranscripts.id, input.transcriptId), eq(schema.conversationTranscripts.workflowConversationId, input.workflowConversationId),
       eq(schema.conversationTranscripts.organisationId, input.organisationId), eq(schema.conversationTranscripts.workflowSessionId, input.workflowSessionId), eq(schema.conversationTranscripts.pouId, input.pouId),

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { assertWhakapapaConversationEligibility, ConversationEligibilityError, isTerminalConversationStatus } from './domain.js'
+import { assertConversationEligibility, assertWhakapapaConversationEligibility, ConversationEligibilityError, isTerminalConversationStatus } from './domain.js'
 
 const eligibleWorkflow = {
   status: 'in_progress' as const,
@@ -16,12 +16,21 @@ describe('Whakapapa conversation eligibility', () => {
     expect(() => assertWhakapapaConversationEligibility(eligibleWorkflow, 'whakapapa')).not.toThrow()
   })
 
-  it('rejects other Pou, non-Whakapapa stages, terminal workflows, and confirmed Whakapapa', () => {
-    expect(() => assertWhakapapaConversationEligibility(eligibleWorkflow, 'manaakitanga')).toThrow(ConversationEligibilityError)
+  it('uses the authoritative stage for the current Pou', () => {
     expect(() => assertWhakapapaConversationEligibility({ ...eligibleWorkflow, status: 'completed' }, 'whakapapa')).toThrow(ConversationEligibilityError)
     expect(() => assertWhakapapaConversationEligibility({ ...eligibleWorkflow, status: 'abandoned' }, 'whakapapa')).toThrow(ConversationEligibilityError)
     expect(() => assertWhakapapaConversationEligibility({ ...eligibleWorkflow, currentStage: 'pou-convo' }, 'whakapapa')).toThrow(ConversationEligibilityError)
     expect(() => assertWhakapapaConversationEligibility({ ...eligibleWorkflow, checkpoints: [{ pouId: 'whakapapa', progress: 'confirmed' }] }, 'whakapapa')).toThrow(ConversationEligibilityError)
+
+    const manaakitangaWorkflow = {
+      ...eligibleWorkflow,
+      currentStage: 'pou-convo' as const,
+      currentPouId: 'manaakitanga' as const,
+      checkpoints: [{ pouId: 'manaakitanga' as const, progress: 'not_started' as const }],
+    }
+    expect(() => assertConversationEligibility(manaakitangaWorkflow, 'manaakitanga')).not.toThrow()
+    expect(() => assertConversationEligibility({ ...manaakitangaWorkflow, currentStage: 'pou-overview' }, 'manaakitanga')).toThrow(ConversationEligibilityError)
+    expect(() => assertConversationEligibility({ ...manaakitangaWorkflow, checkpoints: [{ pouId: 'manaakitanga', progress: 'confirmed' }] }, 'manaakitanga')).toThrow(ConversationEligibilityError)
   })
 
   it('keeps only ended and failed statuses terminal', () => {
