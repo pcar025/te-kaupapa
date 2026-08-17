@@ -117,10 +117,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: randomUUID(),
           expectedVersion: 1,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })).rejects.toThrow(StaleWorkflowError)
 
@@ -133,14 +130,18 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 3,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })
       expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
-      expect(pou.workflow.checkpoints[0]).toMatchObject({ progress: 'confirmed', userSelectedConcern: 'watch' })
+      expect(pou.workflow.checkpoints[0]).toMatchObject({
+        progress: 'confirmed',
+        // Ordinary narrative confirmation no longer carries concern or
+        // escalation semantics; those require a separate safety command.
+        userSelectedConcern: null,
+        referralSuggested: false,
+        supervisorReviewSuggested: false,
+      })
 
       const independent = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
       independentWorkflowId = independent.workflow.id
@@ -178,10 +179,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 3,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })
       expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 4 } })
@@ -193,10 +191,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 4,
           pouId: 'whakapapa',
-          userSelectedConcern: 'low',
           note: 'Changed request using the same key.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })).rejects.toThrow(IdempotencyKeyReuseError)
     }, async (connection) => {
@@ -249,8 +244,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           workflowSessionId: workflowId,
           command: {
             type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, pouId,
-            userSelectedConcern: pouId === 'manaakitanga' ? 'action' : 'low',
-            note: `${pouId} confirmed by the Kaimahi`, referralSuggested: pouId === 'manaakitanga', supervisorReviewSuggested: false,
+            note: `${pouId} confirmed by the Kaimahi`,
           },
         })
         version = result.workflow.version
@@ -627,7 +621,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       })
       const pou = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'whakapapa', userSelectedConcern: 'urgent', referralSuggested: true, supervisorReviewSuggested: true },
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'whakapapa' },
       })
       expect(pou.workflow.safety).toMatchObject({ observations: [], requiredConsequences: [], indicators: { activeObservationCount: 0, supervisorReviewRequired: false } })
       expect(await connection.db.select().from(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, workflowId))).toHaveLength(0)

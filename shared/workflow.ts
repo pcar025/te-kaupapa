@@ -81,6 +81,7 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'safety_observation_corrected',
   'safety_observation_retracted',
   'supervisor_review_requested',
+  'carry_forward_marked',
 ] as const
 export type WorkflowInteractionType = (typeof WORKFLOW_INTERACTION_TYPES)[number]
 
@@ -105,6 +106,28 @@ export interface WorkflowReferralInput {
   status: Exclude<WorkflowReferralStatus, 'withdrawn'>
 }
 
+/**
+ * A human-marked item to revisit after all seven Pou. It is deliberately not
+ * an action, referral, escalation, or safety consequence.
+ */
+export type WorkflowCarryForwardSource =
+  | { kind: 'review_criterion'; reviewDraftRevisionId: string; criterionCode: string }
+  | { kind: 'areas_for_attention'; reviewDraftRevisionId: string }
+  | { kind: 'safety_observation'; observationId: string }
+
+export interface WorkflowCarryForwardItem {
+  id: string
+  pouId: WorkflowPouId
+  source: WorkflowCarryForwardSource
+  /** Derived server-side from the immutable selected source; never transcript text. */
+  presentation?: {
+    title: string
+    sourceLabel: string
+  }
+  note: string | null
+  createdAt: string
+}
+
 export type WorkflowCommand =
   | {
       type: 'setup-confirmed'
@@ -121,10 +144,7 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       pouId: WorkflowPouId
-      userSelectedConcern: WorkflowPouConcern
       note?: string
-      referralSuggested: boolean
-      supervisorReviewSuggested: boolean
       reviewDraftRevisionId?: string
     }
   | {
@@ -190,6 +210,15 @@ export type WorkflowCommand =
       expectedVersion: number
       pouId?: WorkflowPouId
       requestNote?: string
+    }
+  | {
+      type: 'carry-forward-marked'
+      itemId: string
+      idempotencyKey: string
+      expectedVersion: number
+      pouId: WorkflowPouId
+      source: WorkflowCarryForwardSource
+      note?: string
     }
 
 export interface WorkflowCheckpoint {

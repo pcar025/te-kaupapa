@@ -147,3 +147,15 @@ The controlled local POC uses a proportional validation strategy without weakeni
 - Tikanga, Pūkenga, Haepapa, and Oranga require complete automated/synthetic proof of approved specification activation, server-pinned guidance and review projections, no-safety-rule absence semantics, cross-Pou isolation, and the normal review/confirmation UI path. They do not require separate live WebRTC conversations unless that evidence exposes a real defect.
 
 This plan does not change retention governance, permit provider-originated canonical state, or turn draft-derived v0.1 material into formal SME policy.
+
+## SME-demo Pou review and action-flow cleanup
+
+The seven-Pou SME demonstration uses the accepted Phase 5D specifications and projections without adding another provider or AI architecture. The active post-conversation Pou review shows only real application data: the editable noncanonical narrative draft, pinned structured criterion assessments, actual formal safety candidates where they exist, and authoritative workflow state. Legacy illustrative reflective prompts, static safety flags, always-visible concern grids, suggested actions, referrals, and supervisor controls are removed from the active review path.
+
+Each Pou follows conversation → evidence review → explicit Kaimahi confirmation → optional human carry-forward marking. The review presents what was established, strengths/protective factors, still-to-explore information, and areas for attention separately. `not_explored` and `insufficient_information` remain gaps, not evidence that a matter is absent or safe. An attention item is not a formal safety concern or an automatic action.
+
+Formal safety remains conditional and separate from narrative review. Low, Watch, and Action are available only for a real reviewable candidate or the existing deliberate human safety-recording path; no provider selects a default and ordinary review no longer displays Urgent. Narrative confirmation never silently confirms a safety candidate.
+
+`workflow_carry_forward` is a forward-only, human-owned pre-action marker. It pins the current scoped review criterion, area for attention, or confirmed safety observation with its organisation, workflow, Pou, actor, and timestamp. It cannot create an action, referral, escalation, or supervisor request. After all seven Pou are confirmed, a server-assembled synthesis shows the confirmed Pou reviews, confirmed safety observations, and carry-forward count before Action Planning. Action Planning is always available, including when there are zero carry-forwards; the Kaimahi decides whether anything becomes an action, referral, future follow-up, or no further action.
+
+Supervisor transcript/source UI, the SME specification editor, and any new formal Pou 2–7 safety rules remain deferred. SME validation continues to decide core versus conditional exploration, adequate evidence, follow-up for missing information, strengths, attention items, formal safety rules, and decisions that must remain human. The established privacy boundary remains unchanged: provider transcript/audio are not surfaced in normal UI, and ZRM remains enabled.

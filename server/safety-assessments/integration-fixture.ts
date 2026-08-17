@@ -84,6 +84,7 @@ export async function withPhase5BTestContext<T>(body: (context: any) => Promise<
     await connection.db.execute(sql`alter table workflow_conversation_pou_specification_pin disable trigger workflow_conversation_pou_specification_pin_immutable`)
     await connection.db.execute(sql`alter table conversation_review_draft_criterion_assessment disable trigger conversation_review_draft_criterion_assessment_immutable`)
     try {
+      await connection.db.execute(sql`delete from workflow_carry_forward where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from workflow_pou_review where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from conversation_review_draft_view where review_draft_id in (select id from conversation_review_draft where organisation_id in (${ids}))`)
       await connection.db.execute(sql`delete from conversation_review_draft_criterion_assessment where review_draft_revision_id in (select id from conversation_review_draft_revision where review_draft_id in (select id from conversation_review_draft where organisation_id in (${ids})))`)

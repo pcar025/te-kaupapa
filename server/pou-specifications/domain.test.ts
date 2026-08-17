@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, conversationRuntimeDynamicVariables, pouReviewProjection } from './domain.js'
+import { WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, conversationRuntimeDynamicVariables, isExactHistoricWhakapapaV01ProjectionPair, pouReviewProjection } from './domain.js'
 
 const approved = approvedWhakapapaOrganisationPouV01({
   approvedForPilotBy: '11111111-1111-4111-8111-111111111111',
@@ -36,5 +36,25 @@ describe('Whakapapa organisation Pou specification projections', () => {
   it('rejects draft-derived specifications before any runtime or review projection is created', () => {
     expect(() => conversationGuidanceProjection(WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, { projectionCode: 'draft-guidance', projectionVersion: '1' })).toThrow('approved organisation Pou specification')
     expect(() => pouReviewProjection(WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, { projectionCode: 'draft-review', projectionVersion: '1' })).toThrow('approved organisation Pou specification')
+  })
+
+  it('accepts only the exact immutable Whakapapa v0.1 projection pair that predates the redundant Pou identifier', () => {
+    const guidance = conversationGuidanceProjection(approved, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1' })
+    const review = pouReviewProjection(approved, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1' })
+    const { pouId: _guidancePouId, ...historicGuidance } = guidance
+    const { pouId: _reviewPouId, ...historicReview } = review
+
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: historicGuidance, review: historicReview })).toBe(true)
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'manaakitanga', specification: approved, guidance: historicGuidance, review: historicReview })).toBe(false)
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: { ...historicGuidance, purpose: 'forged' }, review: historicReview })).toBe(false)
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: { ...historicGuidance, forgedExtra: 'x' } as typeof historicGuidance, review: historicReview })).toBe(false)
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: historicGuidance, review: { ...historicReview, forgedExtra: 'x' } as typeof historicReview })).toBe(false)
+
+    const differentWhakapapaVersion = { ...approved, specificationCode: 'TE_WAHAROA_WHAKAPAPA_VARIANT', specificationVersion: '0.2' }
+    const differentGuidance = conversationGuidanceProjection(differentWhakapapaVersion, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1' })
+    const differentReview = pouReviewProjection(differentWhakapapaVersion, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1' })
+    const { pouId: _differentGuidancePouId, ...historicDifferentGuidance } = differentGuidance
+    const { pouId: _differentReviewPouId, ...historicDifferentReview } = differentReview
+    expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: differentWhakapapaVersion, guidance: historicDifferentGuidance, review: historicDifferentReview })).toBe(false)
   })
 })

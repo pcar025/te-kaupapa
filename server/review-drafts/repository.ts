@@ -1,8 +1,8 @@
-import { and, desc, eq, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import type { AuthenticatedUser } from '../domain/auth.js'
-import type { WorkflowPouId } from '../../shared/workflow.js'
+import type { WorkflowCarryForwardSource, WorkflowPouId } from '../../shared/workflow.js'
 import * as schema from '../db/schema.js'
 import type { SafetyTransaction } from '../safety-assessments/repository.js'
 import { validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, ReviewDraftUnavailableError, StaleReviewDraftError, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
@@ -21,7 +21,7 @@ export interface PouReviewDraftView {
     strengthsSummary: string | null
     areasForAttentionSummary: string | null
     evidenceTurnIds: string[]
-    criterionAssessments: ReviewCriterionAssessment[]
+    criterionAssessments: Array<ReviewCriterionAssessment & { label: string; strengthsOrProtective: boolean; areasForAttention: boolean }>
     generatedAt: Date
   }
   assessmentCompleted: boolean
@@ -123,7 +123,18 @@ export class PostgresConversationReviewDraftRepository {
     if (!row.revision || !row.draft.generatedAt) throw new ReviewDraftUnavailableError('Generated review draft is incomplete.')
     const content = readContent(row.revision)
     const criterionRows = await this.db.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, row.revision.id))
-    return { status: 'ready', assessmentCompleted: run.status === 'received', hasReviewableCandidate, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, criterionAssessments: criterionRows.map((assessment) => ({ criterionCode: assessment.criterionCode, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] })), generatedAt: row.draft.generatedAt } }
+    const [pin] = await this.db.select({ projection: schema.workflowConversationPouSpecificationPins.pouReviewProjectionSnapshot })
+      .from(schema.workflowConversationPouSpecificationPins)
+      .where(eq(schema.workflowConversationPouSpecificationPins.workflowConversationId, run.workflowConversationId))
+      .limit(1)
+    if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned Pou review projection.')
+    const projection = pin.projection as PouReviewProjection
+    const criteriaByCode = new Map(projection.criteria.map((criterion) => [criterion.criterionCode, criterion]))
+    return { status: 'ready', assessmentCompleted: run.status === 'received', hasReviewableCandidate, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, criterionAssessments: criterionRows.map((assessment) => {
+      const criterion = criteriaByCode.get(assessment.criterionCode)
+      if (!criterion) throw new ReviewDraftUnavailableError('The review draft contains an unknown pinned criterion.')
+      return { criterionCode: assessment.criterionCode, label: criterion.label, strengthsOrProtective: criterion.strengthsOrProtective, areasForAttention: criterion.areasForAttention, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] }
+    }), generatedAt: row.draft.generatedAt } }
   }
 
   async markReviewed(actor: AuthenticatedUser, workflowSessionId: string, reviewDraftId: string): Promise<void> {
@@ -159,7 +170,17 @@ export class PostgresConversationReviewDraftRepository {
       const priorCriteria = await tx.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, latest.id))
       if (priorCriteria.length === 0) throw new ReviewDraftUnavailableError('The review evidence is unavailable.')
       await tx.insert(schema.conversationReviewDraftCriterionAssessments).values(priorCriteria.map((assessment) => ({ reviewDraftRevisionId: revision.id, criterionCode: assessment.criterionCode, status: assessment.status, evidenceTurnIds: assessment.evidenceTurnIds, missingInformationCodes: assessment.missingInformationCodes, createdAt: this.now() })))
-      return { id: draft.id, revisionId: revision.id, revision: revision.revision, ...content, criterionAssessments: priorCriteria.map((assessment) => ({ criterionCode: assessment.criterionCode, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] })), generatedAt: draft.generatedAt }
+      const [pin] = await tx.select({ projection: schema.workflowConversationPouSpecificationPins.pouReviewProjectionSnapshot })
+        .from(schema.workflowConversationPouSpecificationPins)
+        .where(eq(schema.workflowConversationPouSpecificationPins.workflowConversationId, draft.workflowConversationId))
+        .limit(1)
+      if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned Pou review projection.')
+      const criteriaByCode = new Map((pin.projection as PouReviewProjection).criteria.map((criterion) => [criterion.criterionCode, criterion]))
+      return { id: draft.id, revisionId: revision.id, revision: revision.revision, ...content, criterionAssessments: priorCriteria.map((assessment) => {
+        const criterion = criteriaByCode.get(assessment.criterionCode)
+        if (!criterion) throw new ReviewDraftUnavailableError('The review draft contains an unknown pinned criterion.')
+        return { criterionCode: assessment.criterionCode, label: criterion.label, strengthsOrProtective: criterion.strengthsOrProtective, areasForAttention: criterion.areasForAttention, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] }
+      }), generatedAt: draft.generatedAt }
     })
   }
 
@@ -190,6 +211,55 @@ export class PostgresConversationReviewDraftRepository {
     if (!input.reviewDraftRevisionId) throw new ReviewDraftUnavailableError('The current Pou review draft must be explicitly confirmed or the manual fallback used.')
     const revisions = await tx.select().from(schema.conversationReviewDraftRevisions).where(and(eq(schema.conversationReviewDraftRevisions.id, input.reviewDraftRevisionId), eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id))).limit(1)
     if (!revisions[0]) throw new ReviewDraftUnavailableError('The supplied review draft revision is unavailable.')
+  }
+
+  /**
+   * A carry-forward record can reference only the current user's scoped,
+   * non-superseded review material. It does not create canonical action state.
+   */
+  async assertCarryForwardReviewSource(tx: SafetyTransaction, input: {
+    actor: AuthenticatedUser
+    workflowSessionId: string
+    pouId: WorkflowPouId
+    source: Extract<WorkflowCarryForwardSource, { kind: 'review_criterion' | 'areas_for_attention' }>
+  }): Promise<void> {
+    const [row] = await tx
+      .select({ revision: schema.conversationReviewDraftRevisions, draft: schema.conversationReviewDrafts })
+      .from(schema.conversationReviewDraftRevisions)
+      .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
+      .innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
+      .where(and(
+        eq(schema.conversationReviewDraftRevisions.id, input.source.reviewDraftRevisionId),
+        eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id),
+        eq(schema.conversationReviewDrafts.workflowSessionId, input.workflowSessionId),
+        eq(schema.conversationReviewDrafts.pouId, input.pouId),
+        eq(schema.conversationReviewDrafts.status, 'generated'),
+        sql`${schema.conversationSafetyAssessmentRuns.status} <> 'superseded'`,
+      ))
+      .limit(1)
+    if (!row) throw new ReviewDraftUnavailableError('The carry-forward source is not available for this Pou.')
+    const [latest] = await tx
+      .select({ id: schema.conversationReviewDraftRevisions.id })
+      .from(schema.conversationReviewDraftRevisions)
+      .where(eq(schema.conversationReviewDraftRevisions.reviewDraftId, row.draft.id))
+      .orderBy(desc(schema.conversationReviewDraftRevisions.revision))
+      .limit(1)
+    if (latest?.id !== row.revision.id) {
+      throw new ReviewDraftUnavailableError('The carry-forward source is no longer the current review revision.')
+    }
+    if (input.source.kind === 'areas_for_attention') {
+      if (!row.revision.areasForAttentionSummary) throw new ReviewDraftUnavailableError('This review has no area for attention to carry forward.')
+      return
+    }
+    const [criterion] = await tx.select({ id: schema.conversationReviewDraftCriterionAssessments.id })
+      .from(schema.conversationReviewDraftCriterionAssessments)
+      .where(and(
+        eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, row.revision.id),
+        eq(schema.conversationReviewDraftCriterionAssessments.criterionCode, input.source.criterionCode),
+        inArray(schema.conversationReviewDraftCriterionAssessments.status, ['partially_evidenced', 'not_explored', 'insufficient_information']),
+      ))
+      .limit(1)
+    if (!criterion) throw new ReviewDraftUnavailableError('The selected review criterion is not available to carry forward.')
   }
 
   private async requireOwnedDraft(actor: AuthenticatedUser, workflowSessionId: string, reviewDraftId: string) {

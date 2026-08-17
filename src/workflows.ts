@@ -1,6 +1,7 @@
 import type {
   WorkflowActionStatus,
   WorkflowActionType,
+  WorkflowCarryForwardItem,
   WorkflowCommand,
   WorkflowEngagementType,
   WorkflowImmediateConcern,
@@ -42,6 +43,14 @@ export interface Workflow {
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
+  carryForwards: WorkflowCarryForwardItem[]
+  pouReviews: Array<{
+    pouId: WorkflowPouId
+    overallSummary: string | null
+    strengthsSummary: string | null
+    areasForAttentionSummary: string | null
+    confirmedAt: string
+  }>
   safety: WorkflowSafetyState
   structuredReview: WorkflowStructuredReview
   completedAt: string | null
@@ -118,6 +127,9 @@ export interface PouReviewDraft {
   evidenceTurnIds: string[]
   criterionAssessments?: Array<{
     criterionCode: string
+    label: string
+    strengthsOrProtective: boolean
+    areasForAttention: boolean
     status: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
     evidenceTurnIds: string[]
     missingInformationCodes: string[]
@@ -167,6 +179,8 @@ export interface WorkflowStructuredReview {
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
+  carryForwards: WorkflowCarryForwardItem[]
+  pouReviews: Workflow['pouReviews']
   createdAt: string
   updatedAt: string
   completedAt: string | null
@@ -278,4 +292,8 @@ export async function submitWorkflowCommand(workflowId: string, command: Workflo
     { method: 'POST', body: JSON.stringify(command) },
   )
   return { workflow: payload.workflow, replayed: payload.acknowledgement.replayed }
+}
+
+export async function markCarryForward(workflowId: string, command: Extract<WorkflowCommand, { type: 'carry-forward-marked' }>): Promise<{ workflow: Workflow; replayed: boolean }> {
+  return submitWorkflowCommand(workflowId, command)
 }

@@ -8,6 +8,7 @@ import {
   type WorkflowActionInput,
   type WorkflowActionStatus,
   type WorkflowActionType,
+  type WorkflowCarryForwardSource,
   type WorkflowCommand,
   type WorkflowImmediateConcern,
   type WorkflowInteractionType,
@@ -41,6 +42,7 @@ import {
 } from '../safety/domain.js'
 import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
 import type { PostgresConversationReviewDraftRepository } from '../review-drafts/repository.js'
+import type { PouReviewProjection } from '../pou-specifications/domain.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -82,12 +84,44 @@ export interface WorkflowReferralView {
   updatedAt: Date
 }
 
+export interface WorkflowCarryForwardView {
+  id: string
+  pouId: WorkflowPouId
+  source: WorkflowCarryForwardSource
+  presentation?: {
+    title: string
+    sourceLabel: string
+  }
+  note: string | null
+  createdAt: Date
+}
+
+function reviewCriterionCarryForwardPresentation(label: string, status: string) {
+  const sourceLabel = 'Still to explore / information needed'
+  const title = status === 'partially_evidenced'
+    ? `${label} needs further exploration`
+    : status === 'not_explored'
+      ? `${label} was not explored in this reflection`
+      : `${label} needs more information`
+  return { title, sourceLabel }
+}
+
+export interface WorkflowPouReviewView {
+  pouId: WorkflowPouId
+  overallSummary: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  confirmedAt: Date
+}
+
 export interface WorkflowStructuredReview {
   reference: string
   setup: WorkflowView['setup']
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
+  carryForwards: WorkflowCarryForwardView[]
+  pouReviews: WorkflowPouReviewView[]
   createdAt: Date
   updatedAt: Date
   completedAt: Date | null
@@ -184,6 +218,8 @@ export interface WorkflowView {
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
+  carryForwards: WorkflowCarryForwardView[]
+  pouReviews: WorkflowPouReviewView[]
   safety: WorkflowSafetyState
   structuredReview: WorkflowStructuredReview
   completedAt: Date | null
@@ -600,6 +636,57 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             requestedAt: timestamp,
           })
           await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
+        } else if (input.command.type === 'carry-forward-marked') {
+          if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
+          const isCurrentPou = workflow.currentPouId === input.command.pouId && (
+            (input.command.pouId === WORKFLOW_POU_IDS[0] && workflow.currentStage === 'pou-overview') ||
+            workflow.currentStage === 'pou-convo'
+          )
+          if (!isCurrentPou) throw new WorkflowTransitionError('Carry-forward items can be marked only during the current Pou review.')
+          const [checkpoint] = await tx.select().from(schema.workflowPouCheckpoints).where(and(
+            eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
+            eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
+          )).limit(1)
+          if (!checkpoint || checkpoint.progress !== 'not_started') throw new WorkflowTransitionError('The current Pou has already been confirmed.')
+
+          if (input.command.source.kind === 'safety_observation') {
+            const [observation] = await tx.select({ id: schema.workflowSafetyObservations.id }).from(schema.workflowSafetyObservations).where(and(
+              eq(schema.workflowSafetyObservations.id, input.command.source.observationId),
+              eq(schema.workflowSafetyObservations.organisationId, input.actor.organisation.id),
+              eq(schema.workflowSafetyObservations.workflowSessionId, workflow.id),
+              eq(schema.workflowSafetyObservations.pouId, input.command.pouId),
+              eq(schema.workflowSafetyObservations.status, 'active'),
+            )).limit(1)
+            if (!observation) throw new WorkflowValidationError('The selected safety concern is not available for this Pou.')
+          } else {
+            if (!this.reviewDrafts) throw new WorkflowValidationError('The review-draft source is not available.')
+            await this.reviewDrafts.assertCarryForwardReviewSource(tx, {
+              actor: input.actor,
+              workflowSessionId: workflow.id,
+              pouId: input.command.pouId,
+              source: input.command.source,
+            })
+          }
+          interactionType = 'carry_forward_marked'
+          interactionPouId = input.command.pouId
+          recordedInteractionId = await this.recordInteraction(tx, {
+            workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+            idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+          })
+          await tx.insert(schema.workflowCarryForwards).values({
+            id: input.command.itemId,
+            workflowSessionId: workflow.id,
+            organisationId: input.actor.organisation.id,
+            pouId: input.command.pouId,
+            source: input.command.source.kind,
+            reviewDraftRevisionId: input.command.source.kind === 'safety_observation' ? null : input.command.source.reviewDraftRevisionId,
+            criterionCode: input.command.source.kind === 'review_criterion' ? input.command.source.criterionCode : null,
+            safetyObservationId: input.command.source.kind === 'safety_observation' ? input.command.source.observationId : null,
+            note: input.command.note?.trim() || null,
+            createdByUserId: input.actor.id,
+            createdAt: timestamp,
+          })
+          await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
         } else if (input.command.type === 'setup-confirmed') {
           const isInitialSetup = workflow.status === 'draft' && workflow.currentStage === 'setup'
           const isSetupRevision = workflow.status === 'in_progress' && workflow.currentStage === 'pou-overview'
@@ -645,10 +732,10 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           }, input.command.pouId, checkpoint.progress === 'confirmed')
           await tx.update(schema.workflowPouCheckpoints).set({
             progress: 'confirmed',
-            userSelectedConcern: input.command.userSelectedConcern,
+            userSelectedConcern: null,
             note: input.command.note || null,
-            referralSuggested: input.command.referralSuggested,
-            supervisorReviewSuggested: input.command.supervisorReviewSuggested,
+            referralSuggested: false,
+            supervisorReviewSuggested: false,
             confirmedByUserId: input.actor.id,
             confirmedAt: timestamp,
             updatedAt: timestamp,
@@ -1118,16 +1205,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
       .orderBy(schema.workflowPouCheckpoints.ordinal)
 
-    const actions = await executor
-      .select()
-      .from(schema.workflowActions)
-      .where(eq(schema.workflowActions.workflowSessionId, workflow.id))
-      .orderBy(schema.workflowActions.createdAt)
-    const referrals = await executor
-      .select()
-      .from(schema.workflowReferrals)
-      .where(eq(schema.workflowReferrals.workflowSessionId, workflow.id))
-      .orderBy(schema.workflowReferrals.createdAt)
+    const [actions, referrals, carryForwards, pouReviews] = await Promise.all([
+      executor.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflow.id)).orderBy(schema.workflowActions.createdAt),
+      executor.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflow.id)).orderBy(schema.workflowReferrals.createdAt),
+      executor.select().from(schema.workflowCarryForwards).where(eq(schema.workflowCarryForwards.workflowSessionId, workflow.id)).orderBy(schema.workflowCarryForwards.createdAt),
+      executor.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflow.id)),
+    ])
     const safety = await this.findSafetyState(workflow.id, executor)
 
     const setup = workflow.whanauReference && workflow.engagementType && workflow.sessionFocus && workflow.immediateConcern
@@ -1175,6 +1258,58 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       createdAt: referral.createdAt,
       updatedAt: referral.updatedAt,
     }))
+    const reviewRevisionIds = carryForwards.flatMap((item) => item.reviewDraftRevisionId ? [item.reviewDraftRevisionId] : [])
+    const [reviewSourceRows, criterionRows] = reviewRevisionIds.length === 0
+      ? [[], []] as const
+      : await Promise.all([
+          executor.select({ revision: schema.conversationReviewDraftRevisions, draft: schema.conversationReviewDrafts, pin: schema.workflowConversationPouSpecificationPins })
+            .from(schema.conversationReviewDraftRevisions)
+            .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
+            .innerJoin(schema.workflowConversationPouSpecificationPins, eq(schema.conversationReviewDrafts.workflowConversationId, schema.workflowConversationPouSpecificationPins.workflowConversationId))
+            .where(and(
+              inArray(schema.conversationReviewDraftRevisions.id, reviewRevisionIds),
+              eq(schema.conversationReviewDrafts.workflowSessionId, workflow.id),
+              eq(schema.conversationReviewDrafts.organisationId, workflow.organisationId),
+            )),
+          executor.select().from(schema.conversationReviewDraftCriterionAssessments)
+            .where(inArray(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, reviewRevisionIds)),
+        ])
+    const sourceByRevisionId = new Map(reviewSourceRows.map((row) => [row.revision.id, row]))
+    const criteriaByRevisionAndCode = new Map(criterionRows.map((criterion) => [`${criterion.reviewDraftRevisionId}:${criterion.criterionCode}`, criterion]))
+    const carryForwardViews = carryForwards.map((item) => ({
+      id: item.id,
+      pouId: item.pouId as WorkflowPouId,
+      source: item.source === 'review_criterion'
+        ? { kind: 'review_criterion' as const, reviewDraftRevisionId: item.reviewDraftRevisionId!, criterionCode: item.criterionCode! }
+        : item.source === 'areas_for_attention'
+        ? { kind: 'areas_for_attention' as const, reviewDraftRevisionId: item.reviewDraftRevisionId! }
+        : { kind: 'safety_observation' as const, observationId: item.safetyObservationId! },
+      presentation: (() => {
+        if (!item.reviewDraftRevisionId) return undefined
+        const row = sourceByRevisionId.get(item.reviewDraftRevisionId)
+        if (!row || row.draft.pouId !== item.pouId) return undefined
+        if (item.source === 'areas_for_attention') {
+          return row.revision.areasForAttentionSummary
+            ? { title: row.revision.areasForAttentionSummary, sourceLabel: 'Areas for attention' }
+            : undefined
+        }
+        if (item.source !== 'review_criterion' || !item.criterionCode) return undefined
+        const assessment = criteriaByRevisionAndCode.get(`${item.reviewDraftRevisionId}:${item.criterionCode}`)
+        const projection = row.pin.pouReviewProjectionSnapshot as PouReviewProjection
+        const criterion = projection.criteria.find((candidate) => candidate.criterionCode === item.criterionCode)
+        if (!assessment || !criterion) return undefined
+        return reviewCriterionCarryForwardPresentation(criterion.label, assessment.status)
+      })(),
+      note: item.note,
+      createdAt: item.createdAt,
+    }))
+    const pouReviewViews = pouReviews.map((review) => ({
+      pouId: review.pouId as WorkflowPouId,
+      overallSummary: review.overallSummary,
+      strengthsSummary: review.strengthsSummary,
+      areasForAttentionSummary: review.areasForAttentionSummary,
+      confirmedAt: review.confirmedAt,
+    }))
 
     const view = {
       id: workflow.id,
@@ -1187,6 +1322,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       checkpoints: checkpointViews,
       actions: actionViews,
       referrals: referralViews,
+      carryForwards: carryForwardViews,
+      pouReviews: pouReviewViews,
       safety,
       completedAt: workflow.completedAt,
       createdAt: workflow.createdAt,
@@ -1200,6 +1337,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         checkpoints: view.checkpoints,
         actions: view.actions.filter(({ status }) => status !== 'withdrawn'),
         referrals: view.referrals.filter(({ status }) => status !== 'withdrawn'),
+        carryForwards: view.carryForwards,
+        pouReviews: view.pouReviews,
         createdAt: view.createdAt,
         updatedAt: view.updatedAt,
         completedAt: view.completedAt,

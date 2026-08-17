@@ -9,6 +9,8 @@ and durable workflow completion.
 `pou-summary` → `action-planning` → `referral-planning` →
 `structured-review` → `record-review` → `complete`
 
+The post-seven-Pou `pou-summary` is a synthesis of the Kaimahi-confirmed Pou reviews, confirmed safety observations, and human carry-forward markers. It is not another AI or safety decision. Action Planning always follows it, including when no item was carried forward.
+
 Each progression command is an authenticated Kaimahi-only, organisation- and
 owner-scoped interaction. It uses the same idempotency key, canonical request
 fingerprint, expected workflow version, row lock, transaction, and replay
@@ -17,9 +19,13 @@ committed and returned the authoritative workflow.
 
 ## Persisted state
 
-- `workflow_pou_checkpoint` remains the canonical Kaimahi-confirmed response
-  for each of the seven Pou: attention selection, note, suggestion flags, and
-  provenance. The selection values are non-clinical Kaimahi judgement only.
+- `workflow_pou_checkpoint` records the confirmed progression, actor and
+  timestamp for each of the seven Pou. The canonical human-visible Pou content
+  is the immutable `workflow_pou_review`, created only from the explicitly
+  confirmed generated or Kaimahi-edited narrative revision. Ordinary narrative
+  confirmation cannot select a safety concern, referral or supervisor-review
+  state; formal safety uses the separate human-confirmed safety-observation
+  command.
 - `workflow_action` stores manually entered `follow-up`, `support`, or `other`
   actions. The authenticated Kaimahi is both creator and owner. Actions are
   `open`, `completed`, or `withdrawn`; removing an acknowledged action records
@@ -28,12 +34,18 @@ committed and returned the authoritative workflow.
   optional destination code, required destination name and reason, optional Pou
   linkage and notes, and `draft`, `prepared`, `declined`, or `withdrawn` state.
   Prepared means prepared within Te Kaupapa only.
+- `workflow_carry_forward` stores a human-owned, non-action reference to a
+  current scoped review criterion, area for attention, or confirmed safety
+  observation. It records the source Pou, actor, and timestamp but is not an
+  action, referral, escalation, or supervisor request. Detailed action fields
+  are completed only in post-seven-Pou Action Planning.
 - `workflow_session.completed_by_user_id` and `completed_at` record completion.
 
 The deterministic structured review is returned from the server aggregate. It
-contains only acknowledged setup, checkpoints, non-withdrawn actions,
-non-withdrawn referrals, the workflow reference, and timestamps. It contains
-no generated prose.
+contains acknowledged setup, canonical confirmed Pou reviews, formal
+human-confirmed safety observations, human carry-forward markers,
+non-withdrawn actions, non-withdrawn referrals, the workflow reference, and
+timestamps. It makes no new generated prose or safety decision.
 
 ## Completion and retrieval
 

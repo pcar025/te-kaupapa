@@ -74,7 +74,8 @@ export interface ConversationGuidanceProjection {
   specificationCode: string
   specificationVersion: string
   specificationHash: string
-  pouId: WorkflowPouId
+  /** Present on Phase 5D projections; omitted only by the immutable historic Whakapapa v0.1 projection. */
+  pouId?: WorkflowPouId
   purpose: string
   explorationAreas: Array<{ code: string; label: string; intent: string; followUpGuidance: string[] }>
   constraints: string[]
@@ -86,7 +87,8 @@ export interface PouReviewProjection {
   specificationCode: string
   specificationVersion: string
   specificationHash: string
-  pouId: WorkflowPouId
+  /** Present on Phase 5D projections; omitted only by the immutable historic Whakapapa v0.1 projection. */
+  pouId?: WorkflowPouId
   criterionStatusVocabulary: typeof POU_REVIEW_CRITERION_STATUSES
   criteria: Array<Pick<PouEvidenceCriterion, 'criterionCode' | 'label' | 'description' | 'evidenceScope' | 'strengthsOrProtective' | 'areasForAttention' | 'missingInformationCodes' | 'applicabilityRule'>>
   synthesisGuidance: string[]
@@ -99,12 +101,23 @@ export interface ConversationRuntimeDynamicVariables {
 
 const MAX_RUNTIME_GUIDANCE_CHARACTERS = 4_000
 
+/** A bounded, non-public error class for an invalid pinned guidance projection. */
+export class ConversationGuidanceProjectionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConversationGuidanceProjectionError'
+  }
+}
+
 /**
  * The only per-session values Te Kaupapa gives to the ElevenLabs SDK.  They
  * are deliberately derived from the pinned, CURRENT_CONVERSATION-only
  * projection: browser code never composes or selects SME guidance.
  */
-export function conversationRuntimeDynamicVariables(projection: ConversationGuidanceProjection): ConversationRuntimeDynamicVariables {
+export function conversationRuntimeDynamicVariables(projection: ConversationGuidanceProjection, expectedPouId = projection.pouId): ConversationRuntimeDynamicVariables {
+  if (!expectedPouId || projection.pouId && projection.pouId !== expectedPouId) {
+    throw new ConversationGuidanceProjectionError('The pinned runtime Pou guidance has an invalid scope.')
+  }
   const exploration = projection.explorationAreas
     .map((area) => `- ${area.label}: ${area.intent}`)
     .join('\n')
@@ -124,9 +137,9 @@ export function conversationRuntimeDynamicVariables(projection: ConversationGuid
     constraints,
   ].join('\n\n')
   if (pou_guidance.length > MAX_RUNTIME_GUIDANCE_CHARACTERS) {
-    throw new Error('The approved runtime Pou guidance exceeds its bounded contract.')
+    throw new ConversationGuidanceProjectionError('The approved runtime Pou guidance exceeds its bounded contract.')
   }
-  return { pou_name: POU_DISPLAY_NAMES[projection.pouId], pou_guidance }
+  return { pou_name: POU_DISPLAY_NAMES[expectedPouId], pou_guidance }
 }
 
 export function assertApprovedOrganisationPouSpecification(specification: OrganisationPouSpecificationVersion): OrganisationPouSpecificationVersion {
@@ -165,6 +178,43 @@ export function pouReviewProjection(specification: OrganisationPouSpecificationV
     criteria: parsed.evidenceCriteria.filter((criterion) => criterion.evidenceScope === 'current_conversation').map(({ criterionCode, label, description, evidenceScope, strengthsOrProtective, areasForAttention, missingInformationCodes, applicabilityRule }) => ({ criterionCode, label, description, evidenceScope, strengthsOrProtective, areasForAttention, missingInformationCodes, applicabilityRule })),
     synthesisGuidance: parsed.reviewSynthesisGuidance,
   }
+}
+
+/**
+ * Phase 5D added a redundant projection-level Pou identifier. The accepted
+ * Whakapapa v0.1 activation predates that field, so a conversation pinned to
+ * its exact immutable derivation must remain readable. This is deliberately
+ * not a general fallback for projections that omit their Pou scope.
+ */
+export function isExactHistoricWhakapapaV01ProjectionPair(input: {
+  pouId: WorkflowPouId
+  specification: OrganisationPouSpecificationVersion
+  guidance: ConversationGuidanceProjection
+  review: PouReviewProjection
+}): boolean {
+  const hasExactOwnKeys = (value: object, keys: readonly string[]) => {
+    const actual = Object.keys(value)
+    return actual.length === keys.length && keys.every((key) => Object.prototype.hasOwnProperty.call(value, key))
+  }
+  if (
+    input.pouId !== 'whakapapa'
+    || input.specification.specificationCode !== 'TE_WAHAROA_WHAKAPAPA'
+    || input.specification.specificationVersion !== '0.1'
+    || input.guidance.projectionCode !== 'TE_WAHAROA_WHAKAPAPA-conversation-guidance'
+    || input.guidance.projectionVersion !== '0.1'
+    || input.review.projectionCode !== 'TE_WAHAROA_WHAKAPAPA-review'
+    || input.review.projectionVersion !== '0.1'
+    || 'pouId' in input.guidance
+    || 'pouId' in input.review
+    || !hasExactOwnKeys(input.guidance, ['projectionCode', 'projectionVersion', 'specificationCode', 'specificationVersion', 'specificationHash', 'purpose', 'explorationAreas', 'constraints'])
+    || !hasExactOwnKeys(input.review, ['projectionCode', 'projectionVersion', 'specificationCode', 'specificationVersion', 'specificationHash', 'criterionStatusVocabulary', 'criteria', 'synthesisGuidance'])
+  ) return false
+  const expectedGuidance = conversationGuidanceProjection(input.specification, input.guidance)
+  const expectedReview = pouReviewProjection(input.specification, input.review)
+  const { pouId: _guidancePouId, ...historicGuidance } = expectedGuidance
+  const { pouId: _reviewPouId, ...historicReview } = expectedReview
+  return contentHash(input.guidance) === contentHash(historicGuidance)
+    && contentHash(input.review) === contentHash(historicReview)
 }
 
 /** The reviewed Whakapapa POC contains only source-derived current-conversation content. */

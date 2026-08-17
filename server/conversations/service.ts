@@ -103,7 +103,7 @@ export class ConversationService implements ConversationApplicationService {
       : null
     if (!assessmentPin || !this.pouSpecifications) throw new PouSpecificationUnavailableError('An approved organisation Pou specification is required before starting this reflection.')
     const pouSpecificationPin = await this.pouSpecifications.resolveActivePin(actor.organisation.id, pouId, assessmentPin)
-    const dynamicVariables = conversationRuntimeDynamicVariables(pouSpecificationPin.conversationGuidanceProjection)
+    const dynamicVariables = conversationRuntimeDynamicVariables(pouSpecificationPin.conversationGuidanceProjection, pouId)
     const prepared = await this.conversationRepository.prepare({
       actor,
       workflowSessionId,

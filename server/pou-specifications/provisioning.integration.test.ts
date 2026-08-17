@@ -5,10 +5,10 @@ import { describe, expect, it } from 'vitest'
 
 import * as schema from '../db/schema.js'
 import { withMigratedTestDatabase } from '../db/test-harness.js'
-import { approvedWhakapapaPilotV01, providerProjection } from '../safety-assessments/domain.js'
+import { approvedWhakapapaPilotV01, contentHash, providerProjection } from '../safety-assessments/domain.js'
 import { SafetyProvisioningService } from '../safety-assessments/provisioning.js'
 import { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
-import { approvedWhakapapaOrganisationPouV01 } from './domain.js'
+import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from './domain.js'
 import { OrganisationPouSpecificationProvisioningService } from './provisioning.js'
 import { PostgresOrganisationPouSpecificationRepository } from './repository.js'
 import { organisationPouSpecificationFromRegistry } from './registry.js'
@@ -76,6 +76,39 @@ describe('Organisation Pou specification operator provisioning', () => {
       expect(await connection.db.select().from(schema.organisationPouSafetySpecificationLinks).where(eq(schema.organisationPouSafetySpecificationLinks.id, provisioned.safetyLinkId))).toMatchObject([
         { organisationPouSpecificationId: provisioned.specificationId, safetySpecificationId: safety.specificationId, safetyProjectionId: safety.projectionId },
       ])
+
+      // This is the exact durable shape created before Phase 5D added the
+      // redundant projection-level Pou identifier. It must remain valid only
+      // as the known Whakapapa v0.1 historical derivation.
+      const { pouId: _guidancePouId, ...historicGuidance } = conversationGuidanceProjection(organisationSpecification, {
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1',
+      })
+      const { pouId: _reviewPouId, ...historicReview } = pouReviewProjection(organisationSpecification, {
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1',
+      })
+      const [storedHistoricGuidance] = await connection.db.insert(schema.conversationGuidanceProjections).values({
+        organisationId, pouId: 'whakapapa', specificationId: provisioned.specificationId,
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1', projectionHash: contentHash(historicGuidance), projection: historicGuidance, createdAt: now,
+      }).returning()
+      const [storedHistoricReview] = await connection.db.insert(schema.pouReviewProjections).values({
+        organisationId, pouId: 'whakapapa', specificationId: provisioned.specificationId,
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1', projectionHash: contentHash(historicReview), projection: historicReview, createdAt: now,
+      }).returning()
+      await connection.db.update(schema.organisationPouSpecificationActivations)
+        .set({ deactivatedAt: now })
+        .where(eq(schema.organisationPouSpecificationActivations.id, provisioned.activationId))
+      await connection.db.insert(schema.organisationPouSpecificationActivations).values({
+        organisationId, pouId: 'whakapapa', specificationId: provisioned.specificationId,
+        conversationGuidanceProjectionId: storedHistoricGuidance!.id,
+        pouReviewProjectionId: storedHistoricReview!.id,
+        safetyLinkId: provisioned.safetyLinkId,
+        activatedByUserId: operatorId,
+        activatedAt: now,
+      })
+      await expect(new PostgresOrganisationPouSpecificationRepository(connection.db).resolveActivePin(organisationId, 'whakapapa', safetyPin)).resolves.toMatchObject({
+        conversationGuidanceProjectionId: storedHistoricGuidance!.id,
+        pouReviewProjectionId: storedHistoricReview!.id,
+      })
 
       await expect(connection.db.update(schema.organisationPouSpecificationVersions)
         .set({ specificationCode: 'forged' })

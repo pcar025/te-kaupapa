@@ -45,6 +45,7 @@ export const workflowPouConcern = pgEnum('workflow_pou_concern', ['low', 'watch'
 export const workflowPouProgress = pgEnum('workflow_pou_progress', ['not_started', 'confirmed'])
 export const workflowActionType = pgEnum('workflow_action_type', ['follow-up', 'support', 'other'])
 export const workflowActionStatus = pgEnum('workflow_action_status', ['open', 'completed', 'withdrawn'])
+export const workflowCarryForwardSource = pgEnum('workflow_carry_forward_source', ['review_criterion', 'areas_for_attention', 'safety_observation'])
 export const workflowReferralStatus = pgEnum('workflow_referral_status', ['draft', 'prepared', 'declined', 'withdrawn'])
 export const workflowSafetyAssessmentContext = pgEnum('workflow_safety_assessment_context', ['setup', 'pou'])
 export const workflowSafetyBroadClass = pgEnum('workflow_safety_broad_class', ['whanau_safety', 'practice_quality', 'practitioner_wellbeing'])
@@ -80,6 +81,7 @@ export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'safety_observation_corrected',
   'safety_observation_retracted',
   'supervisor_review_requested',
+  'carry_forward_marked',
 ])
 
 export const organisations = pgTable('organisation', {
@@ -979,6 +981,37 @@ export const workflowSafetyObservations = pgTable(
     check('workflow_safety_observation_revision_positive', sql`${table.currentRevision} > 0`),
     check('workflow_safety_observation_context_note_length', sql`${table.contextNote} is null or length(${table.contextNote}) <= 4000`),
     check('workflow_safety_observation_retracted_state', sql`(${table.status} = 'retracted') = (${table.retractedAt} is not null)`),
+  ],
+)
+
+/**
+ * Human-owned, pre-action follow-up markers. These preserve a bounded link to
+ * review or confirmed-safety context without claiming that an action, referral
+ * or escalation has been created.
+ */
+export const workflowCarryForwards = pgTable(
+  'workflow_carry_forward',
+  {
+    id: uuid('id').primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    source: workflowCarryForwardSource('source').notNull(),
+    reviewDraftRevisionId: uuid('review_draft_revision_id'),
+    criterionCode: text('criterion_code'),
+    safetyObservationId: uuid('safety_observation_id'),
+    note: text('note'),
+    createdByUserId: uuid('created_by_user_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'carry_forward_checkpoint_organisation_fk' }),
+    foreignKey({ columns: [table.reviewDraftRevisionId], foreignColumns: [conversationReviewDraftRevisions.id], name: 'carry_forward_review_revision_fk' }),
+    foreignKey({ columns: [table.safetyObservationId], foreignColumns: [workflowSafetyObservations.id], name: 'carry_forward_safety_observation_fk' }),
+    foreignKey({ columns: [table.createdByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'carry_forward_created_by_organisation_fk' }),
+    index('carry_forward_workflow_created_idx').on(table.workflowSessionId, table.createdAt),
+    check('carry_forward_note_length', sql`${table.note} is null or length(${table.note}) between 1 and 1000`),
+    check('carry_forward_source_shape', sql`(${table.source} = 'review_criterion' and ${table.reviewDraftRevisionId} is not null and ${table.criterionCode} is not null and ${table.safetyObservationId} is null) or (${table.source} = 'areas_for_attention' and ${table.reviewDraftRevisionId} is not null and ${table.criterionCode} is null and ${table.safetyObservationId} is null) or (${table.source} = 'safety_observation' and ${table.reviewDraftRevisionId} is null and ${table.criterionCode} is null and ${table.safetyObservationId} is not null)`),
   ],
 )
 

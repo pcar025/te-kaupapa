@@ -5,7 +5,7 @@ import * as schema from '../db/schema.js'
 import type { WorkflowPouId } from '../../shared/workflow.js'
 import type { AssessmentStartPin } from '../safety-assessments/repository.js'
 import { contentHash } from '../safety-assessments/domain.js'
-import { conversationGuidanceProjection, organisationPouSpecificationSchema, pouReviewProjection, type ConversationGuidanceProjection, type OrganisationPouSpecificationVersion, type PouReviewProjection } from './domain.js'
+import { conversationGuidanceProjection, isExactHistoricWhakapapaV01ProjectionPair, organisationPouSpecificationSchema, pouReviewProjection, type ConversationGuidanceProjection, type OrganisationPouSpecificationVersion, type PouReviewProjection } from './domain.js'
 
 type Database = NodePgDatabase<typeof schema>
 
@@ -50,7 +50,15 @@ export class PostgresOrganisationPouSpecificationRepository {
       && specification.sourceDocumentHash === safetyPin.specification.sourceDocumentHash
     const linkedRules = specification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
     const safetyRules = safetyPin.specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-    if (contentHash(specification) !== row.specification.contentHash || contentHash(guidance) !== row.guidance.projectionHash || contentHash(review) !== row.review.projectionHash || contentHash(expectedGuidance) !== row.guidance.projectionHash || contentHash(expectedReview) !== row.review.projectionHash || guidance.specificationHash !== row.specification.contentHash || review.specificationHash !== row.specification.contentHash || !sameSourceProvenance || linkedRules.length !== safetyRules.length || linkedRules.some((rule, index) => rule !== safetyRules[index])) throw new PouSpecificationUnavailableError('The active organisation Pou projection provenance is invalid.')
+    const currentDerivationMatches = contentHash(expectedGuidance) === row.guidance.projectionHash
+      && contentHash(expectedReview) === row.review.projectionHash
+    const historicWhakapapaV01Matches = isExactHistoricWhakapapaV01ProjectionPair({
+      pouId,
+      specification,
+      guidance,
+      review,
+    })
+    if (contentHash(specification) !== row.specification.contentHash || contentHash(guidance) !== row.guidance.projectionHash || contentHash(review) !== row.review.projectionHash || (!currentDerivationMatches && !historicWhakapapaV01Matches) || guidance.specificationHash !== row.specification.contentHash || review.specificationHash !== row.specification.contentHash || !sameSourceProvenance || linkedRules.length !== safetyRules.length || linkedRules.some((rule, index) => rule !== safetyRules[index])) throw new PouSpecificationUnavailableError('The active organisation Pou projection provenance is invalid.')
     return { specificationId: row.specification.id, specification, specificationHash: row.specification.contentHash, conversationGuidanceProjectionId: row.guidance.id, conversationGuidanceProjection: guidance, conversationGuidanceProjectionHash: row.guidance.projectionHash, pouReviewProjectionId: row.review.id, pouReviewProjection: review, pouReviewProjectionHash: row.review.projectionHash }
   }
 }

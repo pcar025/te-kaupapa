@@ -246,6 +246,16 @@ Every current-conversation review criterion receives exactly one bounded evidenc
 
 The browser uses one generic Pou flow—overview, voice reflection, analysing, review/edit, explicit confirmation, next Pou—but the backend remains authoritative for current Pou eligibility, specification selection, pins, transcript scope, candidate validation, and canonical confirmation. Evidence-turn identifiers remain scoped to one retained conversation, organisation, workflow, and Pou. Supervisor transcript UI and SME authoring UI are intentionally deferred.
 
+#### SME-demo Pou review and action flow
+
+The ordinary post-conversation Pou screen contains only real, bounded application data: the editable noncanonical review draft, its pinned structured criterion assessments, any actual formal safety candidate, and authoritative workflow state. Legacy illustrative reflective prompts, safety flags, concern grids, suggested actions, referrals, and supervisor controls do not appear as conversation-derived findings.
+
+For each Pou the Kaimahi works through: conversation → evidence review → explicit human confirmation → optional human `carry-forward` marking. The review separates what was established, strengths/protective factors, information still to explore, and areas for attention. A missing topic is never treated as absent or safe. An area for attention is not a formal safety concern and does not create an action.
+
+Formal safety controls are conditional: they appear only for a real reviewable candidate or the existing deliberate human safety-recording path. The approved ordinary Pou concern levels are Low, Watch, and Action; narrative review confirmation neither selects nor confirms a safety concern. Supervisor review and escalation remain governed by the existing human-confirmed safety and deterministic-policy pathways.
+
+A carry-forward marker is a human-owned, non-action source link to a current, scoped review criterion, an area for attention, or a confirmed safety observation. It records its organisation, workflow, Pou, source reference, actor, and timestamp, but it does not create an action, referral, escalation, supervisor request, or workflow consequence. After all seven Pou are explicitly confirmed, Te Kaupapa shows a whole-of-assessment synthesis followed by Action Planning even when zero items were carried forward. The Kaimahi then decides whether anything becomes an action, referral, future follow-up, or no further action. Detailed action/referral fields therefore belong after the seven-Pou synthesis, not to an individual Pou review.
+
 Conversation provenance may associate an internal conversation ID, workflow, Pou, actor, provider reference, selected non-secret agent configuration reference, and approved conversation-specification version. This provenance does not make provider output canonical. It must not advance a workflow, create a safety observation, action, referral, summary, or deterministic consequence without the separately approved validation and human-confirmation path.
 
 Live caption display, where enabled, is ephemeral and bounded. It is released with media resources on normal end, error, navigation, unmount, logout, and session expiry. Transcript and audio retention remain separate product/privacy decisions.

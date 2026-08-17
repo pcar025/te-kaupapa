@@ -19,6 +19,7 @@ import { organisationPouSpecificationFromRegistry } from '../pou-specifications/
 import { safetySpecificationFromRegistry } from './registry.js'
 import { PHASE_5D_DRAFT_POU_SPECIFICATIONS } from '../pou-specifications/phase5d-specifications.js'
 import { PostgresTranscriptRepository } from '../transcripts/repository.js'
+import { conversationGuidanceProjection, pouReviewProjection } from '../pou-specifications/domain.js'
 
 const POU_CONFIRMATION_GATE_LOCK_ID = 549012684
 
@@ -49,7 +50,7 @@ async function waitForBlockedDatabaseWork(connection: ReturnType<typeof createDa
 }
 
 function pouReviewCommand(expectedVersion: number, reviewDraftRevisionId?: string) {
-  return { type: 'pou-review-confirmed' as const, idempotencyKey: randomUUID(), expectedVersion, pouId: 'whakapapa' as const, userSelectedConcern: 'watch' as const, note: 'Ordinary Kaimahi Pou review.', referralSuggested: false, supervisorReviewSuggested: false, ...(reviewDraftRevisionId ? { reviewDraftRevisionId } : {}) }
+  return { type: 'pou-review-confirmed' as const, idempotencyKey: randomUUID(), expectedVersion, pouId: 'whakapapa' as const, note: 'Ordinary Kaimahi Pou review.', ...(reviewDraftRevisionId ? { reviewDraftRevisionId } : {}) }
 }
 
 function candidateConfirmationCommand(assessmentId: string, expectedVersion: number) {
@@ -58,7 +59,7 @@ function candidateConfirmationCommand(assessmentId: string, expectedVersion: num
 
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary integration', () => {
   it('resolves an approved active policy and starts a Whakapapa conversation with its exact pin', async () => {
-    await withPhase5BTestContext(async ({ connection, actor, workflowId, specification, repository, workflowRepository, storedSpec, storedProjection }) => {
+    await withPhase5BTestContext(async ({ connection, actor, workflowId, specification, projection, repository, workflowRepository, storedSpec, storedProjection, organisationSpecification, storedOrganisationSpecification }) => {
       const pin = await repository.resolveActivePin(actor.organisation.id, 'whakapapa', { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
       expect(pin).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, specificationHash: contentHash(specification) })
 
@@ -69,8 +70,43 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
 
       expect(started.conversation).toMatchObject({ status: 'authorized', pouId: 'whakapapa' })
       expect(run).toMatchObject({ specificationId: storedSpec.id, projectionId: storedProjection.id, status: 'pending' })
+
+      // The accepted Whakapapa v0.1 activation predates the redundant
+      // projection-level Pou identifier. A conversation already pinned to its
+      // exact historic shape must remain eligible for signed delivery.
+      await connection.db.update(schema.workflowConversations).set({ status: 'ended', endedAt: new Date('2026-08-12T00:00:01.000Z'), terminationReason: 'user_ended' }).where(eq(schema.workflowConversations.id, started.conversation.id))
+      const { pouId: _guidancePouId, ...historicGuidance } = conversationGuidanceProjection(organisationSpecification, {
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1',
+      })
+      const { pouId: _reviewPouId, ...historicReview } = pouReviewProjection(organisationSpecification, {
+        projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1',
+      })
+      const [storedHistoricGuidance] = await connection.db.insert(schema.conversationGuidanceProjections).values({
+        organisationId: actor.organisation.id, pouId: 'whakapapa', specificationId: storedOrganisationSpecification.id,
+        projectionCode: historicGuidance.projectionCode, projectionVersion: historicGuidance.projectionVersion, projectionHash: contentHash(historicGuidance), projection: historicGuidance,
+      }).returning()
+      const [storedHistoricReview] = await connection.db.insert(schema.pouReviewProjections).values({
+        organisationId: actor.organisation.id, pouId: 'whakapapa', specificationId: storedOrganisationSpecification.id,
+        projectionCode: historicReview.projectionCode, projectionVersion: historicReview.projectionVersion, projectionHash: contentHash(historicReview), projection: historicReview,
+      }).returning()
+      const historicConversationId = randomUUID()
+      const historicProviderConversationId = `provider-${randomUUID()}`
+      await connection.db.insert(schema.workflowConversations).values({
+        id: historicConversationId, organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'whakapapa', startedByUserId: actor.id,
+        provider: 'elevenlabs', providerConversationId: historicProviderConversationId, providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test',
+        conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'ended', startIdempotencyKey: randomUUID(), requestFingerprint: 'historic-whakapapa-v01', authorizedAt: new Date('2026-08-12T00:00:02.000Z'), endedAt: new Date('2026-08-12T00:00:02.000Z'), terminationReason: 'user_ended',
+      })
+      await connection.db.insert(schema.workflowConversationPouSpecificationPins).values({
+        workflowConversationId: historicConversationId, organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'whakapapa', specificationId: storedOrganisationSpecification.id, specificationHash: contentHash(organisationSpecification),
+        conversationGuidanceProjectionId: storedHistoricGuidance!.id, conversationGuidanceProjectionHash: contentHash(historicGuidance), pouReviewProjectionId: storedHistoricReview!.id, pouReviewProjectionHash: contentHash(historicReview),
+        specificationSnapshot: organisationSpecification, conversationGuidanceProjectionSnapshot: historicGuidance, pouReviewProjectionSnapshot: historicReview,
+      })
+      const [historicRun] = await connection.db.insert(schema.conversationSafetyAssessmentRuns).values({
+        workflowConversationId: historicConversationId, organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'whakapapa', specificationId: storedSpec.id, specificationCode: specification.specificationCode, specificationVersion: specification.specificationVersion, specificationHash: contentHash(specification), ruleManifestHash: contentHash(projection.rules), projectionId: storedProjection.id, projectionCode: storedProjection.projectionCode, projectionVersion: storedProjection.projectionVersion, projectionHash: storedProjection.projectionHash, provider: 'elevenlabs', providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test', specificationSnapshot: specification, projectionSnapshot: projection,
+      }).returning()
+      await expect(repository.resolveActivePinForConversation({ providerConversationId: historicProviderConversationId, agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })).resolves.toMatchObject({ runId: historicRun!.id, workflowConversationId: historicConversationId, pouId: 'whakapapa' })
     })
-  })
+  }, 15_000)
 
   it('completes a real PostgreSQL ingestion for an approved Manaakitanga empty safety manifest', async () => {
     await withPhase5BTestContext(async ({ connection, actor, workflowId, repository }) => {
@@ -178,7 +214,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
         expect(authorizationCalls).toBe(0)
         expect(await connection.db.select().from(schema.workflowConversations).where(eq(schema.workflowConversations.workflowSessionId, workflowId))).toHaveLength(1)
         expect(await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowId))).toHaveLength(1)
-        expect(await canonicalSnapshot()).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: 'watch' }, counts: { workflowInteractions: 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
+        expect(await canonicalSnapshot()).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: null }, counts: { workflowInteractions: 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
       } finally {
         releaseInitialRead?.()
         await started.catch(() => undefined)
@@ -390,7 +426,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       expect(superseded).toMatchObject({ status: 'superseded' })
       expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
       await expect(repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')).rejects.toThrow()
-      expect(after).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: 'watch' }, counts: { ...before.counts, workflowInteractions: before.counts.workflowInteractions + 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
+      expect(after).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: null }, counts: { ...before.counts, workflowInteractions: before.counts.workflowInteractions + 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
     })
   })
 
@@ -463,7 +499,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
         expect(delivered.json()).toMatchObject({ accepted: true, replayed: false, superseded: true })
         expect(storedRun).toMatchObject({ status: 'superseded' })
         expect(assessments).toHaveLength(0)
-        expect(await canonicalSnapshot()).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: 'watch' }, counts: { workflowInteractions: 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
+        expect(await canonicalSnapshot()).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: null }, counts: { workflowInteractions: 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
       } finally {
         releaseGate?.()
         await holder.catch(() => undefined)

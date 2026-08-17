@@ -32,6 +32,7 @@ import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/re
 import type { ConversationRecord } from './conversations/repository.js'
 import type { ConversationApplicationService } from './conversations/service.js'
 import { SafetyAssessmentValidationError } from './safety-assessments/repository.js'
+import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -115,6 +116,8 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       })),
       actions: [],
       referrals: [],
+      carryForwards: [],
+      pouReviews: [],
       safety: {
         observations: [],
         requiredConsequences: [],
@@ -255,10 +258,10 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         checkpoint.progress === 'confirmed',
       )
       checkpoint.progress = 'confirmed'
-      checkpoint.userSelectedConcern = command.userSelectedConcern
+      checkpoint.userSelectedConcern = null
       checkpoint.note = command.note || null
-      checkpoint.referralSuggested = command.referralSuggested
-      checkpoint.supervisorReviewSuggested = command.supervisorReviewSuggested
+      checkpoint.referralSuggested = false
+      checkpoint.supervisorReviewSuggested = false
       checkpoint.confirmedAt = new Date('2026-08-10T00:00:00.000Z')
       workflow.currentStage = next.stage
       workflow.currentPouId = next.currentPouId
@@ -370,6 +373,8 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         checkpoints: workflow.checkpoints,
         actions: workflow.actions,
         referrals: workflow.referrals,
+        carryForwards: workflow.carryForwards,
+        pouReviews: workflow.pouReviews,
         createdAt: workflow.createdAt,
         updatedAt: workflow.updatedAt,
         completedAt: workflow.completedAt,
@@ -675,18 +680,31 @@ describe('authenticated application shell API', () => {
     expect(setup.statusCode).toBe(200)
     expect(setup.json()).toMatchObject({ workflow: { status: 'in_progress', currentStage: 'pou-overview', version: 2 } })
 
-    const stale = await app.inject({
+    const rejectedLegacyFields = await app.inject({
       method: 'POST',
       url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
       headers: { cookie: sessionCookie, origin: 'http://web.test' },
       payload: {
         type: 'pou-review-confirmed',
         idempotencyKey: '99bd1f2c-4528-4fab-8bfa-96c4a11b0c07',
-        expectedVersion: 1,
+        expectedVersion: 2,
         pouId: 'whakapapa',
         userSelectedConcern: 'watch',
         referralSuggested: false,
         supervisorReviewSuggested: false,
+      },
+    })
+    expect(rejectedLegacyFields.statusCode).toBe(400)
+
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'pou-review-confirmed',
+        idempotencyKey: 'af9f9d73-b05d-455f-89fa-44f7db94d9ac',
+        expectedVersion: 1,
+        pouId: 'whakapapa',
       },
     })
     expect(stale.statusCode).toBe(409)
@@ -777,6 +795,36 @@ describe('authenticated application shell API', () => {
     expect(response.statusCode).toBe(503)
     expect(response.json()).toEqual({ error: 'assessment_activation_invalid' })
     expect(response.body).not.toContain('durable activation detail')
+    await app.close()
+  })
+
+  it('reports an invalid active Pou specification without exposing its provenance detail', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    conversations.start = async () => { throw new PouSpecificationUnavailableError('stored projection provenance detail must remain server-only') }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '94296822-1f1e-467d-9695-376c8ff1e14f', userId: activeKaimahi.id, tokenHash: sha256('invalid-pou-specification-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'e3cb4362-16c3-4b17-9a75-f7fdb4518ccc' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: '9c8bbd3d-6de8-4ca5-8970-ee7c144c38fa', expectedVersion: 1, whanauReference: 'TW-06', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`,
+      headers: { cookie: 'test_session=invalid-pou-specification-session', origin: 'http://web.test' },
+      payload: { idempotencyKey: '3477c367-ae47-4493-8a61-f7bf8f3e5e8b' },
+    })
+
+    expect(response.statusCode).toBe(503)
+    expect(response.json()).toEqual({ error: 'pou_specification_invalid' })
+    expect(response.body).not.toContain('stored projection provenance detail')
     await app.close()
   })
 

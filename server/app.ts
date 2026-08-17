@@ -38,6 +38,7 @@ import {
 } from './conversations/provider.js'
 import {
   ConversationIdempotencyKeyReuseError,
+  ConversationRepositoryError,
   OpenConversationExistsError,
   type ConversationRecord,
 } from './conversations/repository.js'
@@ -50,7 +51,8 @@ import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import type { ConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-drafts/domain.js'
-import { conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
+import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
+import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
@@ -341,6 +343,18 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof ProviderConversationMismatchError) return reply.code(409).send({ error: 'provider_id_mismatch' })
     if (error instanceof ConversationProviderUnavailableError) return reply.code(503).send({ error: 'provider_unavailable' })
     if (error instanceof ConversationProviderAuthorizationError) return reply.code(502).send({ error: 'provider_authorization_failed' })
+    if (error instanceof PouSpecificationUnavailableError) {
+      request.log.error({ category: 'pou_specification_invalid' }, 'Conversation operation failed')
+      return reply.code(503).send({ error: 'pou_specification_invalid' })
+    }
+    if (error instanceof ConversationGuidanceProjectionError) {
+      request.log.error({ category: 'guidance_projection_invalid' }, 'Conversation operation failed')
+      return reply.code(503).send({ error: 'guidance_projection_invalid' })
+    }
+    if (error instanceof ConversationRepositoryError) {
+      request.log.error({ category: 'conversation_persistence_unavailable' }, 'Conversation operation failed')
+      return reply.code(503).send({ error: 'conversation_persistence_unavailable' })
+    }
     if (error instanceof SafetyAssessmentValidationError) {
       request.log.error({ category: 'assessment_activation_invalid' }, 'Conversation operation failed')
       return reply.code(503).send({ error: 'assessment_activation_invalid' })
@@ -383,12 +397,19 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     idempotencyKey: z.string().uuid(),
     expectedVersion: z.number().int().positive(),
     pouId: z.enum(WORKFLOW_POU_IDS),
-    userSelectedConcern: z.enum(WORKFLOW_POU_CONCERNS),
+    // Legacy checkpoint fields are deliberately not part of an ordinary
+    // narrative confirmation. Formal safety uses safety-observation-confirmed.
+    userSelectedConcern: z.never().optional(),
     note: z.string().trim().max(4_000).optional(),
-    referralSuggested: z.boolean(),
-    supervisorReviewSuggested: z.boolean(),
+    referralSuggested: z.never().optional(),
+    supervisorReviewSuggested: z.never().optional(),
     reviewDraftRevisionId: z.string().uuid().optional(),
-  })
+  }).strict()
+  const carryForwardSourceSchema = z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('review_criterion'), reviewDraftRevisionId: z.string().uuid(), criterionCode: z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{1,119}$/) }).strict(),
+    z.object({ kind: z.literal('areas_for_attention'), reviewDraftRevisionId: z.string().uuid() }).strict(),
+    z.object({ kind: z.literal('safety_observation'), observationId: z.string().uuid() }).strict(),
+  ])
   const downstreamCommandSchema = z.object({
     idempotencyKey: z.string().uuid(),
     expectedVersion: z.number().int().positive(),
@@ -467,6 +488,15 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       expectedVersion: z.number().int().positive(),
       pouId: z.enum(WORKFLOW_POU_IDS).optional(),
       requestNote: z.string().trim().max(4_000).optional(),
+    }).strict(),
+    z.object({
+      type: z.literal('carry-forward-marked'),
+      itemId: z.string().uuid(),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      pouId: z.enum(WORKFLOW_POU_IDS),
+      source: carryForwardSourceSchema,
+      note: z.string().trim().min(1).max(1_000).optional(),
     }).strict(),
   ])
 
@@ -720,7 +750,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
           })
           if (event.dynamicVariableProvenance) {
             if (!pin.guidanceProjection) throw new ElevenLabsGuidanceProvenanceMismatchError('No pinned conversation guidance exists for provenance verification.')
-            const expectedDynamicVariables = conversationRuntimeDynamicVariables(pin.guidanceProjection)
+            const expectedDynamicVariables = conversationRuntimeDynamicVariables(pin.guidanceProjection, pin.pouId)
             if (contentHash(event.dynamicVariableProvenance) !== contentHash(expectedDynamicVariables)) {
               throw new ElevenLabsGuidanceProvenanceMismatchError('Provider conversation guidance did not match the server-pinned projection.')
             }

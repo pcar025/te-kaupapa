@@ -15,7 +15,7 @@ import {
   type ProviderRuleAssessment,
   type SafetySpecificationVersion,
 } from './domain.js'
-import { conversationGuidanceProjection, organisationPouSpecificationSchema, pouReviewProjection, type ConversationGuidanceProjection, type PouReviewProjection } from '../pou-specifications/domain.js'
+import { conversationGuidanceProjection, isExactHistoricWhakapapaV01ProjectionPair, organisationPouSpecificationSchema, pouReviewProjection, type ConversationGuidanceProjection, type PouReviewProjection } from '../pou-specifications/domain.js'
 
 type SafetyDatabase = NodePgDatabase<typeof schema>
 export type SafetyTransaction = Parameters<Parameters<SafetyDatabase['transaction']>[0]>[0]
@@ -149,7 +149,15 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
       const expectedReview = pouReviewProjection(pinnedSpecification, { projectionCode: reviewProjection.projectionCode, projectionVersion: reviewProjection.projectionVersion })
       const linkedRules = pinnedSpecification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
       const assessmentRules = specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-      if (contentHash(pinnedSpecification) !== row.pouPin!.specificationHash || guidanceProjection.specificationHash !== row.pouPin!.specificationHash || reviewProjection.specificationHash !== row.pouPin!.specificationHash || contentHash(guidanceProjection) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(reviewProjection) !== row.pouPin!.pouReviewProjectionHash || contentHash(expectedGuidance) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(expectedReview) !== row.pouPin!.pouReviewProjectionHash || linkedRules.join('|') !== assessmentRules.join('|')) {
+      const currentProjectionDerivationMatches = contentHash(expectedGuidance) === row.pouPin!.conversationGuidanceProjectionHash
+        && contentHash(expectedReview) === row.pouPin!.pouReviewProjectionHash
+      const historicWhakapapaV01Matches = isExactHistoricWhakapapaV01ProjectionPair({
+        pouId: row.run.pouId as WorkflowPouId,
+        specification: pinnedSpecification,
+        guidance: guidanceProjection,
+        review: reviewProjection,
+      })
+      if (contentHash(pinnedSpecification) !== row.pouPin!.specificationHash || guidanceProjection.specificationHash !== row.pouPin!.specificationHash || reviewProjection.specificationHash !== row.pouPin!.specificationHash || contentHash(guidanceProjection) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(reviewProjection) !== row.pouPin!.pouReviewProjectionHash || (!currentProjectionDerivationMatches && !historicWhakapapaV01Matches) || linkedRules.join('|') !== assessmentRules.join('|')) {
         throw new SafetyAssessmentValidationError('Pinned conversation, review, and safety projection provenance is invalid.')
       }
     } else if (row.pouPin || guidanceProjection || reviewProjection) {
