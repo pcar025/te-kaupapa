@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { pkceChallenge, randomToken, sameToken, sha256 } from './auth/crypto.js'
 import type { OidcProvider } from './auth/oidc.js'
 import type { AppConfiguration } from './config.js'
+import { APPLICATION_SESSION_MODES, sessionCookieMaxAgeSeconds, sessionExpiresAt, type ApplicationSessionMode } from './auth/session-policy.js'
 import { AuthorizationError, requireRole, toPublicProfile, type ApplicationRole, type AuthenticatedUser } from './domain/auth.js'
 import type { AuthRepository } from './db/repository.js'
 import {
@@ -80,6 +81,7 @@ const transactionSchema = z.object({
   nonce: z.string().min(32),
   verifier: z.string().min(32),
   issuedAt: z.number().int(),
+  sessionMode: z.enum(APPLICATION_SESSION_MODES),
 })
 
 function providerWebhookRejectionReason(error: unknown): 'signature' | 'guidance_provenance_mismatch' | 'invalid_json' | 'unsupported_event' | 'schema_validation' | 'assessment_validation' | 'assessment_provider' | 'unexpected' {
@@ -127,12 +129,14 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     origin: (origin, callback) => callback(null, !origin || config.allowedOrigins.includes(origin)),
   })
 
-  const sessionCookie = {
-    path: '/',
-    httpOnly: true,
-    sameSite: 'lax' as const,
-    secure: secureCookie,
-    maxAge: config.sessionTtlHours * 60 * 60,
+  function sessionCookie(mode: ApplicationSessionMode) {
+    return {
+      path: '/',
+      httpOnly: true,
+      sameSite: 'lax' as const,
+      secure: secureCookie,
+      maxAge: sessionCookieMaxAgeSeconds(mode),
+    }
   }
   const transactionCookie = {
     path: '/api/auth',
@@ -167,7 +171,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     const token = request.cookies[config.cookieName]
     if (!token) return null
     const tokenHash = sha256(token)
-    const user = await repository.findUserBySessionHash(tokenHash, now(), config.sessionIdleTimeoutMinutes)
+    const user = await repository.findUserBySessionHash(tokenHash, now())
     if (!user || user.status !== 'active') return null
     await repository.touchSession(tokenHash, now())
     request.authenticatedUser = user
@@ -197,22 +201,39 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     return { profile: toPublicProfile(user) }
   })
 
-  app.get('/api/auth/login', async (_request, reply) => {
-    if (!oidcProvider) return reply.code(503).send({ error: 'authentication_unavailable' })
+  function beginLogin(mode: ApplicationSessionMode, reply: FastifyReply): string | null {
+    if (!oidcProvider) {
+      reply.code(503).send({ error: 'authentication_unavailable' })
+      return null
+    }
     const transaction = {
       state: randomToken(),
       nonce: randomToken(),
       verifier: randomToken(),
       issuedAt: now().getTime(),
+      sessionMode: mode,
     }
     const encoded = Buffer.from(JSON.stringify(transaction)).toString('base64url')
     reply.setCookie(transactionCookieName, reply.signCookie(encoded), transactionCookie)
-    return reply.redirect(oidcProvider.authorizationUrl({
+    return oidcProvider.authorizationUrl({
       state: transaction.state,
       nonce: transaction.nonce,
       codeChallenge: pkceChallenge(transaction.verifier),
       redirectUri: redirectUri(),
-    }))
+    })
+  }
+
+  app.get('/api/auth/login', async (_request, reply) => {
+    const authorizationUrl = beginLogin('standard', reply)
+    return authorizationUrl ? reply.redirect(authorizationUrl) : reply
+  })
+
+  app.post('/api/auth/login', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const parsed = z.object({ trustedDevice: z.boolean().optional() }).strict().safeParse(request.body)
+    if (!parsed.success) return reply.code(400).send({ error: 'invalid_request' })
+    const authorizationUrl = beginLogin(parsed.data.trustedDevice ? 'trusted_device' : 'standard', reply)
+    return authorizationUrl ? { authorizationUrl } : reply
   })
 
   app.get('/api/auth/callback', async (request, reply) => {
@@ -249,10 +270,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
         id: randomUUID(),
         userId: user.id,
         tokenHash: sha256(token),
-        expiresAt: new Date(now().getTime() + config.sessionTtlHours * 60 * 60 * 1000),
+        mode: transaction.sessionMode,
+        expiresAt: sessionExpiresAt(transaction.sessionMode, now()),
         lastActivityAt: now(),
       })
-      reply.setCookie(config.cookieName, token, sessionCookie)
+      reply.setCookie(config.cookieName, token, sessionCookie(transaction.sessionMode))
       return reply.redirect(config.frontendOrigin)
     } catch (error) {
       request.log.warn({ err: error instanceof Error ? error.name : 'unknown' }, 'OIDC callback failed')
@@ -264,7 +286,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (!requireTrustedOrigin(request, reply)) return reply
     const token = request.cookies[config.cookieName]
     if (token) await repository.invalidateSession(sha256(token), now())
-    reply.clearCookie(config.cookieName, sessionCookie)
+    reply.clearCookie(config.cookieName, sessionCookie('standard'))
     return { logoutUrl: cognitoLogoutUrl() }
   })
 

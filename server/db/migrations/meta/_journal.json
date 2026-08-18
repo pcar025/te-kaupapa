@@ -127,6 +127,13 @@
       "when": 1787012290134,
       "tag": "0017_flashy_betty_ross",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1787031266620,
+      "tag": "0018_trusted_device_sessions",
+      "breakpoints": true
     }
   ]
 }

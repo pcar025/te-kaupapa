@@ -18,6 +18,7 @@ import {
 
 export const userStatus = pgEnum('user_status', ['active', 'inactive'])
 export const applicationRole = pgEnum('application_role', ['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR'])
+export const applicationSessionMode = pgEnum('application_session_mode', ['standard', 'trusted_device'])
 export const workflowStatus = pgEnum('workflow_status', ['draft', 'in_progress', 'completed', 'abandoned'])
 export const workflowStage = pgEnum('workflow_stage', [
   'setup',
@@ -149,6 +150,7 @@ export const applicationSessions = pgTable(
     id: uuid('id').primaryKey(),
     userId: uuid('user_id').notNull().references(() => appUsers.id, { onDelete: 'cascade' }),
     tokenHash: text('token_hash').notNull().unique(),
+    mode: applicationSessionMode('mode').default('standard').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     lastActivityAt: timestamp('last_activity_at', { withTimezone: true }).defaultNow().notNull(),
     invalidatedAt: timestamp('invalidated_at', { withTimezone: true }),

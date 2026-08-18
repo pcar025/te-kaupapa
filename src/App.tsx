@@ -40,8 +40,8 @@ export default function App() {
     }
     return (
       <EntryScreen
-        onKaimahi={beginSignIn}
-        onSupervisor={beginSignIn}
+        onKaimahi={() => void beginSignIn()}
+        onSupervisor={() => void beginSignIn()}
         onSignIn={beginSignIn}
         authMessage={messages[state.kind]}
       />

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createApplication } from './app.js'
 import { sha256 } from './auth/crypto.js'
 import type { OidcProvider } from './auth/oidc.js'
+import { sessionExpiresAt, sessionHasIdleExpired } from './auth/session-policy.js'
 import type { AppConfiguration } from './config.js'
 import type { AuthRepository, CreateSessionInput } from './db/repository.js'
 import type { AuthenticatedUser } from './domain/auth.js'
@@ -55,11 +56,11 @@ class MemoryRepository implements AuthRepository {
     this.sessions.set(input.tokenHash, input)
   }
 
-  async findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number) {
+  async findUserBySessionHash(tokenHash: string, now: Date) {
     const session = this.sessions.get(tokenHash)
     if (!session) return null
     const lastActivityAt = session.lastActivityAt ?? session.expiresAt
-    if (session.invalidatedAt || session.expiresAt <= now || lastActivityAt <= new Date(now.getTime() - idleTimeoutMinutes * 60 * 1000)) return null
+    if (session.invalidatedAt || session.expiresAt <= now || sessionHasIdleExpired(session.mode ?? 'standard', lastActivityAt, now)) return null
     return [...this.identities.values()].find((user) => user.id === session.userId) ?? null
   }
 
@@ -71,6 +72,12 @@ class MemoryRepository implements AuthRepository {
   async invalidateSession(tokenHash: string, invalidatedAt: Date) {
     const session = this.sessions.get(tokenHash)
     if (session) session.invalidatedAt = invalidatedAt
+  }
+
+  async invalidateSessionsForUser(userId: string, invalidatedAt: Date) {
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && !session.invalidatedAt) session.invalidatedAt = invalidatedAt
+    }
   }
 
   async isSupervisorOf(supervisorUserId: string, kaimahiUserId: string) {
@@ -424,8 +431,6 @@ function config(): AppConfiguration {
     allowedOrigins: ['http://api.test', 'http://web.test'],
     cookieName: 'test_session',
     cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough',
-    sessionTtlHours: 12,
-    sessionIdleTimeoutMinutes: 60,
     cognito: {
       clientId: 'test-client',
       issuer: 'https://cognito-idp.test/user-pool',
@@ -527,6 +532,7 @@ describe('authenticated application shell API', () => {
     expect(callback.headers.location).toBe('http://web.test')
     expect(String(callback.headers['set-cookie'])).toContain('HttpOnly')
     expect(String(callback.headers['set-cookie'])).toContain('SameSite=Lax')
+    expect(String(callback.headers['set-cookie'])).toContain('Max-Age=43200')
 
     const sessionCookie = cookieFrom(callback, 'test_session')
     const me = await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })
@@ -555,6 +561,60 @@ describe('authenticated application shell API', () => {
     })
     expect(String(logout.headers['set-cookie'])).toContain('test_session=;')
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('binds an explicit trusted-device choice to the signed OIDC transaction without trusting callback input', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:cognito-subject', activeKaimahi)
+    const authenticatedAt = new Date('2026-09-01T09:00:00.000Z')
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => authenticatedAt })
+
+    const standardLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { origin: 'http://web.test' },
+      payload: { trustedDevice: false },
+    })
+    expect(standardLogin.statusCode).toBe(200)
+    const standardCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(standardLogin.json().authorizationUrl).searchParams.get('state')}&trustedDevice=true`,
+      headers: { cookie: cookieFrom(standardLogin) },
+    })
+    expect(standardCallback.statusCode).toBe(302)
+    expect(String(standardCallback.headers['set-cookie'])).toContain('Max-Age=43200')
+    const standardSession = [...repository.sessions.values()].find((session) => session.tokenHash === sha256(cookieFrom(standardCallback, 'test_session').split('=')[1]!))!
+    expect(standardSession).toMatchObject({ mode: 'standard', expiresAt: new Date('2026-09-01T21:00:00.000Z') })
+
+    const trustedLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { origin: 'http://web.test' },
+      payload: { trustedDevice: true },
+    })
+    expect(trustedLogin.statusCode).toBe(200)
+    const trustedCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(trustedLogin.json().authorizationUrl).searchParams.get('state')}`,
+      headers: { cookie: cookieFrom(trustedLogin) },
+    })
+    expect(trustedCallback.statusCode).toBe(302)
+    expect(String(trustedCallback.headers['set-cookie'])).toContain('Max-Age=2592000')
+    const trustedSession = [...repository.sessions.values()].find((session) => session.tokenHash === sha256(cookieFrom(trustedCallback, 'test_session').split('=')[1]!))!
+    expect(trustedSession).toMatchObject({ mode: 'trusted_device', expiresAt: new Date('2026-10-01T09:00:00.000Z') })
+
+    const tamperedLogin = await app.inject({ method: 'GET', url: '/api/auth/login' })
+    const originalTransaction = cookieFrom(tamperedLogin)
+    const tamperedTransaction = `${originalTransaction.slice(0, -1)}x`
+    const failedCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(tamperedLogin.headers.location!).searchParams.get('state')}`,
+      headers: { cookie: tamperedTransaction },
+    })
+    expect(failedCallback.headers.location).toBe('http://web.test/?auth=failed')
+    expect([...repository.sessions.values()]).toHaveLength(2)
+    expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { trustedDevice: true } })).statusCode).toBe(403)
     await app.close()
   })
 
@@ -613,35 +673,136 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
-  it('enforces server-side idle expiry without extending the absolute session lifetime', async () => {
+  it('enforces the 12-hour standard-session boundary and 8-hour idle boundary without sliding expiry', async () => {
     const repository = new MemoryRepository()
     repository.identities.set('cognito:kaimahi', activeKaimahi)
-    const now = new Date('2026-08-09T04:00:00.000Z')
-    const idleToken = 'idle-session'
+    const createdAt = new Date('2026-09-01T08:00:00.000Z')
+    let currentTime = new Date('2026-09-01T15:59:00.000Z')
+    const idleToken = 'standard-idle-boundary'
     await repository.createSession({
       id: '9f49620a-6a90-4739-934d-44c487c51d04',
       userId: activeKaimahi.id,
       tokenHash: sha256(idleToken),
-      expiresAt: new Date(now.getTime() + 12 * 60 * 60 * 1000),
-      lastActivityAt: new Date(now.getTime() - 61 * 60 * 1000),
+      mode: 'standard',
+      expiresAt: sessionExpiresAt('standard', createdAt),
+      lastActivityAt: createdAt,
     })
-    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
-    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${idleToken}` } })).statusCode).toBe(401)
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => currentTime })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${idleToken}` } })).statusCode).toBe(200)
+    const validStandard = repository.sessions.get(sha256(idleToken))!
+    expect(validStandard.lastActivityAt).toEqual(currentTime)
+    expect(validStandard.expiresAt).toEqual(new Date('2026-09-01T20:00:00.000Z'))
 
-    const activeToken = 'active-session'
+    const expiredIdleToken = 'standard-expired-idle'
+    await repository.createSession({
+      id: 'f6c2eb10-64bb-4f0f-86f2-7150d0812a02',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(expiredIdleToken),
+      mode: 'standard',
+      expiresAt: new Date('2026-09-02T03:59:00.000Z'),
+      lastActivityAt: new Date('2026-09-01T07:59:00.000Z'),
+    })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${expiredIdleToken}` } })).statusCode).toBe(401)
+
+    const activeToken = 'standard-active-session'
     await repository.createSession({
       id: '12834aa0-8e1e-4d43-a57f-ddecae4b95f9',
       userId: activeKaimahi.id,
       tokenHash: sha256(activeToken),
-      expiresAt: new Date(now.getTime() + 1),
-      lastActivityAt: now,
+      mode: 'standard',
+      expiresAt: new Date('2026-09-01T20:00:00.000Z'),
+      lastActivityAt: currentTime,
     })
+    currentTime = new Date('2026-09-01T17:00:00.000Z')
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(200)
-    const afterAbsoluteExpiry = new Date(now.getTime() + 2)
-    const expiredApp = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => afterAbsoluteExpiry })
-    expect((await expiredApp.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
+    expect(repository.sessions.get(sha256(activeToken))!.expiresAt).toEqual(new Date('2026-09-01T20:00:00.000Z'))
+    currentTime = new Date('2026-09-01T20:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
     await app.close()
-    await expiredApp.close()
+  })
+
+  it('keeps a trusted-device session valid for its original 30 days without applying the standard idle limit', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const authenticatedAt = new Date('2026-09-01T09:00:00.000Z')
+    let currentTime = new Date('2026-09-10T09:00:00.000Z')
+    const token = 'trusted-device-session'
+    const expiresAt = sessionExpiresAt('trusted_device', authenticatedAt)
+    await repository.createSession({
+      id: '73c89849-4778-48cc-9b13-2675616d5d91',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(token),
+      mode: 'trusted_device',
+      expiresAt,
+      lastActivityAt: authenticatedAt,
+    })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => currentTime })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    currentTime = new Date('2026-09-20T09:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    currentTime = new Date('2026-09-30T08:59:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    expect(repository.sessions.get(sha256(token))!.expiresAt).toEqual(expiresAt)
+    currentTime = new Date('2026-10-01T09:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('terminates a trusted-device session through the normal logout path', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const now = new Date('2026-09-01T09:00:00.000Z')
+    await repository.createSession({
+      id: 'c18cbd73-6ae8-41ef-a836-a16d310cb6c2', userId: activeKaimahi.id, tokenHash: sha256('logout-trusted'), mode: 'trusted_device',
+      expiresAt: sessionExpiresAt('trusted_device', now), lastActivityAt: now,
+    })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    const headers = { cookie: 'test_session=logout-trusted', origin: 'http://web.test' }
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: '/api/auth/logout', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('persists both session modes across application restart and supports revoke-all server-side invalidation', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const now = new Date('2026-09-10T09:00:00.000Z')
+    await repository.createSession({ id: '6e7f8dd7-9d88-4307-99b7-b0e55ca0f2a2', userId: activeKaimahi.id, tokenHash: sha256('restart-standard'), mode: 'standard', expiresAt: sessionExpiresAt('standard', now), lastActivityAt: now })
+    await repository.createSession({ id: '11e4df01-e82b-43cd-8adc-52c856bd0ece', userId: activeKaimahi.id, tokenHash: sha256('restart-trusted'), mode: 'trusted_device', expiresAt: sessionExpiresAt('trusted_device', now), lastActivityAt: now })
+    const beforeRestart = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    expect((await beforeRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(200)
+    await beforeRestart.close()
+    const afterRestart = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(200)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-trusted' } })).statusCode).toBe(200)
+    await repository.invalidateSessionsForUser(activeKaimahi.id, now)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(401)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-trusted' } })).statusCode).toBe(401)
+    await afterRestart.close()
+  })
+
+  it('rechecks current user, organisation membership, and every role on each session request', async () => {
+    const repository = new MemoryRepository()
+    const fullyAuthorized: AuthenticatedUser = { ...activeKaimahi, roles: ['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR'] }
+    repository.identities.set('cognito:kaimahi', fullyAuthorized)
+    await repository.createSession({ id: 'e7bc5750-cc5e-4f6d-a5ef-e45f902fc47a', userId: activeKaimahi.id, tokenHash: sha256('live-authority'), mode: 'trusted_device', expiresAt: new Date('2026-10-01T09:00:00.000Z'), lastActivityAt: new Date('2026-09-01T09:00:00.000Z') })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => new Date('2026-09-10T09:00:00.000Z') })
+    const headers = { cookie: 'test_session=live-authority' }
+    expect((await app.inject({ method: 'GET', url: '/api/entry/KAIMAHI', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SUPERVISOR', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SPECIFICATION_EDITOR', headers })).statusCode).toBe(200)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: ['SUPERVISOR', 'SPECIFICATION_EDITOR'] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/KAIMAHI', headers })).statusCode).toBe(403)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: ['SPECIFICATION_EDITOR'] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SUPERVISOR', headers })).statusCode).toBe(403)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: [] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SPECIFICATION_EDITOR', headers })).statusCode).toBe(403)
+    repository.identities.delete('cognito:kaimahi')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, status: 'inactive' })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    await app.close()
   })
 
   it('persists Kaimahi workflow commands behind the existing session and CSRF boundaries', async () => {

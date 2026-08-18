@@ -31,8 +31,6 @@ export interface AppConfiguration {
   allowedOrigins: string[]
   cookieName: string
   cookieSigningSecret: string
-  sessionTtlHours: number
-  sessionIdleTimeoutMinutes: number
   cognito?: CognitoConfiguration
   elevenlabs?: ElevenLabsConfiguration
   elevenlabsWebhook?: ElevenLabsWebhookConfiguration
@@ -49,8 +47,6 @@ const runtimeSchema = z.object({
   CORS_ALLOWED_ORIGINS: z.string().optional(),
   SESSION_COOKIE_NAME: z.string().min(1).default('te_kaupapa_session'),
   SESSION_COOKIE_SECRET: z.string().min(32),
-  SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(12),
-  SESSION_IDLE_TIMEOUT_MINUTES: z.coerce.number().int().min(1).max(720).default(60),
   COGNITO_CLIENT_ID: z.string().min(1).optional(),
   COGNITO_CLIENT_SECRET: z.string().min(1).optional(),
   COGNITO_ISSUER: z.string().url().optional(),
@@ -108,8 +104,6 @@ export function loadConfiguration(env = process.env): AppConfiguration {
     allowedOrigins: [...allowedOrigins],
     cookieName: parsed.SESSION_COOKIE_NAME,
     cookieSigningSecret: parsed.SESSION_COOKIE_SECRET,
-    sessionTtlHours: parsed.SESSION_TTL_HOURS,
-    sessionIdleTimeoutMinutes: parsed.SESSION_IDLE_TIMEOUT_MINUTES,
     cognito: hasCognito
       ? {
           clientId: parsed.COGNITO_CLIENT_ID!,

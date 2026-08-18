@@ -13,10 +13,10 @@ import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, po
 const now = new Date('2026-08-12T00:00:00.000Z')
 const secret = 'test-webhook-secret-with-sufficient-length'
 const config: AppConfiguration = {
-  nodeEnv: 'test', port: 3011, host: '127.0.0.1', databaseUrl: 'postgresql://localhost/te_kaupapa_test', appOrigin: 'http://api.test', frontendOrigin: 'http://web.test', allowedOrigins: ['http://api.test', 'http://web.test'], cookieName: 'test', cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough', sessionTtlHours: 12, sessionIdleTimeoutMinutes: 60,
+  nodeEnv: 'test', port: 3011, host: '127.0.0.1', databaseUrl: 'postgresql://localhost/te_kaupapa_test', appOrigin: 'http://api.test', frontendOrigin: 'http://web.test', allowedOrigins: ['http://api.test', 'http://web.test'], cookieName: 'test', cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough',
   elevenlabsWebhook: { signingSecret: secret, maximumAgeSeconds: 300, maximumBodyBytes: 131072 },
 }
-const auth: AuthRepository = { findUserByExternalIdentity: async () => null, createSession: async () => {}, findUserBySessionHash: async () => null, touchSession: async () => {}, invalidateSession: async () => {}, isSupervisorOf: async () => false }
+const auth: AuthRepository = { findUserByExternalIdentity: async () => null, createSession: async () => {}, findUserBySessionHash: async () => null, touchSession: async () => {}, invalidateSession: async () => {}, invalidateSessionsForUser: async () => {}, isSupervisorOf: async () => false }
 
 function body(extra: Record<string, unknown> = {}) {
   return JSON.stringify({

@@ -1,0 +1,2 @@
+CREATE TYPE "public"."application_session_mode" AS ENUM('standard', 'trusted_device');--> statement-breakpoint
+ALTER TABLE "application_session" ADD COLUMN "mode" "application_session_mode" DEFAULT 'standard' NOT NULL;
