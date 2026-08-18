@@ -4,6 +4,7 @@ import { WORKFLOW_POU_IDS, type WorkflowPouId } from '../../shared/workflow.js'
 import { contentHash } from '../safety-assessments/domain.js'
 
 export const POU_EVIDENCE_SCOPES = ['current_conversation', 'application_state', 'longitudinal'] as const
+export const POU_EXPLORATION_MODES = ['core', 'conditional', 'evidence_to_notice'] as const
 export const POU_REVIEW_CRITERION_STATUSES = ['evidenced', 'partially_evidenced', 'not_explored', 'insufficient_information', 'not_applicable'] as const
 
 const code = z.string().regex(/^[A-Za-z][A-Za-z0-9_.-]{1,119}$/)
@@ -35,6 +36,17 @@ export const pouEvidenceCriterionSchema = z.object({
   applicabilityRule: z.string().min(1).max(800).nullable(),
 }).strict()
 
+export const pouExplorationAreaSchema = z.object({
+  code,
+  label: z.string().min(1).max(240),
+  intent: guidance,
+  explorationMode: z.enum(POU_EXPLORATION_MODES).optional(),
+  conditionalTrigger: z.string().min(1).max(800).nullable().optional(),
+  followUpGuidance: z.array(guidance).max(8),
+  evidenceScope: z.enum(POU_EVIDENCE_SCOPES),
+  sourceItemReferences: z.array(sourceItemReference).min(1).max(20),
+}).strict()
+
 export const organisationPouSpecificationSchema = z.object({
   schemaVersion: z.literal(1),
   specificationCode: code,
@@ -49,7 +61,11 @@ export const organisationPouSpecificationSchema = z.object({
   approvedForPilotBy: z.string().uuid().nullable(),
   approvedForPilotAt: z.string().datetime().nullable(),
   purpose: z.string().min(1).max(2_000),
-  conversationExplorationAreas: z.array(z.object({ code, label: z.string().min(1).max(240), intent: guidance, followUpGuidance: z.array(guidance).max(8), evidenceScope: z.enum(POU_EVIDENCE_SCOPES), sourceItemReferences: z.array(sourceItemReference).min(1).max(20) }).strict()).min(1).max(20),
+  /** Absent on historic v0.1 records; required before a new draft may activate. */
+  openingReflectionQuestion: z.string().trim().min(1).max(400).optional(),
+  /** An opening is deliberately authored by the SME; the current source has none. */
+  openingReflectionQuestionProvenance: z.literal('sme_authored').optional(),
+  conversationExplorationAreas: z.array(pouExplorationAreaSchema).min(1).max(20),
   evidenceCriteria: z.array(pouEvidenceCriterionSchema).min(1).max(30),
   reviewSynthesisGuidance: z.array(guidance).min(1).max(12),
   /** Empty only where the source has no bounded, approved runtime safety rule. */
@@ -63,6 +79,12 @@ export const organisationPouSpecificationSchema = z.object({
   if (new Set(criterionCodes).size !== criterionCodes.length) context.addIssue({ code: 'custom', message: 'Criterion codes must be unique.' })
   const explorationCodes = specification.conversationExplorationAreas.map((area) => area.code)
   if (new Set(explorationCodes).size !== explorationCodes.length) context.addIssue({ code: 'custom', message: 'Exploration area codes must be unique.' })
+  if (specification.openingReflectionQuestion && specification.openingReflectionQuestionProvenance !== 'sme_authored') {
+    context.addIssue({ code: 'custom', path: ['openingReflectionQuestionProvenance'], message: 'An opening reflection question must record SME-authored provenance.' })
+  }
+  if (!specification.openingReflectionQuestion && specification.openingReflectionQuestionProvenance) {
+    context.addIssue({ code: 'custom', path: ['openingReflectionQuestionProvenance'], message: 'Opening-question provenance requires an opening reflection question.' })
+  }
 })
 
 export type OrganisationPouSpecificationVersion = z.infer<typeof organisationPouSpecificationSchema>
@@ -77,6 +99,8 @@ export interface ConversationGuidanceProjection {
   /** Present on Phase 5D projections; omitted only by the immutable historic Whakapapa v0.1 projection. */
   pouId?: WorkflowPouId
   purpose: string
+  /** Empty only for historic approved versions that predate authorable openings. */
+  openingQuestion?: string
   explorationAreas: Array<{ code: string; label: string; intent: string; followUpGuidance: string[] }>
   constraints: string[]
 }
@@ -96,10 +120,22 @@ export interface PouReviewProjection {
 
 export interface ConversationRuntimeDynamicVariables {
   pou_name: string
+  pou_opening: string
   pou_guidance: string
 }
 
 const MAX_RUNTIME_GUIDANCE_CHARACTERS = 4_000
+
+/**
+ * Stable provider greeting structure. The Pou opening is only appended when
+ * an approved SME-authored version supplies one; historic v0.1 remains a
+ * useful generic orientation rather than acquiring invented policy text.
+ */
+export function conversationFirstMessage(pouName: string, pouOpening: string): string {
+  const orientation = `Kia ora. We’re reflecting on ${pouName}.`
+  const opening = pouOpening.trim()
+  return opening ? `${orientation} ${opening}` : orientation
+}
 
 /** A bounded, non-public error class for an invalid pinned guidance projection. */
 export class ConversationGuidanceProjectionError extends Error {
@@ -139,12 +175,24 @@ export function conversationRuntimeDynamicVariables(projection: ConversationGuid
   if (pou_guidance.length > MAX_RUNTIME_GUIDANCE_CHARACTERS) {
     throw new ConversationGuidanceProjectionError('The approved runtime Pou guidance exceeds its bounded contract.')
   }
-  return { pou_name: POU_DISPLAY_NAMES[expectedPouId], pou_guidance }
+  return { pou_name: POU_DISPLAY_NAMES[expectedPouId], pou_opening: projection.openingQuestion ?? '', pou_guidance }
 }
 
 export function assertApprovedOrganisationPouSpecification(specification: OrganisationPouSpecificationVersion): OrganisationPouSpecificationVersion {
   const parsed = organisationPouSpecificationSchema.parse(specification)
   if (parsed.approvalStatus !== 'approved_for_pilot' || !parsed.approvedForPilotBy || !parsed.approvedForPilotAt) throw new Error('Only an approved organisation Pou specification may drive runtime projections.')
+  // Existing immutable v0.1 records predate authorable openings. Every later
+  // version must carry an explicit SME-authored opening before *any* shared
+  // provisioning path can materialise it as active runtime policy.
+  if (parsed.specificationVersion !== '0.1' && (!parsed.openingReflectionQuestion || parsed.openingReflectionQuestionProvenance !== 'sme_authored')) {
+    throw new Error('An approved organisation Pou specification requires an SME-authored opening reflection question before activation.')
+  }
+  if (!parsed.conversationExplorationAreas.some((area) => area.evidenceScope === 'current_conversation') || !parsed.evidenceCriteria.some((criterion) => criterion.evidenceScope === 'current_conversation')) {
+    throw new Error('An approved organisation Pou specification requires current-conversation guidance and review criteria.')
+  }
+  if (parsed.conversationExplorationAreas.some((area) => area.explorationMode === 'conditional' && (!area.conditionalTrigger || area.followUpGuidance.length === 0))) {
+    throw new Error('Conditional exploration requires an explicit trigger and follow-up guidance before approval.')
+  }
   return parsed
 }
 
@@ -157,6 +205,7 @@ export function conversationGuidanceProjection(specification: OrganisationPouSpe
     specificationHash: contentHash(parsed),
     pouId: parsed.pouId,
     purpose: parsed.purpose,
+    ...(parsed.openingReflectionQuestion ? { openingQuestion: parsed.openingReflectionQuestion } : {}),
     explorationAreas: parsed.conversationExplorationAreas.filter((area) => area.evidenceScope === 'current_conversation').map(({ code, label, intent, followUpGuidance }) => ({ code, label, intent, followUpGuidance })),
     constraints: [
       'Use the guidance to explore, not to make canonical decisions.',

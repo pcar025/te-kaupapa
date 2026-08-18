@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, conversationRuntimeDynamicVariables, isExactHistoricWhakapapaV01ProjectionPair, pouReviewProjection } from './domain.js'
+import { WHAKAPAPA_ORGANISATION_POU_V01_DRAFT, approvedWhakapapaOrganisationPouV01, conversationFirstMessage, conversationGuidanceProjection, conversationRuntimeDynamicVariables, isExactHistoricWhakapapaV01ProjectionPair, organisationPouSpecificationSchema, pouReviewProjection } from './domain.js'
 
 const approved = approvedWhakapapaOrganisationPouV01({
   approvedForPilotBy: '11111111-1111-4111-8111-111111111111',
@@ -8,12 +8,18 @@ const approved = approvedWhakapapaOrganisationPouV01({
 })
 
 describe('Whakapapa organisation Pou specification projections', () => {
+  it('keeps the provider greeting grammatical when historic v0.1 has no SME opening', () => {
+    expect(conversationFirstMessage('Whakapapa', '')).toBe('Kia ora. We’re reflecting on Whakapapa.')
+    expect(conversationFirstMessage('Manaakitanga & Duty of Care', 'What would be most helpful to begin with?')).toBe('Kia ora. We’re reflecting on Manaakitanga & Duty of Care. What would be most helpful to begin with?')
+  })
+
   it('deterministically produces bounded runtime guidance from current-conversation concepts only', () => {
     const projection = conversationGuidanceProjection(approved, { projectionCode: 'whakapapa-guidance', projectionVersion: '1' })
     const variables = conversationRuntimeDynamicVariables(projection)
 
     expect(conversationRuntimeDynamicVariables(projection)).toEqual(variables)
     expect(variables).toMatchObject({ pou_name: 'Whakapapa' })
+    expect(variables.pou_opening).toBe('')
     expect(variables.pou_guidance).toContain('PURPOSE')
     expect(variables.pou_guidance).toContain('AREAS TO EXPLORE')
     expect(variables.pou_guidance).toContain('FOLLOW-UP GUIDANCE')
@@ -21,6 +27,28 @@ describe('Whakapapa organisation Pou specification projections', () => {
     expect(variables.pou_guidance).not.toContain('documentation appropriately')
     expect(variables.pou_guidance).not.toContain('over time')
     expect(variables.pou_guidance.length).toBeLessThanOrEqual(4_000)
+  })
+
+  it('keeps an SME-authored opening distinct from source-derived v0.1 content', () => {
+    const withOpening = {
+      ...approved,
+      specificationVersion: '0.2',
+      openingReflectionQuestion: 'What would be most helpful to begin with in this reflection?',
+      openingReflectionQuestionProvenance: 'sme_authored' as const,
+    }
+    const projection = conversationGuidanceProjection(withOpening, { projectionCode: 'whakapapa-guidance', projectionVersion: '0.2' })
+    expect(conversationRuntimeDynamicVariables(projection).pou_opening).toBe(withOpening.openingReflectionQuestion)
+    expect(() => conversationGuidanceProjection({ ...withOpening, openingReflectionQuestionProvenance: undefined }, { projectionCode: 'invalid', projectionVersion: '0.2' })).toThrow('SME-authored provenance')
+  })
+
+  it('rejects whitespace-only SME openings before they can become active guidance', () => {
+    expect(() => organisationPouSpecificationSchema.parse({
+      ...approved,
+      specificationVersion: '0.2',
+      openingReflectionQuestion: '   ',
+      openingReflectionQuestionProvenance: 'sme_authored',
+    })).toThrow()
+    expect(conversationFirstMessage('Whakapapa', '   ')).toBe('Kia ora. We’re reflecting on Whakapapa.')
   })
 
   it('keeps application-state and longitudinal criteria out of the transcript review projection', () => {
@@ -50,7 +78,13 @@ describe('Whakapapa organisation Pou specification projections', () => {
     expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: { ...historicGuidance, forgedExtra: 'x' } as typeof historicGuidance, review: historicReview })).toBe(false)
     expect(isExactHistoricWhakapapaV01ProjectionPair({ pouId: 'whakapapa', specification: approved, guidance: historicGuidance, review: { ...historicReview, forgedExtra: 'x' } as typeof historicReview })).toBe(false)
 
-    const differentWhakapapaVersion = { ...approved, specificationCode: 'TE_WAHAROA_WHAKAPAPA_VARIANT', specificationVersion: '0.2' }
+    const differentWhakapapaVersion = {
+      ...approved,
+      specificationCode: 'TE_WAHAROA_WHAKAPAPA_VARIANT',
+      specificationVersion: '0.2',
+      openingReflectionQuestion: 'What would be most helpful to begin with in this reflection?',
+      openingReflectionQuestionProvenance: 'sme_authored' as const,
+    }
     const differentGuidance = conversationGuidanceProjection(differentWhakapapaVersion, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-conversation-guidance', projectionVersion: '0.1' })
     const differentReview = pouReviewProjection(differentWhakapapaVersion, { projectionCode: 'TE_WAHAROA_WHAKAPAPA-review', projectionVersion: '0.1' })
     const { pouId: _differentGuidancePouId, ...historicDifferentGuidance } = differentGuidance

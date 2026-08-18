@@ -111,7 +111,7 @@ describe('ConversationService', () => {
     expect(started.conversation.status).toBe('authorized')
     expect(started.conversation.conversationSpecificationCode).toBe('whakapapa-reflection')
     expect(started.conversationToken).toBe('temporary-token')
-    expect(started.dynamicVariables).toEqual({ pou_name: 'Whakapapa', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
+    expect(started.dynamicVariables).toEqual({ pou_name: 'Whakapapa', pou_opening: '', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
     await expect(application.acknowledgeClientConnected(actor, started.conversation.id, 'provider-id')).resolves.toMatchObject({ status: 'active' })
   })
 
@@ -169,7 +169,7 @@ describe('ConversationService', () => {
     )
     const started = await application.start(actor, workflow.id, 'manaakitanga', '65c619a0-9f17-4e01-8b7e-64de443d7bca')
     expect(started.conversation).toMatchObject({ pouId: 'manaakitanga', conversationSpecificationCode: 'te-waharoa-pou-reflection', conversationSpecificationVersion: 1 })
-    expect(started.dynamicVariables).toEqual({ pou_name: 'Manaakitanga & Duty of Care', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
+    expect(started.dynamicVariables).toEqual({ pou_name: 'Manaakitanga & Duty of Care', pou_opening: '', pou_guidance: expect.stringContaining('AREAS TO EXPLORE') })
     expect(manaSafety.rules).toEqual([])
   })
 

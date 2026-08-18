@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createApplication } from './app.js'
 import { sha256 } from './auth/crypto.js'
@@ -395,7 +395,7 @@ class FakeConversationService implements ConversationApplicationService {
       conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
       authorizedAt: new Date('2026-08-11T00:00:00.000Z'), connectedAt: null, endedAt: null, terminationReason: null, createdAt: new Date('2026-08-11T00:00:00.000Z'), updatedAt: new Date('2026-08-11T00:00:00.000Z'),
     }
-    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } }
+    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } }
   }
 
   async acknowledgeClientConnected(_actor: AuthenticatedUser, conversationId: string, providerConversationId: string) {
@@ -443,6 +443,24 @@ function cookieFrom(response: { headers: { ['set-cookie']?: string | string[] | 
 }
 
 describe('authenticated application shell API', () => {
+  it('keeps Pou specification authoring behind the independent editor role', async () => {
+    const repository = new MemoryRepository()
+    const editor: AuthenticatedUser = { ...activeKaimahi, id: '719ba3e1-dbd4-4c89-a2a5-31a4cb2e3b01', roles: ['SPECIFICATION_EDITOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:editor', editor)
+    await Promise.all([
+      repository.createSession({ id: '109ac11d-d9eb-41f6-b811-630f37d2d3a1', userId: activeKaimahi.id, tokenHash: sha256('kaimahi-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'bcd7ff3a-7e88-4826-a663-b4136e9d0a37', userId: editor.id, tokenHash: sha256('editor-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    const authoring = { list: vi.fn(async () => [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: {}, draft: null }]) }
+    const app = await createApplication({ config: config(), repository, pouSpecificationAuthoringService: authoring as any, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: '/api/pou-specifications' })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/pou-specifications', headers: { cookie: 'test_session=kaimahi-authoring' } })).statusCode).toBe(403)
+    const permitted = await app.inject({ method: 'GET', url: '/api/pou-specifications', headers: { cookie: 'test_session=editor-authoring' } })
+    expect(permitted.statusCode).toBe(200)
+    expect(permitted.json()).toEqual({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: {}, draft: null }] })
+    await app.close()
+  })
   it('forwards only review content when saving a Whakapapa draft and reloads its edited revision', async () => {
     const repository = new MemoryRepository()
     repository.identities.set('cognito:kaimahi', activeKaimahi)
@@ -744,7 +762,7 @@ describe('authenticated application shell API', () => {
     expect(started.headers['cache-control']).toBe('no-store')
     expect(started.json()).toMatchObject({
       conversation: { pouId: 'whakapapa', status: 'authorized', providerConversationId: 'provider-conversation-id' },
-      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: 'Synthetic approved guidance' } },
+      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } },
     })
     expect(JSON.stringify(started.json())).not.toContain('server-selected-agent')
     expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'whakapapa', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])

@@ -73,7 +73,7 @@ const eventSchema = z.object({
   }).passthrough(),
 }).passthrough()
 
-function dynamicVariableProvenance(value: unknown): { pou_name: string; pou_guidance: string } | null {
+function dynamicVariableProvenance(value: unknown): { pou_name: string; pou_opening: string; pou_guidance: string } | null {
   if (value === undefined) return null
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation provenance is malformed.')
@@ -83,11 +83,15 @@ function dynamicVariableProvenance(value: unknown): { pou_name: string; pou_guid
     throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation dynamic variables are unavailable.')
   }
   const pouName = (dynamicVariables as { pou_name?: unknown }).pou_name
+  // Historic v0.1 conversations predate the authorable opening variable.
+  // Treat absence as the exact historic empty value, never as a generated
+  // opening; all new sessions include the explicit variable.
+  const pouOpening = (dynamicVariables as { pou_opening?: unknown }).pou_opening ?? ''
   const pouGuidance = (dynamicVariables as { pou_guidance?: unknown }).pou_guidance
-  if (typeof pouName !== 'string' || pouName.length === 0 || pouName.length > 240 || typeof pouGuidance !== 'string' || pouGuidance.length === 0 || pouGuidance.length > 4_000) {
+  if (typeof pouName !== 'string' || pouName.length === 0 || pouName.length > 240 || typeof pouOpening !== 'string' || pouOpening.length > 400 || typeof pouGuidance !== 'string' || pouGuidance.length === 0 || pouGuidance.length > 4_000) {
     throw new ElevenLabsGuidanceProvenanceMismatchError('Conversation initiation dynamic variables are invalid.')
   }
-  return { pou_name: pouName, pou_guidance: pouGuidance }
+  return { pou_name: pouName, pou_opening: pouOpening, pou_guidance: pouGuidance }
 }
 
 export function parseElevenLabsPostCallTranscript(rawBody: Buffer) {
@@ -99,7 +103,7 @@ export function parseElevenLabsPostCallTranscript(rawBody: Buffer) {
   if (!deliveryId) throw new ElevenLabsWebhookEnvelopeError('Provider delivery identity is missing.')
   // The post-call contract has surfaced this value under both the event and
   // data envelope across provider interfaces. It remains transient: retain
-  // only the two expected values long enough to verify their hash.
+  // only the three expected values long enough to verify their hash.
   const initiation = event.data.conversation_initiation_client_data ?? event.conversation_initiation_client_data
   return {
     deliveryId,

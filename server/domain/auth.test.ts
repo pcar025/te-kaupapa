@@ -23,6 +23,13 @@ describe('role authorization', () => {
     expect(hasRole(dualRoleUser, 'SUPERVISOR')).toBe(true)
   })
 
+  it('keeps specification editing as an independent additive capability', () => {
+    const editor: AuthenticatedUser = { ...dualRoleUser, roles: ['SPECIFICATION_EDITOR'] }
+    expect(() => requireRole(editor, 'SPECIFICATION_EDITOR')).not.toThrow()
+    expect(() => requireRole(editor, 'KAIMAHI')).toThrow(AuthorizationError)
+    expect(() => requireRole(dualRoleUser, 'SPECIFICATION_EDITOR')).toThrow(AuthorizationError)
+  })
+
   it('denies role access for an inactive user even when an assignment remains', () => {
     const inactive = { ...dualRoleUser, status: 'inactive' as const }
     expect(() => requireRole(inactive, 'KAIMAHI')).toThrow(AuthorizationError)

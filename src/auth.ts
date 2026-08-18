@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-export type ApplicationRole = 'KAIMAHI' | 'SUPERVISOR'
+export type ApplicationRole = 'KAIMAHI' | 'SUPERVISOR' | 'SPECIFICATION_EDITOR'
 
 export interface AuthProfile {
   id: string

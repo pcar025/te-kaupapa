@@ -43,6 +43,13 @@ describe('Organisation Pou specification operator provisioning', () => {
       await expect(new OrganisationPouSpecificationProvisioningService(connection.db, () => now).provisionAndActivate({
         organisationId,
         operatorUserId: operatorId,
+        specification: { ...organisationSpecification, specificationVersion: '0.2' },
+        guidanceProjection: { projectionCode: 'incomplete-guidance', projectionVersion: '0.2' },
+        reviewProjection: { projectionCode: 'incomplete-review', projectionVersion: '0.2' },
+      })).rejects.toThrow('SME-authored opening reflection question')
+      await expect(new OrganisationPouSpecificationProvisioningService(connection.db, () => now).provisionAndActivate({
+        organisationId,
+        operatorUserId: operatorId,
         specification: { ...organisationSpecification, sourceDocumentHash: 'f'.repeat(64) },
         guidanceProjection: { projectionCode: 'mismatched-guidance', projectionVersion: '1' },
         reviewProjection: { projectionCode: 'mismatched-review', projectionVersion: '1' },

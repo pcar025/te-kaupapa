@@ -12,6 +12,7 @@ import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import { OpenAIConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { PostgresOrganisationPouSpecificationRepository } from './pou-specifications/repository.js'
+import { PostgresOrganisationPouSpecificationAuthoringService } from './pou-specifications/authoring.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
@@ -42,6 +43,7 @@ const app = await createApplication({
   conversationReviewDraftProvider: config.openaiAssessment ? new OpenAIConversationReviewDraftProvider(config.openaiAssessment) : undefined,
   reviewDraftRepository,
   transcriptRepository,
+  pouSpecificationAuthoringService: new PostgresOrganisationPouSpecificationAuthoringService(database.db),
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,
 })
 

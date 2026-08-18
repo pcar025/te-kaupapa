@@ -7,6 +7,7 @@ const ENTRY_POU = TE_WAHAROA_POU.map((pou) => pou.reo)
 export default function EntryScreen({
   onKaimahi,
   onSupervisor,
+  onSpecificationEditor,
   profile,
   authMessage,
   onSignIn,
@@ -14,6 +15,7 @@ export default function EntryScreen({
 }: {
   onKaimahi: () => void
   onSupervisor: () => void
+  onSpecificationEditor?: () => void
   profile?: AuthProfile
   authMessage?: string
   onSignIn?: () => void
@@ -21,6 +23,7 @@ export default function EntryScreen({
 }) {
   const canUseKaimahi = profile?.roles.includes('KAIMAHI') ?? false
   const canUseSupervisor = profile?.roles.includes('SUPERVISOR') ?? false
+  const canUseSpecificationEditor = profile?.roles.includes('SPECIFICATION_EDITOR') ?? false
   return (
     <div
       className="min-h-screen flex flex-col"
@@ -170,7 +173,16 @@ export default function EntryScreen({
                     Mātāmua — Supervisor View
                   </button>
                 )}
-                {!canUseKaimahi && !canUseSupervisor && (
+                {canUseSpecificationEditor && (
+                  <button
+                    onClick={onSpecificationEditor}
+                    className="w-full py-3 text-sm transition-opacity hover:opacity-80"
+                    style={{ backgroundColor: 'transparent', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border-strong)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}
+                  >
+                    Pou specification workshop
+                  </button>
+                )}
+                {!canUseKaimahi && !canUseSupervisor && !canUseSpecificationEditor && (
                   <p role="status" className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
                     Your account does not have a Te Kaupapa role assigned.
                   </p>

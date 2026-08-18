@@ -1,4 +1,5 @@
-export const APPLICATION_ROLES = ['KAIMAHI', 'SUPERVISOR'] as const
+/** Independent capabilities; roles are additive and never imply one another. */
+export const APPLICATION_ROLES = ['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR'] as const
 
 export type ApplicationRole = (typeof APPLICATION_ROLES)[number]
 export type UserStatus = 'active' | 'inactive'

@@ -40,7 +40,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
 
 export async function startPouConversation(workflowId: string, pouId: WorkflowPouId, idempotencyKey: string): Promise<{
   conversation: ConversationMetadata
-  authorization: { transport: 'webrtc'; conversationToken: string; dynamicVariables: { pou_name: string; pou_guidance: string } }
+  authorization: { transport: 'webrtc'; conversationToken: string; dynamicVariables: { pou_name: string; pou_opening: string; pou_guidance: string } }
 }> {
   return requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/conversations`, {
     method: 'POST',

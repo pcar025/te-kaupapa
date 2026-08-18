@@ -15,7 +15,7 @@ const argumentsSchema = z.object({
   displayName: z.string().min(1),
   organisationSlug: z.string().regex(/^[a-z0-9-]+$/),
   organisationName: z.string().min(1),
-  roles: z.array(z.enum(['KAIMAHI', 'SUPERVISOR'])).min(1),
+  roles: z.array(z.enum(['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR'])).min(1),
   supervisesUserIds: z.array(z.string().uuid()),
   dryRun: z.boolean(),
 })

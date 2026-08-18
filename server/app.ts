@@ -54,6 +54,15 @@ import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-dra
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
+  IncompletePouSpecificationDraftError,
+  PostgresOrganisationPouSpecificationAuthoringService,
+  PouSpecificationAuthoringError,
+  PouSpecificationDraftNotFoundError,
+  SafetyPolicyProposalPendingError,
+  StalePouSpecificationDraftError,
+  pouSpecificationDraftContentSchema,
+} from './pou-specifications/authoring.js'
+import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
   WORKFLOW_ACTION_TYPES,
@@ -96,6 +105,7 @@ export interface AppDependencies {
   reviewDraftRepository?: PostgresConversationReviewDraftRepository
   transcriptRepository?: PostgresTranscriptRepository
   elevenLabsWebhookVerifier?: ElevenLabsWebhookVerifier
+  pouSpecificationAuthoringService?: PostgresOrganisationPouSpecificationAuthoringService
   oidcProvider?: OidcProvider
   now?: () => Date
 }
@@ -107,7 +117,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, transcriptRepository, elevenLabsWebhookVerifier, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -261,7 +271,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   app.get('/api/entry/:role', async (request, reply) => {
     const user = await authenticate(request)
     if (!user) return reply.code(401).send({ error: 'unauthenticated' })
-    const parsed = z.object({ role: z.enum(['KAIMAHI', 'SUPERVISOR']) }).safeParse(request.params)
+    const parsed = z.object({ role: z.enum(['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR']) }).safeParse(request.params)
     if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
     try {
       requireRole(user, parsed.data.role as ApplicationRole)
@@ -306,6 +316,81 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       throw error
     }
   }
+
+  async function requireSpecificationEditor(request: FastifyRequest, reply: FastifyReply): Promise<AuthenticatedUser | null> {
+    const user = await authenticate(request)
+    if (!user) {
+      reply.code(401).send({ error: 'unauthenticated' })
+      return null
+    }
+    try {
+      requireRole(user, 'SPECIFICATION_EDITOR')
+      return user
+    } catch (error) {
+      if (error instanceof AuthorizationError) {
+        reply.code(403).send({ error: 'forbidden' })
+        return null
+      }
+      throw error
+    }
+  }
+
+  function authoringFailure(error: unknown, reply: FastifyReply) {
+    if (error instanceof StalePouSpecificationDraftError) return reply.code(409).send({ error: 'stale_draft', currentRevision: error.currentRevision })
+    if (error instanceof IncompletePouSpecificationDraftError) return reply.code(409).send({ error: 'opening_question_required' })
+    if (error instanceof SafetyPolicyProposalPendingError) return reply.code(409).send({ error: 'formal_safety_review_required' })
+    if (error instanceof PouSpecificationDraftNotFoundError) return reply.code(404).send({ error: 'not_found' })
+    if (error instanceof PouSpecificationAuthoringError || error instanceof z.ZodError) return reply.code(400).send({ error: 'invalid_request' })
+    return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+  }
+
+  app.get('/api/pou-specifications', async (request, reply) => {
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!pouSpecificationAuthoringService) return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+    try { return { specifications: await pouSpecificationAuthoringService.list(user) } } catch (error) { return authoringFailure(error, reply) }
+  })
+
+  app.post('/api/pou-specifications/:pouId/drafts', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!pouSpecificationAuthoringService) return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+    const parsed = z.object({ pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try { return reply.code(201).send({ draft: await pouSpecificationAuthoringService.createDraft(user, parsed.data.pouId) }) } catch (error) { return authoringFailure(error, reply) }
+  })
+
+  app.get('/api/pou-specification-drafts/:draftId', async (request, reply) => {
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!pouSpecificationAuthoringService) return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try { return { draft: await pouSpecificationAuthoringService.getDraft(user, parsed.data.draftId) } } catch (error) { return authoringFailure(error, reply) }
+  })
+
+  app.put('/api/pou-specification-drafts/:draftId', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!pouSpecificationAuthoringService) return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    const body = z.object({ expectedRevision: z.number().int().positive(), content: pouSpecificationDraftContentSchema }).safeParse(request.body)
+    if (!parsed.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try { return { draft: await pouSpecificationAuthoringService.saveDraft(user, parsed.data.draftId, body.data.expectedRevision, body.data.content) } } catch (error) { return authoringFailure(error, reply) }
+  })
+
+  app.post('/api/pou-specification-drafts/:draftId/approve-and-activate', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!pouSpecificationAuthoringService) return reply.code(503).send({ error: 'specification_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    const body = z.object({ expectedRevision: z.number().int().positive() }).safeParse(request.body)
+    if (!parsed.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try { return { result: await pouSpecificationAuthoringService.approveAndActivate(user, parsed.data.draftId, body.data.expectedRevision) } } catch (error) { return authoringFailure(error, reply) }
+  })
 
   function workflowFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
     if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })

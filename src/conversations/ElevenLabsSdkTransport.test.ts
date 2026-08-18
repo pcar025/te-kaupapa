@@ -16,12 +16,12 @@ describe('installed ElevenLabs private WebRTC transport', () => {
     const event = constructOverrides({
       connectionType: 'webrtc',
       conversationToken: 'synthetic-test-token',
-      dynamicVariables: { pou_name: 'Whakapapa', pou_guidance: guidance },
+      dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: guidance },
     }) as { type: string; dynamic_variables: Record<string, string> }
     const webRtcSource = await readFile(path.join(sdkRoot, 'WebRTCConnection.js'), 'utf8')
 
     expect(event.type).toBe('conversation_initiation_client_data')
-    expect(Object.keys(event.dynamic_variables).sort()).toEqual(['pou_guidance', 'pou_name'])
+    expect(Object.keys(event.dynamic_variables).sort()).toEqual(['pou_guidance', 'pou_name', 'pou_opening'])
     expect(event.dynamic_variables.pou_name).toBe('Whakapapa')
     expect(event.dynamic_variables.pou_guidance).toHaveLength(guidance.length)
     expect(sha256(event.dynamic_variables.pou_guidance)).toBe(sha256(guidance))
