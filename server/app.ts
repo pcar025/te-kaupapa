@@ -52,6 +52,10 @@ import { PostgresTranscriptRepository } from './transcripts/repository.js'
 import type { ConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-drafts/domain.js'
+import { PostgresWorkflowSynthesisRepository, WorkflowSynthesisInProgressError } from './workflow-synthesis/repository.js'
+import type { WorkflowSynthesisProvider } from './workflow-synthesis/provider.js'
+import { StaleWorkflowSynthesisError, WorkflowSynthesisUnavailableError } from './workflow-synthesis/domain.js'
+import { createFinalRecordPdf, finalRecordPlainText } from './workflow-synthesis/final-record.js'
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
@@ -105,6 +109,8 @@ export interface AppDependencies {
   conversationAssessmentProvider?: ConversationAssessmentProvider
   conversationReviewDraftProvider?: ConversationReviewDraftProvider
   reviewDraftRepository?: PostgresConversationReviewDraftRepository
+  workflowSynthesisRepository?: PostgresWorkflowSynthesisRepository
+  workflowSynthesisProvider?: WorkflowSynthesisProvider
   transcriptRepository?: PostgresTranscriptRepository
   elevenLabsWebhookVerifier?: ElevenLabsWebhookVerifier
   pouSpecificationAuthoringService?: PostgresOrganisationPouSpecificationAuthoringService
@@ -119,7 +125,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -420,6 +426,8 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof StaleSafetyObservationError) return reply.code(409).send({ error: 'stale_safety_observation', currentRevision: error.currentRevision })
     if (error instanceof SafetyObservationIdentifierReuseError) return reply.code(409).send({ error: 'safety_observation_identifier_reused' })
     if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
+    if (error instanceof StaleWorkflowSynthesisError) return reply.code(409).send({ error: 'stale_synthesis', currentRevision: error.currentRevision })
+    if (error instanceof WorkflowSynthesisUnavailableError) return reply.code(409).send({ error: 'synthesis_unavailable' })
     if (error instanceof WorkflowValidationError) return reply.code(400).send({ error: 'invalid_request' })
     if (error instanceof WorkflowNotFoundError) return reply.code(404).send({ error: 'not_found' })
     request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Workflow persistence unavailable')
@@ -559,6 +567,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     setupCommandSchema,
     pouReviewCommandSchema,
     downstreamCommandSchema.extend({ type: z.literal('pou-summary-confirmed') }),
+    downstreamCommandSchema.extend({ type: z.literal('workflow-synthesis-confirmed'), synthesisRevisionId: z.string().uuid() }),
     downstreamCommandSchema.extend({ type: z.literal('action-plan-confirmed'), actions: z.array(actionInputSchema).max(100) }),
     downstreamCommandSchema.extend({ type: z.literal('referral-plan-confirmed'), referrals: z.array(referralInputSchema).max(100) }),
     downstreamCommandSchema.extend({ type: z.literal('structured-review-confirmed') }),
@@ -650,6 +659,93 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     } catch (error) {
       return workflowFailure(error, request, reply)
     }
+  })
+
+  app.get('/api/workflows/:workflowSessionId/synthesis', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowSynthesisRepository) return reply.code(503).send({ error: 'synthesis_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      reply.header('cache-control', 'no-store')
+      return { synthesis: await workflowSynthesisRepository.findForKaimahi(user, params.data.workflowSessionId) }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.post('/api/workflows/:workflowSessionId/synthesis/generate', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository || !workflowSynthesisRepository || !workflowSynthesisProvider) return reply.code(503).send({ error: 'synthesis_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      const workflow = await workflowRepository.findById(user, params.data.workflowSessionId)
+      if (!workflow) return reply.code(404).send({ error: 'not_found' })
+      return { synthesis: await workflowSynthesisRepository.generate(user, workflow, workflowSynthesisProvider) }
+    } catch (error) {
+      if (error instanceof WorkflowSynthesisInProgressError) return reply.code(202).send({ synthesis: await workflowSynthesisRepository.findForKaimahi(user, params.data.workflowSessionId) })
+      if (error instanceof WorkflowSynthesisUnavailableError) return reply.code(409).send({ error: 'synthesis_unavailable' })
+      request.log.warn({ category: 'workflow_synthesis_generation_failed', error: error instanceof Error ? error.name : 'unknown' }, 'Workflow synthesis generation failed')
+      return reply.code(503).send({ error: 'synthesis_unavailable' })
+    }
+  })
+
+  app.put('/api/workflows/:workflowSessionId/synthesis', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowSynthesisRepository) return reply.code(503).send({ error: 'synthesis_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    const body = z.object({
+      synthesisId: z.string().uuid(), expectedRevision: z.number().int().positive(),
+      content: z.object({
+        overallSummary: z.string().trim().min(1).max(1_800), keyThemes: z.string().trim().min(1).max(1_200).nullable(), strengthsSummary: z.string().trim().min(1).max(1_200).nullable(), areasForAttentionSummary: z.string().trim().min(1).max(1_200).nullable(), informationStillToExploreSummary: z.string().trim().min(1).max(1_200).nullable(), confirmedSafetyConcernsSummary: z.string().trim().min(1).max(1_200),
+      }).strict(),
+    }).strict().safeParse(request.body)
+    if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try {
+      return { synthesis: await workflowSynthesisRepository.edit(user, params.data.workflowSessionId, body.data) }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/workflows/:workflowSessionId/final-record', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowSynthesisRepository) return reply.code(503).send({ error: 'final_record_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    reply.header('cache-control', 'no-store')
+    const record = await workflowSynthesisRepository.findFinalRecord(user, params.data.workflowSessionId)
+    return record ? { record } : reply.code(404).send({ error: 'not_found' })
+  })
+
+  app.get('/api/workflows/:workflowSessionId/final-record.txt', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowSynthesisRepository) return reply.code(503).send({ error: 'final_record_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    reply.header('cache-control', 'no-store')
+    const record = await workflowSynthesisRepository.findFinalRecord(user, params.data.workflowSessionId)
+    return record ? reply.type('text/plain; charset=utf-8').send(finalRecordPlainText(record)) : reply.code(404).send({ error: 'not_found' })
+  })
+
+  app.get('/api/workflows/:workflowSessionId/final-record.pdf', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowSynthesisRepository) return reply.code(503).send({ error: 'final_record_unavailable' })
+    const params = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    reply.header('cache-control', 'no-store')
+    const record = await workflowSynthesisRepository.findFinalRecord(user, params.data.workflowSessionId)
+    if (!record) return reply.code(404).send({ error: 'not_found' })
+    return reply.header('content-disposition', `attachment; filename="${record.reference}-final-record.pdf"`).type('application/pdf').send(await createFinalRecordPdf(record))
   })
 
   app.get('/api/workflows/:workflowSessionId/safety-observations/:observationId/history', async (request, reply) => {

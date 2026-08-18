@@ -43,6 +43,7 @@ import {
 import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
 import type { PostgresConversationReviewDraftRepository } from '../review-drafts/repository.js'
 import type { PouReviewProjection } from '../pou-specifications/domain.js'
+import type { PostgresWorkflowSynthesisRepository } from '../workflow-synthesis/repository.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -111,6 +112,8 @@ export interface WorkflowPouReviewView {
   overallSummary: string | null
   strengthsSummary: string | null
   areasForAttentionSummary: string | null
+  /** Approved criterion labels only; never transcript text. */
+  stillToExplore: string[]
   confirmedAt: Date
 }
 
@@ -344,6 +347,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     private readonly referenceGenerator: () => string = generateWorkflowReference,
     private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
     private readonly reviewDrafts?: PostgresConversationReviewDraftRepository,
+    private readonly syntheses?: PostgresWorkflowSynthesisRepository,
   ) {}
 
   async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
@@ -761,17 +765,21 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             currentPouId: workflow.currentPouId as WorkflowPouId | null,
           }
 
-          if (input.command.type === 'pou-summary-confirmed') {
+          if (input.command.type === 'workflow-synthesis-confirmed') {
             const checkpoints = await tx
               .select({ progress: schema.workflowPouCheckpoints.progress })
               .from(schema.workflowPouCheckpoints)
               .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
             if (checkpoints.length !== WORKFLOW_POU_IDS.length || checkpoints.some(({ progress }) => progress !== 'confirmed')) {
-              throw new WorkflowTransitionError('All seven Pou must be confirmed before the summary can be acknowledged.')
+              throw new WorkflowTransitionError('All seven Pou must be confirmed before the synthesis can be confirmed.')
             }
+            if (!this.syntheses) throw new WorkflowTransitionError('The synthesis service is not available.')
+            await this.syntheses.confirmInWorkflowTransaction(tx, { actor: input.actor, workflowSessionId: workflow.id, synthesisRevisionId: input.command.synthesisRevisionId })
             const next = checkpointAfterPouSummary(checkpoint)
             await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
-            interactionType = 'pou_summary_confirmed'
+            interactionType = 'workflow_synthesis_confirmed'
+          } else if (input.command.type === 'pou-summary-confirmed') {
+            throw new WorkflowTransitionError('An explicit confirmed synthesis is required before Action Planning.')
           } else if (input.command.type === 'action-plan-confirmed') {
             const next = workflow.currentStage === 'action-planning'
               ? checkpointAfterActionPlan(checkpoint)
@@ -792,6 +800,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             interactionType = 'structured_review_confirmed'
           } else {
             const next = checkpointAfterCompletion(checkpoint)
+            if (!this.syntheses) throw new WorkflowTransitionError('The final record service is not available.')
+            await this.syntheses.createFinalRecordInWorkflowTransaction(tx, { actor: input.actor, workflowSessionId: workflow.id, finalizedAt: timestamp })
             await tx.update(schema.workflowSessions).set({
               status: 'completed',
               currentStage: next.stage,
@@ -1258,8 +1268,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       createdAt: referral.createdAt,
       updatedAt: referral.updatedAt,
     }))
-    const reviewRevisionIds = carryForwards.flatMap((item) => item.reviewDraftRevisionId ? [item.reviewDraftRevisionId] : [])
-    const [reviewSourceRows, criterionRows] = reviewRevisionIds.length === 0
+    const sourceRevisionIds = [...new Set([
+      ...carryForwards.flatMap((item) => item.reviewDraftRevisionId ? [item.reviewDraftRevisionId] : []),
+      ...pouReviews.map((review) => review.reviewDraftRevisionId),
+    ])]
+    const [reviewSourceRows, criterionRows] = sourceRevisionIds.length === 0
       ? [[], []] as const
       : await Promise.all([
           executor.select({ revision: schema.conversationReviewDraftRevisions, draft: schema.conversationReviewDrafts, pin: schema.workflowConversationPouSpecificationPins })
@@ -1267,12 +1280,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
             .innerJoin(schema.workflowConversationPouSpecificationPins, eq(schema.conversationReviewDrafts.workflowConversationId, schema.workflowConversationPouSpecificationPins.workflowConversationId))
             .where(and(
-              inArray(schema.conversationReviewDraftRevisions.id, reviewRevisionIds),
+              inArray(schema.conversationReviewDraftRevisions.id, sourceRevisionIds),
               eq(schema.conversationReviewDrafts.workflowSessionId, workflow.id),
               eq(schema.conversationReviewDrafts.organisationId, workflow.organisationId),
             )),
           executor.select().from(schema.conversationReviewDraftCriterionAssessments)
-            .where(inArray(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, reviewRevisionIds)),
+            .where(inArray(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, sourceRevisionIds)),
         ])
     const sourceByRevisionId = new Map(reviewSourceRows.map((row) => [row.revision.id, row]))
     const criteriaByRevisionAndCode = new Map(criterionRows.map((criterion) => [`${criterion.reviewDraftRevisionId}:${criterion.criterionCode}`, criterion]))
@@ -1303,13 +1316,21 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       note: item.note,
       createdAt: item.createdAt,
     }))
-    const pouReviewViews = pouReviews.map((review) => ({
-      pouId: review.pouId as WorkflowPouId,
-      overallSummary: review.overallSummary,
-      strengthsSummary: review.strengthsSummary,
-      areasForAttentionSummary: review.areasForAttentionSummary,
-      confirmedAt: review.confirmedAt,
-    }))
+    const pouReviewViews = pouReviews.map((review) => {
+      const source = sourceByRevisionId.get(review.reviewDraftRevisionId)
+      const projection = source?.pin.pouReviewProjectionSnapshot as PouReviewProjection | undefined
+      const stillToExplore = criterionRows
+        .filter((criterion) => criterion.reviewDraftRevisionId === review.reviewDraftRevisionId && ['not_explored', 'insufficient_information'].includes(criterion.status))
+        .flatMap((criterion) => projection?.criteria.find((candidate) => candidate.criterionCode === criterion.criterionCode)?.label ?? [])
+      return {
+        pouId: review.pouId as WorkflowPouId,
+        overallSummary: review.overallSummary,
+        strengthsSummary: review.strengthsSummary,
+        areasForAttentionSummary: review.areasForAttentionSummary,
+        stillToExplore,
+        confirmedAt: review.confirmedAt,
+      }
+    })
 
     const view = {
       id: workflow.id,

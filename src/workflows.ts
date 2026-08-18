@@ -49,6 +49,7 @@ export interface Workflow {
     overallSummary: string | null
     strengthsSummary: string | null
     areasForAttentionSummary: string | null
+    stillToExplore?: string[]
     confirmedAt: string
   }>
   safety: WorkflowSafetyState
@@ -186,6 +187,40 @@ export interface WorkflowStructuredReview {
   completedAt: string | null
 }
 
+export interface WorkflowSynthesisContent {
+  overallSummary: string
+  keyThemes: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  informationStillToExploreSummary: string | null
+  confirmedSafetyConcernsSummary: string
+}
+
+export interface WorkflowSynthesisState {
+  status: 'not_ready' | 'analysing' | 'ready' | 'failed' | 'confirmed'
+  synthesisId: string | null
+  draft: null | { id: string; revision: number; source: 'generated' | 'edited'; content: WorkflowSynthesisContent; createdAt: string }
+  confirmedRevisionId: string | null
+  confirmedAt: string | null
+}
+
+export interface FinalRecord {
+  id: string
+  reference: string
+  organisationName: string
+  kaimahiDisplayName: string
+  overallSummary: string
+  keyThemes: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  informationStillToExploreSummary: string | null
+  confirmedSafetyConcernsSummary: string
+  actions: Array<{ title: string; type: string; status: string; dueDate: string | null; notes: string | null; pouName: string | null }>
+  referrals: Array<{ destinationName: string; reason: string; status: string; notes: string | null; pouName: string | null }>
+  safetyObservations: Array<{ context: string; concernLevel: string; contextNote: string | null }>
+  finalizedAt: string
+}
+
 export interface WorkflowListItem {
   id: string
   reference: string
@@ -253,6 +288,32 @@ export async function listCompletedWorkflows(): Promise<CompletedWorkflowListIte
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   const payload = await requestJson<{ workflow: Workflow }>(`/api/workflows/${encodeURIComponent(workflowId)}`)
   return payload.workflow
+}
+
+export async function getWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`)
+  return payload.synthesis
+}
+
+export async function generateWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis/generate`, { method: 'POST' })
+  return payload.synthesis
+}
+
+export async function editWorkflowSynthesis(workflowId: string, input: { synthesisId: string; expectedRevision: number; content: WorkflowSynthesisContent }): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`, { method: 'PUT', body: JSON.stringify(input) })
+  return payload.synthesis
+}
+
+export async function getFinalRecord(workflowId: string): Promise<FinalRecord> {
+  const payload = await requestJson<{ record: FinalRecord }>(`/api/workflows/${encodeURIComponent(workflowId)}/final-record`)
+  return payload.record
+}
+
+export async function copyFinalRecord(workflowId: string): Promise<string> {
+  const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/final-record.txt`, { credentials: 'same-origin', headers: { accept: 'text/plain' } })
+  if (!response.ok) throw new WorkflowApiError('final_record_unavailable', response.status)
+  return response.text()
 }
 
 export async function getPouAssessmentCandidates(workflowId: string, pouId: WorkflowPouId): Promise<PouAssessmentCandidate[]> {

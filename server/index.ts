@@ -13,14 +13,17 @@ import { OpenAIConversationReviewDraftProvider } from './review-drafts/provider.
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { PostgresOrganisationPouSpecificationRepository } from './pou-specifications/repository.js'
 import { PostgresOrganisationPouSpecificationAuthoringService } from './pou-specifications/authoring.js'
+import { PostgresWorkflowSynthesisRepository } from './workflow-synthesis/repository.js'
+import { OpenAIWorkflowSynthesisProvider } from './workflow-synthesis/provider.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
 const safetyAssessmentRepository = new PostgresSafetyAssessmentRepository(database.db)
 const transcriptRepository = new PostgresTranscriptRepository(database.db)
 const reviewDraftRepository = new PostgresConversationReviewDraftRepository(database.db)
+const workflowSynthesisRepository = new PostgresWorkflowSynthesisRepository(database.db)
 const pouSpecificationRepository = new PostgresOrganisationPouSpecificationRepository(database.db)
-const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository)
+const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository, workflowSynthesisRepository)
 const conversationService = new ConversationService(
   workflowRepository,
   new PostgresConversationRepository(database.db, undefined, safetyAssessmentRepository),
@@ -42,6 +45,8 @@ const app = await createApplication({
   conversationAssessmentProvider: config.openaiAssessment ? new OpenAIConversationAssessmentProvider(config.openaiAssessment) : undefined,
   conversationReviewDraftProvider: config.openaiAssessment ? new OpenAIConversationReviewDraftProvider(config.openaiAssessment) : undefined,
   reviewDraftRepository,
+  workflowSynthesisRepository,
+  workflowSynthesisProvider: config.openaiAssessment ? new OpenAIWorkflowSynthesisProvider(config.openaiAssessment) : undefined,
   transcriptRepository,
   pouSpecificationAuthoringService: new PostgresOrganisationPouSpecificationAuthoringService(database.db),
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,

@@ -134,6 +134,20 @@
       "when": 1787031266620,
       "tag": "0018_trusted_device_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1787036063946,
+      "tag": "0019_absurd_norrin_radd",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1787090963517,
+      "tag": "0020_final_record_confirmed_synthesis_lineage",
+      "breakpoints": true
     }
   ]
 }

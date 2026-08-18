@@ -216,6 +216,12 @@ Four information classes remain distinct:
 4. **Canonical workflow/safety state** is created only through approved deterministic and human-confirmed paths. A canonical Pou review is inserted only from the authenticated Kaimahi's explicitly confirmed final review-draft revision; this does not confirm a separate safety candidate.
 5. **Supervisor source access** is a future role-, relationship-, organisation-, audit-, retention-, and deletion-governed capability that may retrieve referenced turn context. Its UI is explicitly deferred beyond the SME proof of concept.
 
+### Cross-Pou synthesis and final record boundary
+
+The existing `pou-summary` workflow checkpoint is the only cross-Pou synthesis-review point. After all seven canonical Pou reviews exist, a provider-neutral server-side synthesis adapter may generate a bounded draft from confirmed application state only. The Kaimahi may edit that draft, but it becomes authoritative only through an explicit synthesis-confirmation interaction. A generated synthesis is not a safety candidate, observation, action, referral, escalation, or workflow transition.
+
+Workflow completion creates an immutable final-record snapshot from the explicitly confirmed synthesis and canonical workflow state at that time. Copy and authenticated on-demand PDF export render this snapshot only; they do not read transcripts or provider records. If a safety observation is later corrected, both the correction history and the previous final record remain independently auditable. Supervisor final-record access is not introduced by this boundary.
+
 Te Kaupapa never stores audio, raw webhook envelopes, raw model requests/responses, provider rationale, or hidden reasoning. OpenAI `store: false` remains an OpenAI request setting, not a claim of Zero Data Retention. Real whānau transcript retention remains a separate governance gate: the present storage foundation is authorised for synthetic POC material only and has no approved production retention duration. A PostgreSQL transcript repository may later delegate text storage to encrypted object storage without changing workflow or assessment contracts.
 
 The Te Kaupapa frontend should not independently analyse raw transcript text to determine contraindications, risks, or workflow consequences.

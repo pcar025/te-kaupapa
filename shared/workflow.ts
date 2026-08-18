@@ -8,6 +8,17 @@ export const WORKFLOW_POU_IDS = [
   'oranga',
 ] as const
 
+/** User-facing names for bounded server-side narrative projections. */
+export const WORKFLOW_POU_NAMES: Record<WorkflowPouId, string> = {
+  whakapapa: 'Whakapapa & Identity Safety',
+  manaakitanga: 'Manaakitanga & Duty of Care',
+  tikanga: 'Tikanga & Ethical Practice',
+  kaitiakitanga: 'Kaitiakitanga & Risk Management',
+  puukenga: 'Pūkenga & Practitioner Capability',
+  haepapa: 'Haepapa & Accountability',
+  oranga: 'Oranga & Protective Factors',
+}
+
 export type WorkflowPouId = (typeof WORKFLOW_POU_IDS)[number]
 
 export const WORKFLOW_ENGAGEMENT_TYPES = [
@@ -73,6 +84,7 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'setup_confirmed',
   'pou_review_confirmed',
   'pou_summary_confirmed',
+  'workflow_synthesis_confirmed',
   'action_plan_confirmed',
   'referral_plan_confirmed',
   'structured_review_confirmed',
@@ -151,6 +163,12 @@ export type WorkflowCommand =
       type: 'pou-summary-confirmed'
       idempotencyKey: string
       expectedVersion: number
+    }
+  | {
+      type: 'workflow-synthesis-confirmed'
+      idempotencyKey: string
+      expectedVersion: number
+      synthesisRevisionId: string
     }
   | {
       type: 'action-plan-confirmed'

@@ -290,6 +290,7 @@ function HomeScreen({
   onContinueSession,
   onStartNewSession,
   onOpenSavedSession,
+  onOpenCompletedRecords,
   sessionActive,
   sessionRef,
   sessionStage,
@@ -300,6 +301,7 @@ function HomeScreen({
   onContinueSession: () => void
   onStartNewSession: () => void
   onOpenSavedSession: (workflowId: string) => void
+  onOpenCompletedRecords: () => void
   sessionActive: boolean
   sessionRef: string
   sessionStage: SessionStageKey
@@ -547,6 +549,14 @@ function HomeScreen({
             </div>
           </button>
         )}
+
+        <button onClick={onOpenCompletedRecords} className="w-full text-left transition-all active:opacity-85">
+          <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: '4px solid var(--color-growth)', padding: '1rem 1.25rem' }}>
+            <p className="text-xs tracking-wide mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)' }}>TOHU</p>
+            <p className="text-base font-medium italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Tohu — Session records</p>
+            <p className="mt-1 text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>View completed reflections and download records →</p>
+          </div>
+        </button>
 
         {/* ── 2. Te Waharoa Pou — structural health ── */}
         <div>
@@ -2180,14 +2190,14 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
 
   const renderContent = () => {
     switch (tab) {
-      case 'home':             return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
+      case 'home':             return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} onOpenCompletedRecords={() => setTab('record-archive')} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
       case 'actions':          return <MyActionsScreen />
       case 'reflections':      return <WhanauReflectionsScreen />
       case 'referrals-browse': return <ReferralsBrowseScreen />
       case 'synthesis-archive':return <SynthesisArchiveScreen />
       case 'record-archive':   return <CompletedRecordsScreen records={completedRecords} onOpen={(workflowId) => { void getWorkflow(workflowId).then((completed) => { setWorkflow(completed); setSessionOpen(true) }) }} />
       case 'settings':         return <SettingsScreen profile={profile} />
-      default:                 return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
+      default:                 return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} onOpenCompletedRecords={() => setTab('record-archive')} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
     }
   }
 

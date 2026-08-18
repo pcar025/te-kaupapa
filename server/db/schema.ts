@@ -48,6 +48,8 @@ export const workflowActionType = pgEnum('workflow_action_type', ['follow-up', '
 export const workflowActionStatus = pgEnum('workflow_action_status', ['open', 'completed', 'withdrawn'])
 export const workflowCarryForwardSource = pgEnum('workflow_carry_forward_source', ['review_criterion', 'areas_for_attention', 'safety_observation'])
 export const workflowReferralStatus = pgEnum('workflow_referral_status', ['draft', 'prepared', 'declined', 'withdrawn'])
+export const workflowSynthesisStatus = pgEnum('workflow_synthesis_status', ['generating', 'generated', 'failed'])
+export const workflowSynthesisRevisionSource = pgEnum('workflow_synthesis_revision_source', ['generated', 'edited'])
 export const workflowSafetyAssessmentContext = pgEnum('workflow_safety_assessment_context', ['setup', 'pou'])
 export const workflowSafetyBroadClass = pgEnum('workflow_safety_broad_class', ['whanau_safety', 'practice_quality', 'practitioner_wellbeing'])
 export const workflowSafetyConcernLevel = pgEnum('workflow_safety_concern_level', ['unsure', 'low', 'watch', 'action', 'urgent'])
@@ -73,6 +75,7 @@ export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'workflow_created',
   'setup_confirmed',
   'pou_review_confirmed',
+  'workflow_synthesis_confirmed',
   'pou_summary_confirmed',
   'action_plan_confirmed',
   'referral_plan_confirmed',
@@ -789,6 +792,119 @@ export const workflowPouReviews = pgTable(
     foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_pou_review_confirming_user_organisation_fk' }),
     uniqueIndex('workflow_pou_review_session_pou_uq').on(table.workflowSessionId, table.pouId),
     check('workflow_pou_review_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
+  ],
+)
+
+/**
+ * Noncanonical cross-Pou synthesis lifecycle. Its revisions are immutable;
+ * only an explicit Kaimahi confirmation can make one revision authoritative.
+ */
+export const workflowSyntheses = pgTable(
+  'workflow_synthesis',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    status: workflowSynthesisStatus('status').default('generating').notNull(),
+    sourceHash: text('source_hash').notNull(),
+    provider: text('provider'),
+    providerModel: text('provider_model'),
+    providerConfigHash: text('provider_config_hash'),
+    schemaVersion: text('schema_version'),
+    generatedAt: timestamp('generated_at', { withTimezone: true }),
+    failedAt: timestamp('failed_at', { withTimezone: true }),
+    failureCategory: text('failure_category'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'workflow_synthesis_session_organisation_fk' }),
+    uniqueIndex('workflow_synthesis_session_uq').on(table.workflowSessionId),
+    check('workflow_synthesis_hash_format', sql`length(${table.sourceHash}) = 64`),
+    check('workflow_synthesis_generated_state', sql`(${table.status} = 'generated') = (${table.generatedAt} is not null)`),
+    check('workflow_synthesis_failed_state', sql`(${table.status} = 'failed') = (${table.failedAt} is not null and ${table.failureCategory} is not null)`),
+  ],
+)
+
+export const workflowSynthesisRevisions = pgTable(
+  'workflow_synthesis_revision',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    synthesisId: uuid('synthesis_id').notNull(),
+    revision: integer('revision').notNull(),
+    source: workflowSynthesisRevisionSource('source').notNull(),
+    overallSummary: text('overall_summary').notNull(),
+    keyThemes: text('key_themes'),
+    strengthsSummary: text('strengths_summary'),
+    areasForAttentionSummary: text('areas_for_attention_summary'),
+    informationStillToExploreSummary: text('information_still_to_explore_summary'),
+    confirmedSafetyConcernsSummary: text('confirmed_safety_concerns_summary'),
+    editedByUserId: uuid('edited_by_user_id'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.synthesisId], foreignColumns: [workflowSyntheses.id], name: 'workflow_synthesis_revision_synthesis_fk' }),
+    foreignKey({ columns: [table.editedByUserId], foreignColumns: [appUsers.id], name: 'workflow_synthesis_revision_editor_fk' }),
+    uniqueIndex('workflow_synthesis_revision_synthesis_revision_uq').on(table.synthesisId, table.revision),
+    check('workflow_synthesis_revision_positive', sql`${table.revision} > 0`),
+    check('workflow_synthesis_revision_source_actor', sql`(${table.source} = 'generated' and ${table.editedByUserId} is null) or (${table.source} = 'edited' and ${table.editedByUserId} is not null)`),
+    check('workflow_synthesis_revision_bounds', sql`length(${table.overallSummary}) between 1 and 1800 and (${table.keyThemes} is null or length(${table.keyThemes}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 1200) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 1200) and (${table.informationStillToExploreSummary} is null or length(${table.informationStillToExploreSummary}) <= 1200) and (${table.confirmedSafetyConcernsSummary} is null or length(${table.confirmedSafetyConcernsSummary}) <= 1200)`),
+  ],
+)
+
+/** The immutable, explicit human authority for the synthesis used in the final record. */
+export const workflowConfirmedSyntheses = pgTable(
+  'workflow_confirmed_synthesis',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    synthesisRevisionId: uuid('synthesis_revision_id').notNull(),
+    confirmedByUserId: uuid('confirmed_by_user_id').notNull(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'workflow_confirmed_synthesis_session_organisation_fk' }),
+    foreignKey({ columns: [table.synthesisRevisionId], foreignColumns: [workflowSynthesisRevisions.id], name: 'workflow_confirmed_synthesis_revision_fk' }),
+    foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_confirmed_synthesis_actor_organisation_fk' }),
+    uniqueIndex('workflow_confirmed_synthesis_session_uq').on(table.workflowSessionId),
+  ],
+)
+
+/**
+ * One point-in-time, immutable professional record per completed workflow.
+ * Variable action/referral/safety snapshots are validated by the application
+ * before insertion and are never regenerated for export.
+ */
+export const workflowFinalRecords = pgTable(
+  'workflow_final_record',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    confirmedSynthesisId: uuid('confirmed_synthesis_id').notNull(),
+    workflowReference: text('workflow_reference').notNull(),
+    organisationName: text('organisation_name').notNull(),
+    kaimahiDisplayName: text('kaimahi_display_name').notNull(),
+    overallSummary: text('overall_summary').notNull(),
+    keyThemes: text('key_themes'),
+    strengthsSummary: text('strengths_summary'),
+    areasForAttentionSummary: text('areas_for_attention_summary'),
+    informationStillToExploreSummary: text('information_still_to_explore_summary'),
+    confirmedSafetyConcernsSummary: text('confirmed_safety_concerns_summary'),
+    actions: jsonb('actions').notNull(),
+    referrals: jsonb('referrals').notNull(),
+    safetyObservations: jsonb('safety_observations').notNull(),
+    contentHash: text('content_hash').notNull(),
+    finalizedByUserId: uuid('finalized_by_user_id').notNull(),
+    finalizedAt: timestamp('finalized_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'workflow_final_record_session_organisation_fk' }),
+    foreignKey({ columns: [table.confirmedSynthesisId], foreignColumns: [workflowConfirmedSyntheses.id], name: 'workflow_final_record_confirmed_synthesis_fk' }),
+    foreignKey({ columns: [table.finalizedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_final_record_actor_organisation_fk' }),
+    uniqueIndex('workflow_final_record_session_uq').on(table.workflowSessionId),
+    check('workflow_final_record_hash_format', sql`length(${table.contentHash}) = 64`),
+    check('workflow_final_record_summary_bound', sql`length(${table.overallSummary}) between 1 and 1800`),
   ],
 )
 

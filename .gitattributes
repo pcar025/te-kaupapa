@@ -81,6 +81,10 @@
 *.woff2              filter=lfs diff=lfs merge=lfs -text
 *.eot                filter=lfs diff=lfs merge=lfs -text
 
+# Application-owned PDF renderer fonts are source assets. Keep these two
+# portable runtime dependencies in ordinary Git rather than requiring Git LFS.
+server/workflow-synthesis/fonts/*.ttf -filter -diff -merge -text
+
 # ---------------------------------------------------------------------------
 # Data & Machine Learning
 # ---------------------------------------------------------------------------

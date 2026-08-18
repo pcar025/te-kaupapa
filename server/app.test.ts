@@ -1,3 +1,5 @@
+// @vitest-environment node
+
 import { describe, expect, it, vi } from 'vitest'
 
 import { createApplication } from './app.js'
@@ -888,6 +890,42 @@ describe('authenticated application shell API', () => {
     })
     expect(stale.statusCode).toBe(409)
     expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
+    await app.close()
+  })
+
+  it('keeps cross-Pou synthesis and final-record output owner-scoped and free of raw source material', async () => {
+    const repository = new MemoryRepository()
+    const supervisor: AuthenticatedUser = { ...activeKaimahi, id: 'dd8a7c03-c7a9-496f-b6c4-92a8f90f4f19', roles: ['SUPERVISOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:supervisor', supervisor)
+    await repository.createSession({ id: 'c46e9761-b689-4f73-b0ea-a26ed3e8395a', userId: activeKaimahi.id, tokenHash: sha256('synthesis-owner'), expiresAt: new Date(Date.now() + 60_000) })
+    await repository.createSession({ id: 'c0d7c224-22a8-467e-aeb7-099d17ed7158', userId: supervisor.id, tokenHash: sha256('synthesis-supervisor'), expiresAt: new Date(Date.now() + 60_000) })
+    const synthesis = {
+      status: 'ready', synthesisId: '0e24c9e7-af20-45e8-a706-549a15db4363', confirmedRevisionId: null, confirmedAt: null,
+      draft: { id: '4a419730-8136-4c0d-a1cb-64a3ed0da2b5', revision: 1, source: 'generated', createdAt: new Date(), content: { overallSummary: 'Bounded summary.', keyThemes: null, strengthsSummary: null, areasForAttentionSummary: null, informationStillToExploreSummary: null, confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.' } },
+    }
+    const finalRecord = { id: 'a4c4535f-c5f1-4d09-aa6d-d4495fc3f582', reference: 'TK-7K4M2P9Q', organisationName: 'Test organisation', kaimahiDisplayName: activeKaimahi.displayName, overallSummary: 'Bounded final record.', keyThemes: null, strengthsSummary: null, areasForAttentionSummary: null, informationStillToExploreSummary: null, confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.', actions: [], referrals: [], safetyObservations: [], finalizedAt: new Date() }
+    const synthesisRepository = {
+      findForKaimahi: vi.fn(async (actor: AuthenticatedUser) => { if (actor.id !== activeKaimahi.id) throw new WorkflowNotFoundError(); return synthesis }),
+      findFinalRecord: vi.fn(async (actor: AuthenticatedUser) => actor.id === activeKaimahi.id ? finalRecord : null),
+    }
+    const app = await createApplication({ config: config(), repository, workflowSynthesisRepository: synthesisRepository as any, oidcProvider: new FakeOidcProvider() })
+    const workflowId = '22b1f80c-2c12-4f82-bdd9-65d7b30712bb'
+    const ownerHeaders = { cookie: 'test_session=synthesis-owner' }
+    const synthesisResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/synthesis`, headers: ownerHeaders })
+    expect(synthesisResponse.statusCode).toBe(200)
+    expect(synthesisResponse.headers['cache-control']).toBe('no-store')
+    expect(synthesisResponse.body).not.toMatch(/transcript|payload|rationale/i)
+    expect((await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/synthesis`, headers: { cookie: 'test_session=synthesis-supervisor' } })).statusCode).toBe(403)
+    const textResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record.txt`, headers: ownerHeaders })
+    expect(textResponse.statusCode).toBe(200)
+    expect(textResponse.headers['cache-control']).toBe('no-store')
+    expect(textResponse.body).toContain('Bounded final record.')
+    const pdfResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record.pdf`, headers: ownerHeaders })
+    expect(pdfResponse.statusCode).toBe(200)
+    expect(pdfResponse.headers['content-type']).toContain('application/pdf')
+    expect(pdfResponse.headers['cache-control']).toBe('no-store')
+    expect((await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record`, headers: { cookie: 'test_session=synthesis-supervisor' } })).statusCode).toBe(403)
     await app.close()
   })
 

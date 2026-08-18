@@ -20,6 +20,8 @@ import {
 } from '../db/schema.js'
 import { getTestDatabaseUrl, hasTestDatabaseUrl, withMigratedTestDatabase } from '../db/test-harness.js'
 import { createDatabaseConnection, type DatabaseConnection } from '../db/repository.js'
+import { PostgresWorkflowSynthesisRepository } from '../workflow-synthesis/repository.js'
+import type { WorkflowSynthesisProvider } from '../workflow-synthesis/provider.js'
 import {
   IdempotencyKeyReuseError,
   PostgresWorkflowRepository,
@@ -224,7 +226,9 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
     await withMigratedTestDatabase(async (connection) => {
       await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
       await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
-      const repository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-10T00:00:00.000Z'))
+      const now = new Date('2026-08-10T00:00:00.000Z')
+      const syntheses = new PostgresWorkflowSynthesisRepository(connection.db, () => now)
+      const repository = new PostgresWorkflowRepository(connection.db, () => now, undefined, undefined, undefined, syntheses)
       const created = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
       workflowId = created.workflow.id
       let version = created.workflow.version
@@ -238,6 +242,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         },
       })
       version = setup.workflow.version
+      let workflow = setup.workflow
       for (const pouId of ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
         const result = await repository.submitCommand({
           actor,
@@ -248,11 +253,24 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           },
         })
         version = result.workflow.version
+        workflow = result.workflow
       }
 
+      const provider: WorkflowSynthesisProvider = {
+        generateWorkflowSynthesis: async () => ({
+          content: {
+            overallSummary: 'Manual downstream-plan synthesis.', keyThemes: null,
+            strengthsSummary: null, areasForAttentionSummary: null,
+            informationStillToExploreSummary: null,
+            confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.',
+          },
+          provider: 'test', model: 'test-model', configurationHash: 'a'.repeat(64), schemaVersion: '1', generatedAt: now,
+        }),
+      }
+      const synthesis = await syntheses.generate(actor, workflow, provider)
       const summary = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-summary-confirmed', idempotencyKey: randomUUID(), expectedVersion: version },
+        command: { type: 'workflow-synthesis-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, synthesisRevisionId: synthesis.draft!.id },
       })
       expect(summary.workflow.currentStage).toBe('action-planning')
       version = summary.workflow.version
@@ -337,16 +355,29 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       nextWorkflowId = nextWorkflow.workflow.id
       expect(nextWorkflow).toMatchObject({ workflow: { status: 'draft' } })
     }, async (connection) => {
-      for (const id of [workflowId, nextWorkflowId].filter((value): value is string => Boolean(value))) {
-        await connection.db.delete(workflowSafetyConsequences).where(eq(workflowSafetyConsequences.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, id))
-        await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
-        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
-        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
-        await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
-        await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
+      await connection.db.execute(sql`alter table workflow_synthesis_revision disable trigger workflow_synthesis_revision_immutable`)
+      await connection.db.execute(sql`alter table workflow_confirmed_synthesis disable trigger workflow_confirmed_synthesis_immutable`)
+      await connection.db.execute(sql`alter table workflow_final_record disable trigger workflow_final_record_immutable`)
+      try {
+        await connection.db.execute(sql`delete from workflow_final_record where organisation_id = ${organisationId}`)
+        await connection.db.execute(sql`delete from workflow_confirmed_synthesis where organisation_id = ${organisationId}`)
+        await connection.db.execute(sql`delete from workflow_synthesis_revision where synthesis_id in (select id from workflow_synthesis where organisation_id = ${organisationId})`)
+        await connection.db.execute(sql`delete from workflow_synthesis where organisation_id = ${organisationId}`)
+        for (const id of [workflowId, nextWorkflowId].filter((value): value is string => Boolean(value))) {
+          await connection.db.delete(workflowSafetyConsequences).where(eq(workflowSafetyConsequences.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, id))
+          await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
+          await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
+          await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
+          await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
+          await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
+        }
+      } finally {
+        await connection.db.execute(sql`alter table workflow_synthesis_revision enable trigger workflow_synthesis_revision_immutable`)
+        await connection.db.execute(sql`alter table workflow_confirmed_synthesis enable trigger workflow_confirmed_synthesis_immutable`)
+        await connection.db.execute(sql`alter table workflow_final_record enable trigger workflow_final_record_immutable`)
       }
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
