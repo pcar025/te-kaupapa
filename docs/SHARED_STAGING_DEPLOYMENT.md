@@ -22,7 +22,7 @@ Render runs environment variables directly; it does not load a repository
 `.env` file.
 
 ```sh
-npm ci
+npm ci --include=dev
 npm run build:server
 npm run start:server
 ```
