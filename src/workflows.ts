@@ -1,6 +1,7 @@
 import type {
   WorkflowActionStatus,
   WorkflowActionType,
+  WorkflowCarryForwardItem,
   WorkflowCommand,
   WorkflowEngagementType,
   WorkflowImmediateConcern,
@@ -42,6 +43,15 @@ export interface Workflow {
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
+  carryForwards: WorkflowCarryForwardItem[]
+  pouReviews: Array<{
+    pouId: WorkflowPouId
+    overallSummary: string | null
+    strengthsSummary: string | null
+    areasForAttentionSummary: string | null
+    stillToExplore?: string[]
+    confirmedAt: string
+  }>
   safety: WorkflowSafetyState
   structuredReview: WorkflowStructuredReview
   completedAt: string | null
@@ -93,6 +103,55 @@ export interface WorkflowSafetyState {
   indicators: WorkflowSafetyIndicators
 }
 
+export interface PouAssessmentCandidate {
+  id: string
+  outcome: 'possible_concern' | 'insufficient_information' | 'no_candidate_concern' | 'not_applicable'
+  title: string
+  description: string
+  ruleCode: string
+  ruleVersion: number
+  matchedProtectiveIndicatorCodes: string[]
+  matchedConcernIndicatorCodes: string[]
+  missingInformationCodes: string[]
+  permittedHumanConcernLevels: SafetyObservationConcernLevel[]
+  canonicalBroadClass: SafetyBroadClass | null
+}
+export type WhakapapaAssessmentCandidate = PouAssessmentCandidate
+
+export interface PouReviewDraft {
+  id: string
+  revisionId: string
+  revision: number
+  overallSummary: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  evidenceTurnIds: string[]
+  criterionAssessments?: Array<{
+    criterionCode: string
+    label: string
+    strengthsOrProtective: boolean
+    areasForAttention: boolean
+    status: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
+    evidenceTurnIds: string[]
+    missingInformationCodes: string[]
+  }>
+  generatedAt: string
+}
+export type WhakapapaReviewDraft = PouReviewDraft
+
+export interface PouReviewDraftState {
+  status: 'analysing' | 'ready' | 'failed' | 'manual'
+  draft: PouReviewDraft | null
+  assessmentCompleted: boolean
+  hasReviewableCandidate: boolean
+  resolvedSafetyReview?: {
+    confirmedCount: number
+    dismissedCount: number
+    insufficientInformationAcknowledgedCount: number
+  }
+}
+export type WhakapapaReviewDraftState = PouReviewDraftState
+
 export interface WorkflowAction {
   id: string
   pouId: WorkflowPouId | null
@@ -126,9 +185,45 @@ export interface WorkflowStructuredReview {
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
+  carryForwards: WorkflowCarryForwardItem[]
+  pouReviews: Workflow['pouReviews']
   createdAt: string
   updatedAt: string
   completedAt: string | null
+}
+
+export interface WorkflowSynthesisContent {
+  overallSummary: string
+  keyThemes: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  informationStillToExploreSummary: string | null
+  confirmedSafetyConcernsSummary: string
+}
+
+export interface WorkflowSynthesisState {
+  status: 'not_ready' | 'analysing' | 'ready' | 'failed' | 'confirmed'
+  synthesisId: string | null
+  draft: null | { id: string; revision: number; source: 'generated' | 'edited'; content: WorkflowSynthesisContent; createdAt: string }
+  confirmedRevisionId: string | null
+  confirmedAt: string | null
+}
+
+export interface FinalRecord {
+  id: string
+  reference: string
+  organisationName: string
+  kaimahiDisplayName: string
+  overallSummary: string
+  keyThemes: string | null
+  strengthsSummary: string | null
+  areasForAttentionSummary: string | null
+  informationStillToExploreSummary: string | null
+  confirmedSafetyConcernsSummary: string
+  actions: Array<{ title: string; type: string; status: string; dueDate: string | null; notes: string | null; pouName: string | null }>
+  referrals: Array<{ destinationName: string; reason: string; status: string; notes: string | null; pouName: string | null }>
+  safetyObservations: Array<{ context: string; concernLevel: string; contextNote: string | null }>
+  finalizedAt: string
 }
 
 export interface WorkflowListItem {
@@ -200,10 +295,71 @@ export async function getWorkflow(workflowId: string): Promise<Workflow> {
   return payload.workflow
 }
 
+export async function getWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`)
+  return payload.synthesis
+}
+
+export async function generateWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis/generate`, { method: 'POST' })
+  return payload.synthesis
+}
+
+export async function editWorkflowSynthesis(workflowId: string, input: { synthesisId: string; expectedRevision: number; content: WorkflowSynthesisContent }): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`, { method: 'PUT', body: JSON.stringify(input) })
+  return payload.synthesis
+}
+
+export async function getFinalRecord(workflowId: string): Promise<FinalRecord> {
+  const payload = await requestJson<{ record: FinalRecord }>(`/api/workflows/${encodeURIComponent(workflowId)}/final-record`)
+  return payload.record
+}
+
+export async function copyFinalRecord(workflowId: string): Promise<string> {
+  const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}/final-record.txt`, { credentials: 'same-origin', headers: { accept: 'text/plain' } })
+  if (!response.ok) throw new WorkflowApiError('final_record_unavailable', response.status)
+  return response.text()
+}
+
+export async function getPouAssessmentCandidates(workflowId: string, pouId: WorkflowPouId): Promise<PouAssessmentCandidate[]> {
+  const payload = await requestJson<{ candidates: PouAssessmentCandidate[] }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/assessment-candidates`)
+  // An empty response keeps manual Pou review available through interruption.
+  return Array.isArray(payload.candidates) ? payload.candidates : []
+}
+
+export const getWhakapapaAssessmentCandidates = (workflowId: string) => getPouAssessmentCandidates(workflowId, 'whakapapa')
+
+export async function getPouReviewDraft(workflowId: string, pouId: WorkflowPouId): Promise<PouReviewDraftState> {
+  const payload = await requestJson<{ review: PouReviewDraftState }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-draft`)
+  return payload.review
+}
+export const getWhakapapaReviewDraft = (workflowId: string) => getPouReviewDraft(workflowId, 'whakapapa')
+
+export async function markPouReviewDraftReviewed(workflowId: string, pouId: WorkflowPouId, reviewDraftId: string): Promise<void> {
+  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-drafts/${encodeURIComponent(reviewDraftId)}/reviewed`, { method: 'POST' })
+}
+export const markWhakapapaReviewDraftReviewed = (workflowId: string, reviewDraftId: string) => markPouReviewDraftReviewed(workflowId, 'whakapapa', reviewDraftId)
+
+export async function editPouReviewDraft(workflowId: string, pouId: WorkflowPouId, input: { reviewDraftId: string; expectedRevision: number; overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] }): Promise<PouReviewDraft> {
+  const payload = await requestJson<{ draft: PouReviewDraft }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/review-draft`, { method: 'PUT', body: JSON.stringify(input) })
+  return payload.draft
+}
+export const editWhakapapaReviewDraft = (workflowId: string, input: Parameters<typeof editPouReviewDraft>[2]) => editPouReviewDraft(workflowId, 'whakapapa', input)
+
+export async function reviewPouAssessmentCandidate(workflowId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {
+  await requestJson(`/api/workflows/${encodeURIComponent(workflowId)}/assessment-candidates/${encodeURIComponent(assessmentId)}/review`, { method: 'POST', body: JSON.stringify({ status }) })
+}
+/** Historical Phase 5B name retained for existing callers. */
+export const reviewWhakapapaAssessmentCandidate = reviewPouAssessmentCandidate
+
 export async function submitWorkflowCommand(workflowId: string, command: WorkflowCommand): Promise<{ workflow: Workflow; replayed: boolean }> {
   const payload = await requestJson<{ workflow: Workflow; acknowledgement: { replayed: boolean } }>(
     `/api/workflows/${encodeURIComponent(workflowId)}/interactions`,
     { method: 'POST', body: JSON.stringify(command) },
   )
   return { workflow: payload.workflow, replayed: payload.acknowledgement.replayed }
+}
+
+export async function markCarryForward(workflowId: string, command: Extract<WorkflowCommand, { type: 'carry-forward-marked' }>): Promise<{ workflow: Workflow; replayed: boolean }> {
+  return submitWorkflowCommand(workflowId, command)
 }

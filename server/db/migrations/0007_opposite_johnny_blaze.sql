@@ -1,0 +1,1 @@
+DROP INDEX "workflow_session_one_resumable_per_kaimahi_uq";

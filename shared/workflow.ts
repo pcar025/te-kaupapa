@@ -8,6 +8,17 @@ export const WORKFLOW_POU_IDS = [
   'oranga',
 ] as const
 
+/** User-facing names for bounded server-side narrative projections. */
+export const WORKFLOW_POU_NAMES: Record<WorkflowPouId, string> = {
+  whakapapa: 'Whakapapa & Identity Safety',
+  manaakitanga: 'Manaakitanga & Duty of Care',
+  tikanga: 'Tikanga & Ethical Practice',
+  kaitiakitanga: 'Kaitiakitanga & Risk Management',
+  puukenga: 'Pūkenga & Practitioner Capability',
+  haepapa: 'Haepapa & Accountability',
+  oranga: 'Oranga & Protective Factors',
+}
+
 export type WorkflowPouId = (typeof WORKFLOW_POU_IDS)[number]
 
 export const WORKFLOW_ENGAGEMENT_TYPES = [
@@ -73,6 +84,7 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'setup_confirmed',
   'pou_review_confirmed',
   'pou_summary_confirmed',
+  'workflow_synthesis_confirmed',
   'action_plan_confirmed',
   'referral_plan_confirmed',
   'structured_review_confirmed',
@@ -81,6 +93,7 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'safety_observation_corrected',
   'safety_observation_retracted',
   'supervisor_review_requested',
+  'carry_forward_marked',
 ] as const
 export type WorkflowInteractionType = (typeof WORKFLOW_INTERACTION_TYPES)[number]
 
@@ -105,6 +118,28 @@ export interface WorkflowReferralInput {
   status: Exclude<WorkflowReferralStatus, 'withdrawn'>
 }
 
+/**
+ * A human-marked item to revisit after all seven Pou. It is deliberately not
+ * an action, referral, escalation, or safety consequence.
+ */
+export type WorkflowCarryForwardSource =
+  | { kind: 'review_criterion'; reviewDraftRevisionId: string; criterionCode: string }
+  | { kind: 'areas_for_attention'; reviewDraftRevisionId: string }
+  | { kind: 'safety_observation'; observationId: string }
+
+export interface WorkflowCarryForwardItem {
+  id: string
+  pouId: WorkflowPouId
+  source: WorkflowCarryForwardSource
+  /** Derived server-side from the immutable selected source; never transcript text. */
+  presentation?: {
+    title: string
+    sourceLabel: string
+  }
+  note: string | null
+  createdAt: string
+}
+
 export type WorkflowCommand =
   | {
       type: 'setup-confirmed'
@@ -121,15 +156,19 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       pouId: WorkflowPouId
-      userSelectedConcern: WorkflowPouConcern
       note?: string
-      referralSuggested: boolean
-      supervisorReviewSuggested: boolean
+      reviewDraftRevisionId?: string
     }
   | {
       type: 'pou-summary-confirmed'
       idempotencyKey: string
       expectedVersion: number
+    }
+  | {
+      type: 'workflow-synthesis-confirmed'
+      idempotencyKey: string
+      expectedVersion: number
+      synthesisRevisionId: string
     }
   | {
       type: 'action-plan-confirmed'
@@ -159,6 +198,11 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       observation: SafetyObservationSnapshotInput
+      /**
+       * Optional provenance for an explicitly human-confirmed Phase 5B
+       * assessment candidate. The browser never supplies classification source.
+       */
+      candidateAssessmentId?: string
     }
   | {
       type: 'safety-observation-corrected'
@@ -184,6 +228,15 @@ export type WorkflowCommand =
       expectedVersion: number
       pouId?: WorkflowPouId
       requestNote?: string
+    }
+  | {
+      type: 'carry-forward-marked'
+      itemId: string
+      idempotencyKey: string
+      expectedVersion: number
+      pouId: WorkflowPouId
+      source: WorkflowCarryForwardSource
+      note?: string
     }
 
 export interface WorkflowCheckpoint {

@@ -20,8 +20,9 @@ import {
 } from '../db/schema.js'
 import { getTestDatabaseUrl, hasTestDatabaseUrl, withMigratedTestDatabase } from '../db/test-harness.js'
 import { createDatabaseConnection, type DatabaseConnection } from '../db/repository.js'
+import { PostgresWorkflowSynthesisRepository } from '../workflow-synthesis/repository.js'
+import type { WorkflowSynthesisProvider } from '../workflow-synthesis/provider.js'
 import {
-  ActiveWorkflowError,
   IdempotencyKeyReuseError,
   PostgresWorkflowRepository,
   StaleWorkflowError,
@@ -46,7 +47,7 @@ async function waitForBlockedDatabaseWork(connection: DatabaseConnection) {
 }
 
 describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integration', () => {
-  it('creates exactly one resumable workflow and preserves retry and stale-state guarantees', async () => {
+  it('creates independent resumable workflows and preserves retry, scoping, and stale-state guarantees', async () => {
     const organisationId = randomUUID()
     const userId = randomUUID()
     const foreignOrganisationId = randomUUID()
@@ -59,13 +60,15 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       roles: ['KAIMAHI'],
     }
     let workflowId: string | undefined
+    let independentWorkflowId: string | undefined
     await withMigratedTestDatabase(async (connection) => {
       await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
       await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
+      const references = ['TK-7K4M2P9Q', 'TK-9Q2M4K7P']
       const repository = new PostgresWorkflowRepository(
         connection.db,
         () => new Date('2026-08-10T00:00:00.000Z'),
-        () => 'TK-7K4M2P9Q',
+        () => references.shift()!,
       )
       const createKey = randomUUID()
       const created = await repository.createDraft({ actor, idempotencyKey: createKey })
@@ -75,7 +78,6 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
 
       const replayedCreate = await repository.createDraft({ actor, idempotencyKey: createKey })
       expect(replayedCreate).toMatchObject({ replayed: true, interactionId: created.interactionId, workflow: { id: workflowId, version: 1 } })
-      await expect(repository.createDraft({ actor, idempotencyKey: randomUUID() })).rejects.toThrow(ActiveWorkflowError)
 
       const setup = await repository.submitCommand({
         actor,
@@ -117,10 +119,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: randomUUID(),
           expectedVersion: 1,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })).rejects.toThrow(StaleWorkflowError)
 
@@ -133,14 +132,35 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 3,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })
       expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
-      expect(pou.workflow.checkpoints[0]).toMatchObject({ progress: 'confirmed', userSelectedConcern: 'watch' })
+      expect(pou.workflow.checkpoints[0]).toMatchObject({
+        progress: 'confirmed',
+        // Ordinary narrative confirmation no longer carries concern or
+        // escalation semantics; those require a separate safety command.
+        userSelectedConcern: null,
+        referralSuggested: false,
+        supervisorReviewSuggested: false,
+      })
+
+      const independent = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
+      independentWorkflowId = independent.workflow.id
+      expect(independent).toMatchObject({
+        replayed: false,
+        workflow: {
+          reference: 'TK-9Q2M4K7P', status: 'draft', currentStage: 'setup', currentPouId: null, version: 1,
+          setup: null, actions: [], referrals: [], safety: { observations: [], requiredConsequences: [], supervisorReviewRequests: [] },
+        },
+      })
+      expect(independent.workflow.id).not.toBe(workflowId)
+      expect(independent.workflow.checkpoints).toHaveLength(7)
+      expect(independent.workflow.checkpoints.every((checkpoint) => checkpoint.progress === 'not_started')).toBe(true)
+      const preserved = await repository.findById(actor, workflowId)
+      expect(preserved).toMatchObject({ id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4 })
+      expect(preserved?.checkpoints.find((checkpoint) => checkpoint.pouId === 'whakapapa')).toMatchObject({ progress: 'confirmed' })
+      expect((await repository.listResumable(actor)).map((workflow) => workflow.id)).toEqual(expect.arrayContaining([workflowId, independentWorkflowId]))
 
       const foreignActor: AuthenticatedUser = {
         id: foreignUserId,
@@ -161,10 +181,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 3,
           pouId: 'whakapapa',
-          userSelectedConcern: 'watch',
           note: 'A confirmed human observation.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })
       expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 4 } })
@@ -176,19 +193,16 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           idempotencyKey: pouKey,
           expectedVersion: 4,
           pouId: 'whakapapa',
-          userSelectedConcern: 'low',
           note: 'Changed request using the same key.',
-          referralSuggested: false,
-          supervisorReviewSuggested: false,
         },
       })).rejects.toThrow(IdempotencyKeyReuseError)
     }, async (connection) => {
-      if (workflowId) {
-        await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
-        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, workflowId))
-        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, workflowId))
-        await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
-        await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))
+      for (const id of [workflowId, independentWorkflowId].filter((value): value is string => Boolean(value))) {
+        await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
+        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
+        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
+        await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
+        await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
       }
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
@@ -212,7 +226,9 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
     await withMigratedTestDatabase(async (connection) => {
       await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
       await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
-      const repository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-10T00:00:00.000Z'))
+      const now = new Date('2026-08-10T00:00:00.000Z')
+      const syntheses = new PostgresWorkflowSynthesisRepository(connection.db, () => now)
+      const repository = new PostgresWorkflowRepository(connection.db, () => now, undefined, undefined, undefined, syntheses)
       const created = await repository.createDraft({ actor, idempotencyKey: randomUUID() })
       workflowId = created.workflow.id
       let version = created.workflow.version
@@ -226,22 +242,35 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         },
       })
       version = setup.workflow.version
+      let workflow = setup.workflow
       for (const pouId of ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
         const result = await repository.submitCommand({
           actor,
           workflowSessionId: workflowId,
           command: {
             type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, pouId,
-            userSelectedConcern: pouId === 'manaakitanga' ? 'action' : 'low',
-            note: `${pouId} confirmed by the Kaimahi`, referralSuggested: pouId === 'manaakitanga', supervisorReviewSuggested: false,
+            note: `${pouId} confirmed by the Kaimahi`,
           },
         })
         version = result.workflow.version
+        workflow = result.workflow
       }
 
+      const provider: WorkflowSynthesisProvider = {
+        generateWorkflowSynthesis: async () => ({
+          content: {
+            overallSummary: 'Manual downstream-plan synthesis.', keyThemes: null,
+            strengthsSummary: null, areasForAttentionSummary: null,
+            informationStillToExploreSummary: null,
+            confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.',
+          },
+          provider: 'test', model: 'test-model', configurationHash: 'a'.repeat(64), schemaVersion: '1', generatedAt: now,
+        }),
+      }
+      const synthesis = await syntheses.generate(actor, workflow, provider)
       const summary = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-summary-confirmed', idempotencyKey: randomUUID(), expectedVersion: version },
+        command: { type: 'workflow-synthesis-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, synthesisRevisionId: synthesis.draft!.id },
       })
       expect(summary.workflow.currentStage).toBe('action-planning')
       version = summary.workflow.version
@@ -326,16 +355,29 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       nextWorkflowId = nextWorkflow.workflow.id
       expect(nextWorkflow).toMatchObject({ workflow: { status: 'draft' } })
     }, async (connection) => {
-      for (const id of [workflowId, nextWorkflowId].filter((value): value is string => Boolean(value))) {
-        await connection.db.delete(workflowSafetyConsequences).where(eq(workflowSafetyConsequences.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
-        await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, id))
-        await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
-        await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
-        await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
-        await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
-        await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
+      await connection.db.execute(sql`alter table workflow_synthesis_revision disable trigger workflow_synthesis_revision_immutable`)
+      await connection.db.execute(sql`alter table workflow_confirmed_synthesis disable trigger workflow_confirmed_synthesis_immutable`)
+      await connection.db.execute(sql`alter table workflow_final_record disable trigger workflow_final_record_immutable`)
+      try {
+        await connection.db.execute(sql`delete from workflow_final_record where organisation_id = ${organisationId}`)
+        await connection.db.execute(sql`delete from workflow_confirmed_synthesis where organisation_id = ${organisationId}`)
+        await connection.db.execute(sql`delete from workflow_synthesis_revision where synthesis_id in (select id from workflow_synthesis where organisation_id = ${organisationId})`)
+        await connection.db.execute(sql`delete from workflow_synthesis where organisation_id = ${organisationId}`)
+        for (const id of [workflowId, nextWorkflowId].filter((value): value is string => Boolean(value))) {
+          await connection.db.delete(workflowSafetyConsequences).where(eq(workflowSafetyConsequences.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
+          await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, id))
+          await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
+          await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
+          await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
+          await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, id))
+          await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, id))
+        }
+      } finally {
+        await connection.db.execute(sql`alter table workflow_synthesis_revision enable trigger workflow_synthesis_revision_immutable`)
+        await connection.db.execute(sql`alter table workflow_confirmed_synthesis enable trigger workflow_confirmed_synthesis_immutable`)
+        await connection.db.execute(sql`alter table workflow_final_record enable trigger workflow_final_record_immutable`)
       }
       await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
       await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
@@ -610,7 +652,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       })
       const pou = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'whakapapa', userSelectedConcern: 'urgent', referralSuggested: true, supervisorReviewSuggested: true },
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'whakapapa' },
       })
       expect(pou.workflow.safety).toMatchObject({ observations: [], requiredConsequences: [], indicators: { activeObservationCount: 0, supervisorReviewRequired: false } })
       expect(await connection.db.select().from(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, workflowId))).toHaveLength(0)

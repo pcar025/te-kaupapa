@@ -10,8 +10,8 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber']
-const PRE_MILESTONE_4_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 4)
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway', '0013_wooden_triathlon', '0014_ordinary_lady_mastermind', '0015_yellow_microbe', '0016_lonely_vance_astro', '0017_flashy_betty_ross', '0018_trusted_device_sessions', '0019_absurd_norrin_radd', '0020_final_record_confirmed_synthesis_lineage', '0021_useful_anita_blake']
+const PRE_MILESTONE_5_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 6)
 
 interface MigrationJournal {
   entries: Array<{ tag: string }>
@@ -133,13 +133,13 @@ async function migrateTestDatabase(connection: DatabaseConnection): Promise<void
   }
 }
 
-function createPreMilestone4MigrationFolder(): string {
+function createPreMilestone5MigrationFolder(): string {
   const { migrationsFolder } = migrationDetails()
   const journal = JSON.parse(readFileSync(path.join(migrationsFolder, 'meta', '_journal.json'), 'utf8')) as MigrationJournal
-  const folder = mkdtempSync(path.join(tmpdir(), 'te-kaupapa-pre-m4-migrations-'))
+  const folder = mkdtempSync(path.join(tmpdir(), 'te-kaupapa-pre-m5-migrations-'))
   mkdirSync(path.join(folder, 'meta'))
-  const entries = journal.entries.filter(({ tag }) => PRE_MILESTONE_4_MIGRATION_TAGS.includes(tag))
-  if (entries.length !== PRE_MILESTONE_4_MIGRATION_TAGS.length) throw new Error('The pre-Milestone 4 migration chain is incomplete.')
+  const entries = journal.entries.filter(({ tag }) => PRE_MILESTONE_5_MIGRATION_TAGS.includes(tag))
+  if (entries.length !== PRE_MILESTONE_5_MIGRATION_TAGS.length) throw new Error('The pre-Milestone 5 migration chain is incomplete.')
   writeFileSync(path.join(folder, 'meta', '_journal.json'), JSON.stringify({ version: '7', dialect: 'postgresql', entries }, null, 2))
   for (const { tag } of entries) cpSync(path.join(migrationsFolder, `${tag}.sql`), path.join(folder, `${tag}.sql`))
   return folder
@@ -158,31 +158,83 @@ async function resetDisposableSchemaForUpgradeTest(connection: DatabaseConnectio
   await connection.db.execute(sql`create schema "public"`)
 }
 
-export async function verifyUpgradeFromPreMilestone4TestDatabase(): Promise<void> {
+export async function verifyUpgradeFromPreMilestone5TestDatabase(): Promise<void> {
   const connection = createDatabaseConnection(getTestDatabaseUrl())
-  const temporaryMigrationsFolder = createPreMilestone4MigrationFolder()
+  const temporaryMigrationsFolder = createPreMilestone5MigrationFolder()
   let primaryFailure = false
   try {
     await connection.db.execute(sql`select pg_advisory_lock(${MIGRATION_LOCK_ID})`)
     await resetDisposableSchemaForUpgradeTest(connection)
     await migrate(connection.db, { migrationsFolder: temporaryMigrationsFolder })
-    if (await recordedMigrationCount(connection) !== PRE_MILESTONE_4_MIGRATION_TAGS.length) {
-      throw new Error('The disposable database did not record the genuine pre-Milestone 4 migration journal before upgrade.')
+    if (await recordedMigrationCount(connection) !== PRE_MILESTONE_5_MIGRATION_TAGS.length) {
+      throw new Error('The disposable database did not record the genuine 0000 through 0005 Drizzle migration journal before the later migration upgrades.')
     }
 
     const markerSlug = `upgrade-check-${Date.now()}`
-    await connection.db.execute(sql`insert into "organisation" ("slug", "name") values (${markerSlug}, 'Pre-Milestone 4 fixture')`)
+    await connection.db.execute(sql`insert into "organisation" ("slug", "name") values (${markerSlug}, 'Pre-Milestone 5 fixture')`)
     await migrate(connection.db, { migrationsFolder: migrationDetails().migrationsFolder })
     if (await recordedMigrationCount(connection) !== REQUIRED_MIGRATION_TAGS.length) {
-      throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after upgrade.`)
+      throw new Error(`Expected ${REQUIRED_MIGRATION_TAGS.length} ordered Drizzle migration records after the later migration upgrades.`)
     }
     const preservedFixture = await connection.db.execute(sql`select "id" from "organisation" where "slug" = ${markerSlug}`)
     if (preservedFixture.rows.length !== 1) {
-      throw new Error('Pre-Milestone 4 fixture data was not preserved by the 0004 upgrade.')
+      throw new Error('The pre-Milestone 5 fixture data was not preserved by the later migration upgrades.')
     }
-    const safetyTable = await connection.db.execute(sql`select to_regclass('public.workflow_safety_observation') as relation`)
-    if (!(safetyTable.rows[0] as { relation?: string | null } | undefined)?.relation) {
-      throw new Error('The 0004 safety schema was not created by the genuine upgrade.')
+    const conversationTable = await connection.db.execute(sql`select to_regclass('public.workflow_conversation') as relation`)
+    if (!(conversationTable.rows[0] as { relation?: string | null } | undefined)?.relation) {
+      throw new Error('The conversation provenance schema was not preserved by the later migration upgrades.')
+    }
+    const pouSpecificationRelations = await connection.db.execute(sql`
+      select count(*)::int as count from pg_class
+      where oid in (
+        'public.organisation_pou_specification_version'::regclass,
+        'public.conversation_guidance_projection'::regclass,
+        'public.pou_review_projection'::regclass,
+        'public.organisation_pou_safety_specification_link'::regclass,
+        'public.workflow_conversation_pou_specification_pin'::regclass,
+        'public.conversation_review_draft_criterion_assessment'::regclass
+      )
+    `)
+    if (Number(pouSpecificationRelations.rows[0]?.count ?? 0) !== 6) {
+      throw new Error('The organisation Pou specification provenance relations were not preserved through the Phase 5D migration chain.')
+    }
+    const authoringRelations = await connection.db.execute(sql`
+      select count(*)::int as count from pg_class
+      where oid in ('public.organisation_pou_specification_draft'::regclass, 'public.organisation_pou_safety_policy_draft'::regclass)
+    `)
+    if (Number(authoringRelations.rows[0]?.count ?? 0) !== 2) {
+      throw new Error('The SME Pou specification and formal safety-policy draft relations were not created by the later migration chain.')
+    }
+    const assessmentProviderColumns = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.columns
+      where table_schema = 'public' and table_name = 'conversation_safety_assessment_run'
+        and column_name in ('assessment_provider', 'assessment_provider_model', 'assessment_provider_config_hash', 'assessment_schema_version', 'transcript_received_at', 'assessment_started_at', 'assessment_completed_at', 'review_available_at')
+    `)
+    if (Number(assessmentProviderColumns.rows[0]?.count ?? 0) !== 8) {
+      throw new Error('The assessment-provider provenance columns were not created by the Phase 5B migration chain.')
+    }
+    const transcriptRelations = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.tables
+      where table_schema = 'public' and table_name in ('conversation_transcript', 'conversation_transcript_turn')
+    `)
+    if (Number(transcriptRelations.rows[0]?.count ?? 0) !== 2) {
+      throw new Error('The transcript source-material tables were not created by the Phase 5B migration chain.')
+    }
+    const evidenceTurnColumn = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.columns
+      where table_schema = 'public' and table_name = 'conversation_provider_rule_assessment' and column_name = 'evidence_turn_ids'
+    `)
+    if (Number(evidenceTurnColumn.rows[0]?.count ?? 0) !== 1) {
+      throw new Error('The evidence-turn provenance column was not created by the Phase 5B migration chain.')
+    }
+    const finalRecordLineageTrigger = await connection.db.execute(sql`
+      select count(*)::int as count from pg_trigger
+      where tgname = 'workflow_final_record_confirmed_synthesis_lineage'
+        and tgrelid = 'public.workflow_final_record'::regclass
+        and not tgisinternal
+    `)
+    if (Number(finalRecordLineageTrigger.rows[0]?.count ?? 0) !== 1) {
+      throw new Error('The final-record confirmed-synthesis lineage trigger was not created by the later migration chain.')
     }
   } catch (error) {
     primaryFailure = true

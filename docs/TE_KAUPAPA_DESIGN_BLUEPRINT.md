@@ -176,7 +176,7 @@ The conversational agent will be configured in the ElevenLabs environment.
 
 The primary agent prompt will also be maintained in ElevenLabs.
 
-OpenAI will provide the LLM used by the ElevenLabs conversational agent.
+The underlying conversational LLM is selected and configured inside the versioned ElevenLabs agent. Te Kaupapa does not depend directly on, select, or persist the runtime LLM. A staging agent may use Gemini 3.5 Flash as operational context without making Gemini an application dependency.
 
 ### ElevenLabs is responsible for
 
@@ -184,8 +184,8 @@ OpenAI will provide the LLM used by the ElevenLabs conversational agent.
 - voice input and output
 - conversational agent behaviour
 - the primary conversational prompt
-- orchestration of the underlying LLM
-- conversational analysis configured in the provider
+- selection and orchestration of the underlying LLM
+- signed post-call transcript delivery and conversation provenance
 
 ### Te Kaupapa is responsible for
 
@@ -202,7 +202,77 @@ OpenAI will provide the LLM used by the ElevenLabs conversational agent.
 - audit
 - supervisor review
 
+### Architecture decision: separate conversational orchestration, transcript source material, Safety Pou assessment, and narrative review
+
+ElevenLabs is the conversation provider and does not make Safety Pou assessments. A separate, provider-neutral `ConversationAssessmentProvider` performs complex structured interpretation. The initial adapter is OpenAI Responses API Structured Outputs; a future AWS Bedrock/Claude adapter remains possible without workflow, database, or UI redesign. Selected-model regional availability and data governance must be verified; Te Kaupapa does not claim all Claude/Bedrock models process in Sydney.
+
+The authoritative path is: signed ElevenLabs transcript webhook → Te Kaupapa normalises the verified conversation into stable ordered turns → noncanonical transcript source material is retained through a dedicated repository → transient copies are independently sent to (a) the structured safety-assessment provider and (b) the narrative `ConversationReviewDraftProvider` → Te Kaupapa validates each application-owned contract → separate noncanonical safety candidate and review draft → Kaimahi review/edit → explicit human confirmation → canonical state. No provider can directly create canonical observations, actions, referrals, consequences, summaries, or workflow transitions.
+
+Four information classes remain distinct:
+
+1. **Transcript source material** is a noncanonical source conversation, scoped to its organisation, workflow, Pou, and conversation, and separately access-controlled.
+2. **AI safety assessment** is bounded, noncanonical interpretation that refers to source turns by stable identifier rather than copying quotations or rationale.
+3. **AI review draft** is a distinct bounded natural-language synthesis. Its generated revision, human edits, and evidence-turn references are retained separately from the safety assessment; it has no safety, action, referral, escalation, or workflow authority.
+4. **Canonical workflow/safety state** is created only through approved deterministic and human-confirmed paths. A canonical Pou review is inserted only from the authenticated Kaimahi's explicitly confirmed final review-draft revision; this does not confirm a separate safety candidate.
+5. **Supervisor source access** is a future role-, relationship-, organisation-, audit-, retention-, and deletion-governed capability that may retrieve referenced turn context. Its UI is explicitly deferred beyond the SME proof of concept.
+
+### Cross-Pou synthesis and final record boundary
+
+The existing `pou-summary` workflow checkpoint is the only cross-Pou synthesis-review point. After all seven canonical Pou reviews exist, a provider-neutral server-side synthesis adapter may generate a bounded draft from confirmed application state only. The Kaimahi may edit that draft, but it becomes authoritative only through an explicit synthesis-confirmation interaction. A generated synthesis is not a safety candidate, observation, action, referral, escalation, or workflow transition.
+
+Workflow completion creates an immutable final-record snapshot from the explicitly confirmed synthesis and canonical workflow state at that time. Copy and authenticated on-demand PDF export render this snapshot only; they do not read transcripts or provider records. If a safety observation is later corrected, both the correction history and the previous final record remain independently auditable. Supervisor final-record access is not introduced by this boundary.
+
+Te Kaupapa never stores audio, raw webhook envelopes, raw model requests/responses, provider rationale, or hidden reasoning. OpenAI `store: false` remains an OpenAI request setting, not a claim of Zero Data Retention. Real whānau transcript retention remains a separate governance gate: the present storage foundation is authorised for synthetic POC material only and has no approved production retention duration. A PostgreSQL transcript repository may later delegate text storage to encrypted object storage without changing workflow or assessment contracts.
+
 The Te Kaupapa frontend should not independently analyse raw transcript text to determine contraindications, risks, or workflow consequences.
+
+### Provider authorization and lifecycle
+
+Voice sessions must begin only after Te Kaupapa has authenticated and authorized the Kaimahi, workflow, organisation, and authoritative Pou. The backend selects the provider agent configuration and issues only temporary provider authorization to the browser. Provider API keys, signed material, raw transcript, audio, and raw provider payloads must not be persisted or logged.
+
+#### Stable provider behaviour and dynamic Pou guidance
+
+ElevenLabs uses one stable, human-maintained base system prompt for behaviour that applies across organisations and Pou. It controls how the reflective assistant behaves; it is not generated or replaced by Te Kaupapa. At the authorized start of a conversation, Te Kaupapa resolves one approved organisation-owned Pou specification and deterministically derives a bounded `ConversationGuidanceProjection`. The browser receives only the server-authorized dynamic values `pou_name`, `pou_opening`, and `pou_guidance`, then passes them unchanged to the ElevenLabs SDK. The stable base prompt consumes these values through its configured placeholders; this does not require a full system-prompt override.
+
+`pou_guidance` contains only the approved CURRENT_CONVERSATION purpose, exploration areas, follow-up guidance, and Pou-specific boundaries. APPLICATION_STATE and LONGITUDINAL criteria never enter this runtime conversation context. The conversation pin records the specification and guidance-projection identities and hashes. Where ElevenLabs exposes conversation-initiation dynamic variables in a signed post-call event, Te Kaupapa verifies the three expected values against that pin and rejects a mismatch without treating browser/provider values as policy.
+
+The same pinned organisation specification separately derives a `PouReviewProjection` for noncanonical narrative evidence review and links the existing immutable Phase 5B `SafetyAssessmentProjection`. Conversation guidance, narrative review, and formal safety assessment remain separate provider contracts. A missing topic is recorded as `not_explored` or `insufficient_information`, never as evidence that it is absent or safe. No dynamic variable, transcript, or provider output can alter canonical policy, a safety candidate, a canonical Pou review, or deterministic consequences without their separately validated and human-confirmed pathways.
+
+For the controlled Whakapapa pilot, dynamic-guidance transport is accepted only when the server authority, authenticated three-value application contract, installed SDK serialization/transport proof, and published provider placeholders all align. A controlled live conversation is supporting behavioural evidence, not the sole transport proof. ElevenLabs Zero Retention Mode may omit dynamic-variable values from later provider read-back. That observability limitation must be reported truthfully and does not make browser/provider guidance authoritative: post-call review and safety jobs independently resolve the conversation's pinned approved specification and projections.
+
+**Deferred provider-integration refinement:** confirm with ElevenLabs whether Zero Retention Mode intentionally suppresses dynamic-variable receipt/read-back. Normal provider documentation exposes dynamic variables through conversation-initiation client data, but the controlled private-WebRTC ZRM record exposed an empty object. Do not weaken Zero Retention Mode, enable additional retention, or use provider read-back as policy authority while resolving this.
+
+#### Seven-Pou draft-derived SME POC rollout
+
+The same approved architecture applies to every Te Waharoa Pou: a source-derived immutable organisation specification produces a current-conversation-only guidance projection, a separate structured review projection, and a link to the distinct immutable safety projection. The seven Pou are `whakapapa`, `manaakitanga`, `tikanga`, `kaitiakitanga`, `puukenga`, `haepapa`, and `oranga`, in workflow order. The source is `src/imports/pasted_text/te-waharoa-model-update.md` (`#pou-1` through `#pou-7`), pinned by its raw SHA-256 in each derived version.
+
+For a controlled local SME POC, Pou 2–7 v0.1 may be `draft_derived` and explicitly approved by a named operator without being represented as final SME policy. Activation is still explicit, organisation/Pou-scoped, immutable, and server-side. Any SME correction must be a new version. The source’s documentation/application-state and pattern-over-time material is retained in the specification but never inferred from a single reflection or sent as dynamic conversation guidance.
+
+Every current-conversation review criterion receives exactly one bounded evidence status. `not_explored` and `insufficient_information` report a gap; neither means a concern is absent, a Pou passed, or a reflection is safe. Narrative review and formal safety assessment remain separate. Where a source has only safety-flag examples rather than bounded indicators, mappings, and permitted human concern levels, the formal runtime safety rule is deliberately absent pending SME clarification. This preserves the existing canonical safety taxonomy and prevents review attention from becoming automatic safety policy.
+
+The browser uses one generic Pou flow—overview, voice reflection, analysing, review/edit, explicit confirmation, next Pou—but the backend remains authoritative for current Pou eligibility, specification selection, pins, transcript scope, candidate validation, and canonical confirmation. Evidence-turn identifiers remain scoped to one retained conversation, organisation, workflow, and Pou. Supervisor transcript UI remains deferred.
+
+#### SME Pou specification authoring foundation
+
+An independent `SPECIFICATION_EDITOR` capability may author organisation-scoped working drafts. It is additive: it does not imply Kaimahi or Supervisor access, and those roles do not imply specification authority. A working draft is mutable only within its own organisation, uses optimistic revision checks, and never appears in the active runtime resolver. The currently active immutable version continues to drive conversations until a complete draft is explicitly approved and activated into a new immutable version with separate editor, approval, and activation provenance.
+
+The current source-derived v0.1 material does not provide an opening reflection question. A v0.2 working draft therefore starts with that field blank and explicitly marked as SME input required; it is never filled with generated placeholder policy. Preview truthfully reports that the opening is not yet defined. Saving a partial draft is allowed, but approval and activation require a nonblank `sme_authored` opening question. This preserves the distinction between source-derived v0.1 content and later SME-authored content.
+
+Exploration areas may be marked core, conditional, or evidence to notice, with bounded follow-up and review/evidence guidance. Formal safety-rule proposal notes remain a separately governed, non-executable workshop input: they cannot alter the linked immutable `SafetyAssessmentProjection`, activate a draft, create a candidate, or change canonical workflow state. Provider prompt publication and any live use of a later version remain separate human/provider gates.
+
+#### SME-demo Pou review and action flow
+
+The ordinary post-conversation Pou screen contains only real, bounded application data: the editable noncanonical review draft, its pinned structured criterion assessments, any actual formal safety candidate, and authoritative workflow state. Legacy illustrative reflective prompts, safety flags, concern grids, suggested actions, referrals, and supervisor controls do not appear as conversation-derived findings.
+
+For each Pou the Kaimahi works through: conversation → evidence review → explicit human confirmation → optional human `carry-forward` marking. The review separates what was established, strengths/protective factors, information still to explore, and areas for attention. A missing topic is never treated as absent or safe. An area for attention is not a formal safety concern and does not create an action.
+
+Formal safety controls are conditional: they appear only for a real reviewable candidate or the existing deliberate human safety-recording path. The approved ordinary Pou concern levels are Low, Watch, and Action; narrative review confirmation neither selects nor confirms a safety concern. Supervisor review and escalation remain governed by the existing human-confirmed safety and deterministic-policy pathways.
+
+A carry-forward marker is a human-owned, non-action source link to a current, scoped review criterion, an area for attention, or a confirmed safety observation. It records its organisation, workflow, Pou, source reference, actor, and timestamp, but it does not create an action, referral, escalation, supervisor request, or workflow consequence. After all seven Pou are explicitly confirmed, Te Kaupapa shows a whole-of-assessment synthesis followed by Action Planning even when zero items were carried forward. The Kaimahi then decides whether anything becomes an action, referral, future follow-up, or no further action. Detailed action/referral fields therefore belong after the seven-Pou synthesis, not to an individual Pou review.
+
+Conversation provenance may associate an internal conversation ID, workflow, Pou, actor, provider reference, selected non-secret agent configuration reference, and approved conversation-specification version. This provenance does not make provider output canonical. It must not advance a workflow, create a safety observation, action, referral, summary, or deterministic consequence without the separately approved validation and human-confirmation path.
+
+Live caption display, where enabled, is ephemeral and bounded. It is released with media resources on normal end, error, navigation, unmount, logout, and session expiry. Transcript and audio retention remain separate product/privacy decisions.
 
 ---
 

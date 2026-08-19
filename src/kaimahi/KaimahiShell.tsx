@@ -4,6 +4,7 @@ export type SessionStageKey =
   | 'setup'
   | 'pou-overview'
   | 'pou-convo'
+  | 'pou-processing'
   | 'pou-review'
   | 'pou-summary'
   | 'synthesising'
@@ -17,6 +18,7 @@ export type SessionStageKey =
 export const SESSION_STAGE_LABELS: Partial<Record<SessionStageKey, { reo: string; en: string }>> = {
   setup:        { reo: 'Tomokia',    en: 'Enter'         },
   'pou-overview':{ reo: 'Ngā Pou',  en: 'Te Waharoa'    },
+  'pou-processing': { reo: 'Whakarite', en: 'Preparing review' },
   'pou-summary': { reo: 'Whakarāpopoto', en: 'Summary'  },
   risks:        { reo: 'Āwangawanga', en: 'Concerns & Actions' },
   referrals:    { reo: 'Ara',       en: 'Referrals'      },
@@ -66,6 +68,8 @@ export function SessionHeader({
   const centreLabel = (() => {
     if (stage === 'pou-convo' && pouIdx !== undefined)
       return { main: pouReo ?? 'Kōrero', sub: `Pou ${pouIdx + 1} o 7` }
+    if (stage === 'pou-processing' && pouIdx !== undefined)
+      return { main: 'Whakarite', sub: `Pou ${pouIdx + 1} o 7` }
     if (stage === 'pou-review' && pouIdx !== undefined)
       return { main: 'Arotake', sub: `Pou ${pouIdx + 1} o 7` }
     if (meta) return { main: meta.reo, sub: meta.en }
@@ -74,7 +78,7 @@ export function SessionHeader({
 
   // Macro progress rail: 5 phases (Setup, Pou Journey, Summary, Docs, Record)
   // During pou-convo / pou-review, show mini pou dots instead
-  const showPouDots = stage === 'pou-convo' || stage === 'pou-review'
+  const showPouDots = stage === 'pou-convo' || stage === 'pou-processing' || stage === 'pou-review'
   const macroPhases: SessionStageKey[] = ['setup', 'pou-overview', 'pou-summary', 'risks', 'record']
   const macroIdx = macroPhases.indexOf(stage)
 

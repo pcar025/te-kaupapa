@@ -34,13 +34,13 @@ import {
 import { SessionShell } from './kaimahi/KaimahiSession'
 import type { AuthProfile } from './auth'
 import {
-  WorkflowApiError,
   createWorkflow,
   getWorkflow,
   listCompletedWorkflows,
   listResumableWorkflows,
   type CompletedWorkflowListItem,
   type Workflow,
+  type WorkflowListItem,
   type WorkflowPersistenceState,
 } from './workflows'
 
@@ -287,17 +287,25 @@ function actionStripe(type: ActionType): string {
 }
 
 function HomeScreen({
-  onBeginSession,
+  onContinueSession,
+  onStartNewSession,
+  onOpenSavedSession,
+  onOpenCompletedRecords,
   sessionActive,
   sessionRef,
   sessionStage,
+  savedSessions,
   displayName,
   persistenceState,
 }: {
-  onBeginSession: () => void
+  onContinueSession: () => void
+  onStartNewSession: () => void
+  onOpenSavedSession: (workflowId: string) => void
+  onOpenCompletedRecords: () => void
   sessionActive: boolean
   sessionRef: string
   sessionStage: SessionStageKey
+  savedSessions: WorkflowListItem[]
   displayName: string
   persistenceState: WorkflowPersistenceState
 }) {
@@ -431,12 +439,9 @@ function HomeScreen({
       <div className="px-5 pt-6 pb-10 space-y-7">
 
         {/* ── 1. Central action — Start Reflection ── */}
-        <button
-          onClick={onBeginSession}
-          className="w-full text-left transition-all active:opacity-85"
-        >
-          {sessionActive ? (
-            /* Resume in-progress session */
+        {sessionActive ? (
+          <>
+            <button onClick={onContinueSession} className="w-full text-left transition-all active:opacity-85">
             <div
               style={{
                 backgroundColor: 'var(--color-ridge-light)',
@@ -471,8 +476,26 @@ function HomeScreen({
                 <> · Tap to return →</>
               </p>
             </div>
-          ) : (
-            /* Begin new session — the primary invitation */
+            </button>
+            <button onClick={onStartNewSession} className="mt-3 w-full text-left transition-all active:opacity-85">
+              <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: '4px solid var(--color-ridge)', padding: '1rem 1.25rem' }}>
+                <p className="text-xs tracking-wide mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>TĪMATA HOU</p>
+                <p className="text-base font-medium italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Start a new reflection</p>
+                <p className="mt-1 text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Begin fresh, then enter Whakapapa →</p>
+              </div>
+            </button>
+            {savedSessions.filter((session) => session.reference !== sessionRef).length > 0 && (
+              <div className="mt-3 space-y-1.5">
+                {savedSessions.filter((session) => session.reference !== sessionRef).map((session) => (
+                  <button key={session.id} type="button" onClick={() => onOpenSavedSession(session.id)} className="w-full px-3 py-2 text-left" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '3px solid var(--color-border)' }}>
+                    <span className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Open saved reflection · {session.reference}</span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </>
+        ) : (
+          <button onClick={onStartNewSession} className="w-full text-left transition-all active:opacity-85">
             <div
               style={{
                 backgroundColor: 'var(--color-ridge)',
@@ -524,7 +547,15 @@ function HomeScreen({
                       : 'Reflect through the Pou of Te Waharoa →'}
               </p>
             </div>
-          )}
+          </button>
+        )}
+
+        <button onClick={onOpenCompletedRecords} className="w-full text-left transition-all active:opacity-85">
+          <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: '4px solid var(--color-growth)', padding: '1rem 1.25rem' }}>
+            <p className="text-xs tracking-wide mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)' }}>TOHU</p>
+            <p className="text-base font-medium italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Tohu — Session records</p>
+            <p className="mt-1 text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>View completed reflections and download records →</p>
+          </div>
         </button>
 
         {/* ── 2. Te Waharoa Pou — structural health ── */}
@@ -2064,6 +2095,7 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
   const [moreOpen, setMoreOpen] = useState(false)
   const [sessionOpen, setSessionOpen] = useState(false)
   const [workflow, setWorkflow] = useState<Workflow | null>(null)
+  const [resumableWorkflows, setResumableWorkflows] = useState<WorkflowListItem[]>([])
   const [completedRecords, setCompletedRecords] = useState<CompletedWorkflowListItem[]>([])
   const [startPersistenceState, setStartPersistenceState] = useState<WorkflowPersistenceState>('idle')
   const pendingStartKey = useRef<string | null>(null)
@@ -2073,7 +2105,9 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
     let active = true
     void (async () => {
       try {
-        const [resumable] = await listResumableWorkflows()
+        const resumableWorkflows = await listResumableWorkflows()
+        const [resumable] = resumableWorkflows
+        if (active) setResumableWorkflows(resumableWorkflows)
         if (!resumable) return
         const current = await getWorkflow(resumable.id)
         if (active) setWorkflow(current)
@@ -2094,11 +2128,17 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
 
   useEffect(() => { void refreshCompletedRecords() }, [])
 
-  const beginOrResumeSession = async () => {
-    if (workflow) {
+  const resumeWorkflow = async (workflowId: string) => {
+    try {
+      const current = await getWorkflow(workflowId)
+      setWorkflow(current)
       setSessionOpen(true)
-      return
+    } catch {
+      setStartPersistenceState('failed')
     }
+  }
+
+  const beginNewSession = async () => {
     const retrying = startedAttempt.current
     startedAttempt.current = true
     const idempotencyKey = pendingStartKey.current ?? crypto.randomUUID()
@@ -2110,22 +2150,10 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
       setWorkflow(result.workflow)
       setStartPersistenceState('saved')
       setSessionOpen(true)
+      void listResumableWorkflows().then(setResumableWorkflows).catch(() => {
+        // Creation has already been acknowledged; a list refresh cannot undo it.
+      })
     } catch (error) {
-      if (error instanceof WorkflowApiError && error.code === 'active_workflow_exists') {
-        try {
-          const [resumable] = await listResumableWorkflows()
-          if (resumable) {
-            const current = await getWorkflow(resumable.id)
-            pendingStartKey.current = null
-            setWorkflow(current)
-            setStartPersistenceState('saved')
-            setSessionOpen(true)
-            return
-          }
-        } catch {
-          // Preserve the original failure state below.
-        }
-      }
       setStartPersistenceState('failed')
     }
   }
@@ -2151,6 +2179,7 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
           setSessionOpen(false)
           if (workflow.status === 'completed') {
             setWorkflow(null)
+            void listResumableWorkflows().then(setResumableWorkflows)
             void refreshCompletedRecords()
           }
           setTab('home')
@@ -2161,14 +2190,14 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
 
   const renderContent = () => {
     switch (tab) {
-      case 'home':             return <HomeScreen onBeginSession={() => { void beginOrResumeSession() }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} displayName={profile.displayName} persistenceState={startPersistenceState} />
+      case 'home':             return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} onOpenCompletedRecords={() => setTab('record-archive')} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
       case 'actions':          return <MyActionsScreen />
       case 'reflections':      return <WhanauReflectionsScreen />
       case 'referrals-browse': return <ReferralsBrowseScreen />
       case 'synthesis-archive':return <SynthesisArchiveScreen />
       case 'record-archive':   return <CompletedRecordsScreen records={completedRecords} onOpen={(workflowId) => { void getWorkflow(workflowId).then((completed) => { setWorkflow(completed); setSessionOpen(true) }) }} />
       case 'settings':         return <SettingsScreen profile={profile} />
-      default:                 return <HomeScreen onBeginSession={() => { void beginOrResumeSession() }} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} displayName={profile.displayName} persistenceState={startPersistenceState} />
+      default:                 return <HomeScreen onContinueSession={() => { if (workflow) setSessionOpen(true) }} onStartNewSession={() => { void beginNewSession() }} onOpenSavedSession={(workflowId) => { void resumeWorkflow(workflowId) }} onOpenCompletedRecords={() => setTab('record-archive')} sessionActive={Boolean(workflow)} sessionRef={workflow?.reference ?? ''} sessionStage={(workflow?.currentStage ?? 'pou-overview') as SessionStageKey} savedSessions={resumableWorkflows} displayName={profile.displayName} persistenceState={startPersistenceState} />
     }
   }
 
@@ -2193,7 +2222,7 @@ export default function KaimahiApp({ onBack, profile }: { onBack: () => void; pr
         moreOpen={moreOpen}
         sessionActive={Boolean(workflow)}
         onTab={handleTab}
-        onSession={() => { void beginOrResumeSession() }}
+        onSession={() => { if (workflow) setSessionOpen(true); else void beginNewSession() }}
         onMore={() => setMoreOpen(!moreOpen)}
       />
     </WhareShell>

@@ -75,3 +75,24 @@ Use these engineering test profiles. They are not claims about specific cellular
 | --- | ---: | ---: | ---: |
 | Constrained | ~1.5 Mbps | ~750 kbps | ~150 ms |
 | Severe | ~400 kbps | ~200 kbps | ~400 ms |
+
+## Phase 5A implementation measurement
+
+The Phase 5A production build was measured after adding the Whakapapa-only lazy `@elevenlabs/react` voice subtree. This is a build-artifact measurement, not a real-device or live-provider performance claim.
+
+| Asset | Raw | gzip |
+| --- | ---: | ---: |
+| Entry JavaScript | ~200.6 kB | ~63.4 kB |
+| Entry CSS | ~23.3 kB | ~5.2 kB |
+| Shared role chunk | ~17.1 kB | ~5.0 kB |
+| Kaimahi base chunk | ~146.8 kB | ~27.7 kB |
+| Supervisor chunk | ~36.8 kB | ~6.6 kB |
+| Whakapapa voice chunk | ~468.3 kB | ~122.3 kB |
+
+- Entry JS/CSS is ~68.6 kB gzip; the voice SDK is not in the entry bundle.
+- Normal Kaimahi route code is ~32.7 kB gzip including the shared role chunk.
+- Supervisor route code is ~11.6 kB gzip including the shared role chunk and did not gain the voice SDK.
+- The voice chunk is requested only when Pou 1, Whakapapa, enters its real voice-conversation subtree. It is not loaded for the other six Pou.
+- Representative compact JSON was measured using UUID-length internal IDs, a 35-character synthetic provider conversation ID, and ISO timestamps. Start is 57 bytes; start response is 408 bytes plus the temporary token length; client-connected is 64 bytes request / 364 bytes response; end is 23 bytes request / 371 bytes response; current-conversation metadata is 346 bytes response. These are payload-shape measurements, not live HTTP transfer measurements. The provider token length and real compressed transfer sizes remain intentionally unmeasured until an explicitly authorized live staging test because the token is provider-controlled and sensitive.
+
+The voice chunk is materially larger than the provisional Kaimahi route guardrail. This is acceptable only because it is deferred until deliberate entry to the one real voice experience. Real-device constrained/severe-network testing remains required before pilot use.

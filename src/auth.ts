@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 
-export type ApplicationRole = 'KAIMAHI' | 'SUPERVISOR'
+export type ApplicationRole = 'KAIMAHI' | 'SUPERVISOR' | 'SPECIFICATION_EDITOR'
 
 export interface AuthProfile {
   id: string
@@ -51,8 +51,21 @@ export function useAuthState() {
     void refresh()
   }, [refresh])
 
-  const beginSignIn = useCallback(() => {
-    window.location.assign('/api/auth/login')
+  const beginSignIn = useCallback(async (trustedDevice = false) => {
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ trustedDevice }),
+      })
+      if (!response.ok) throw new Error('Unable to begin sign-in.')
+      const payload = await response.json() as { authorizationUrl?: string }
+      if (!payload.authorizationUrl) throw new Error('Sign-in authorization is unavailable.')
+      window.location.assign(payload.authorizationUrl)
+    } catch {
+      setState({ kind: 'error' })
+    }
   }, [])
 
   const signOut = useCallback(async () => {

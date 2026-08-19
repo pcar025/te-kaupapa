@@ -46,6 +46,22 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+@keyframes reflection-processing-breathe {
+  0%, 100% { opacity: 0.2; transform: scaleY(0.72); transform-origin: bottom; }
+  50% { opacity: 0.9; transform: scaleY(1); transform-origin: bottom; }
+}
+
+.reflection-processing-pou {
+  animation: reflection-processing-breathe 2.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reflection-processing-pou {
+    animation: none;
+    opacity: 0.72;
+  }
+}
+
 /* Scrollbar — hidden at rest, visible on scroll */
 * {
   scrollbar-width: thin;

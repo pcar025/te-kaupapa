@@ -1,3 +1,5 @@
+import { useState } from 'react'
+
 import { TE_WAHAROA_POU } from './pou'
 import type { AuthProfile } from './auth'
 
@@ -7,6 +9,7 @@ const ENTRY_POU = TE_WAHAROA_POU.map((pou) => pou.reo)
 export default function EntryScreen({
   onKaimahi,
   onSupervisor,
+  onSpecificationEditor,
   profile,
   authMessage,
   onSignIn,
@@ -14,13 +17,16 @@ export default function EntryScreen({
 }: {
   onKaimahi: () => void
   onSupervisor: () => void
+  onSpecificationEditor?: () => void
   profile?: AuthProfile
   authMessage?: string
-  onSignIn?: () => void
+  onSignIn?: (trustedDevice: boolean) => void
   onSignOut?: () => void
 }) {
   const canUseKaimahi = profile?.roles.includes('KAIMAHI') ?? false
   const canUseSupervisor = profile?.roles.includes('SUPERVISOR') ?? false
+  const canUseSpecificationEditor = profile?.roles.includes('SPECIFICATION_EDITOR') ?? false
+  const [trustedDevice, setTrustedDevice] = useState(false)
   return (
     <div
       className="min-h-screen flex flex-col"
@@ -170,7 +176,16 @@ export default function EntryScreen({
                     Mātāmua — Supervisor View
                   </button>
                 )}
-                {!canUseKaimahi && !canUseSupervisor && (
+                {canUseSpecificationEditor && (
+                  <button
+                    onClick={onSpecificationEditor}
+                    className="w-full py-3 text-sm transition-opacity hover:opacity-80"
+                    style={{ backgroundColor: 'transparent', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border-strong)', letterSpacing: '0.06em', fontFamily: 'var(--font-mono)' }}
+                  >
+                    Pou specification workshop
+                  </button>
+                )}
+                {!canUseKaimahi && !canUseSupervisor && !canUseSpecificationEditor && (
                   <p role="status" className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
                     Your account does not have a Te Kaupapa role assigned.
                   </p>
@@ -181,8 +196,21 @@ export default function EntryScreen({
                 <p role="status" className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
                   {authMessage ?? 'Please sign in to continue.'}
                 </p>
+                <label className="flex items-start gap-3 text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
+                  <input
+                    type="checkbox"
+                    checked={trustedDevice}
+                    onChange={(event) => setTrustedDevice(event.target.checked)}
+                    className="mt-1 h-4 w-4"
+                  />
+                  <span>
+                    <span className="block font-medium" style={{ color: 'var(--color-ink)' }}>Keep me signed in on this device for 30 days</span>
+                    <span className="block mt-1 text-xs">Use this only on a private or individually assigned device protected by a screen lock or device sign-in. Do not use this on a shared or public device.</span>
+                  </span>
+                </label>
                 <button
-                  onClick={onSignIn}
+                  type="button"
+                  onClick={() => onSignIn?.(trustedDevice)}
                   className="w-full py-4 text-sm font-medium transition-opacity hover:opacity-90 active:opacity-75"
                   style={{
                     backgroundColor: 'var(--color-ridge)',

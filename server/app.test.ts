@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest'
+// @vitest-environment node
+
+import { describe, expect, it, vi } from 'vitest'
 
 import { createApplication } from './app.js'
 import { sha256 } from './auth/crypto.js'
 import type { OidcProvider } from './auth/oidc.js'
+import { sessionExpiresAt, sessionHasIdleExpired } from './auth/session-policy.js'
 import type { AppConfiguration } from './config.js'
 import type { AuthRepository, CreateSessionInput } from './db/repository.js'
 import type { AuthenticatedUser } from './domain/auth.js'
@@ -27,8 +30,13 @@ import {
   checkpointAfterStructuredReview,
   WorkflowTransitionError,
 } from './workflows/domain.js'
-import { WORKFLOW_POU_IDS, type WorkflowCommand } from '../shared/workflow.js'
+import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
+import type { ConversationRecord } from './conversations/repository.js'
+import { UnresolvedSafetyCandidateError } from './safety-assessments/repository.js'
+import type { ConversationApplicationService } from './conversations/service.js'
+import { SafetyAssessmentValidationError } from './safety-assessments/repository.js'
+import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -51,11 +59,11 @@ class MemoryRepository implements AuthRepository {
     this.sessions.set(input.tokenHash, input)
   }
 
-  async findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number) {
+  async findUserBySessionHash(tokenHash: string, now: Date) {
     const session = this.sessions.get(tokenHash)
     if (!session) return null
     const lastActivityAt = session.lastActivityAt ?? session.expiresAt
-    if (session.invalidatedAt || session.expiresAt <= now || lastActivityAt <= new Date(now.getTime() - idleTimeoutMinutes * 60 * 1000)) return null
+    if (session.invalidatedAt || session.expiresAt <= now || sessionHasIdleExpired(session.mode ?? 'standard', lastActivityAt, now)) return null
     return [...this.identities.values()].find((user) => user.id === session.userId) ?? null
   }
 
@@ -67,6 +75,12 @@ class MemoryRepository implements AuthRepository {
   async invalidateSession(tokenHash: string, invalidatedAt: Date) {
     const session = this.sessions.get(tokenHash)
     if (session) session.invalidatedAt = invalidatedAt
+  }
+
+  async invalidateSessionsForUser(userId: string, invalidatedAt: Date) {
+    for (const session of this.sessions.values()) {
+      if (session.userId === userId && !session.invalidatedAt) session.invalidatedAt = invalidatedAt
+    }
   }
 
   async isSupervisorOf(supervisorUserId: string, kaimahiUserId: string) {
@@ -112,6 +126,8 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       })),
       actions: [],
       referrals: [],
+      carryForwards: [],
+      pouReviews: [],
       safety: {
         observations: [],
         requiredConsequences: [],
@@ -252,10 +268,10 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         checkpoint.progress === 'confirmed',
       )
       checkpoint.progress = 'confirmed'
-      checkpoint.userSelectedConcern = command.userSelectedConcern
+      checkpoint.userSelectedConcern = null
       checkpoint.note = command.note || null
-      checkpoint.referralSuggested = command.referralSuggested
-      checkpoint.supervisorReviewSuggested = command.supervisorReviewSuggested
+      checkpoint.referralSuggested = false
+      checkpoint.supervisorReviewSuggested = false
       checkpoint.confirmedAt = new Date('2026-08-10T00:00:00.000Z')
       workflow.currentStage = next.stage
       workflow.currentPouId = next.currentPouId
@@ -367,6 +383,8 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         checkpoints: workflow.checkpoints,
         actions: workflow.actions,
         referrals: workflow.referrals,
+        carryForwards: workflow.carryForwards,
+        pouReviews: workflow.pouReviews,
         createdAt: workflow.createdAt,
         updatedAt: workflow.updatedAt,
         completedAt: workflow.completedAt,
@@ -375,18 +393,47 @@ class MemoryWorkflowRepository implements WorkflowRepository {
   }
 }
 
+class FakeConversationService implements ConversationApplicationService {
+  private conversation: ConversationRecord | null = null
+  readonly starts: Array<{ workflowSessionId: string; pouId: string; idempotencyKey: string }> = []
+
+  async start(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId, idempotencyKey: string) {
+    this.starts.push({ workflowSessionId, pouId, idempotencyKey })
+    this.conversation = {
+      id: '8e1fde30-c4b6-492a-8862-32200b2661a9', organisationId: actor.organisation.id, workflowSessionId, pouId, startedByUserId: actor.id,
+      provider: 'elevenlabs', providerConversationId: 'provider-conversation-id', providerAgentReference: 'server-selected-agent', providerBranchReference: 'server-selected-branch', providerEnvironment: 'staging',
+      conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
+      authorizedAt: new Date('2026-08-11T00:00:00.000Z'), connectedAt: null, endedAt: null, terminationReason: null, createdAt: new Date('2026-08-11T00:00:00.000Z'), updatedAt: new Date('2026-08-11T00:00:00.000Z'),
+    }
+    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } }
+  }
+
+  async acknowledgeClientConnected(_actor: AuthenticatedUser, conversationId: string, providerConversationId: string) {
+    if (!this.conversation || this.conversation.id !== conversationId || this.conversation.providerConversationId !== providerConversationId) throw new Error('provider mismatch')
+    this.conversation = { ...this.conversation, status: 'active', connectedAt: new Date('2026-08-11T00:01:00.000Z') }
+    return this.conversation
+  }
+
+  async end(_actor: AuthenticatedUser, conversationId: string, reason: 'user_ended' | 'navigation' | 'connection_lost' | 'startup_failed' | 'provider_error' | 'provider_id_mismatch') {
+    if (!this.conversation || this.conversation.id !== conversationId) throw new Error('not found')
+    this.conversation = { ...this.conversation, status: 'ended', endedAt: new Date('2026-08-11T00:02:00.000Z'), terminationReason: reason }
+    return this.conversation
+  }
+
+  async current() { return this.conversation }
+}
+
 function config(): AppConfiguration {
   return {
     nodeEnv: 'test',
     port: 3011,
+    host: '127.0.0.1',
     databaseUrl: 'postgresql://not-used',
     appOrigin: 'http://api.test',
     frontendOrigin: 'http://web.test',
     allowedOrigins: ['http://api.test', 'http://web.test'],
     cookieName: 'test_session',
     cookieSigningSecret: 'a-test-cookie-secret-that-is-long-enough',
-    sessionTtlHours: 12,
-    sessionIdleTimeoutMinutes: 60,
     cognito: {
       clientId: 'test-client',
       issuer: 'https://cognito-idp.test/user-pool',
@@ -404,6 +451,84 @@ function cookieFrom(response: { headers: { ['set-cookie']?: string | string[] | 
 }
 
 describe('authenticated application shell API', () => {
+  it('keeps Pou specification authoring behind the independent editor role', async () => {
+    const repository = new MemoryRepository()
+    const editor: AuthenticatedUser = { ...activeKaimahi, id: '719ba3e1-dbd4-4c89-a2a5-31a4cb2e3b01', roles: ['SPECIFICATION_EDITOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:editor', editor)
+    await Promise.all([
+      repository.createSession({ id: '109ac11d-d9eb-41f6-b811-630f37d2d3a1', userId: activeKaimahi.id, tokenHash: sha256('kaimahi-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: 'bcd7ff3a-7e88-4826-a663-b4136e9d0a37', userId: editor.id, tokenHash: sha256('editor-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    const authoring = { list: vi.fn(async () => [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: {}, draft: null }]) }
+    const app = await createApplication({ config: config(), repository, pouSpecificationAuthoringService: authoring as any, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: '/api/pou-specifications' })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'GET', url: '/api/pou-specifications', headers: { cookie: 'test_session=kaimahi-authoring' } })).statusCode).toBe(403)
+    const permitted = await app.inject({ method: 'GET', url: '/api/pou-specifications', headers: { cookie: 'test_session=editor-authoring' } })
+    expect(permitted.statusCode).toBe(200)
+    expect(permitted.json()).toEqual({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: {}, draft: null }] })
+    await app.close()
+  })
+  it('keeps formal safety-policy drafts behind the same organisation-scoped editor capability', async () => {
+    const repository = new MemoryRepository()
+    const editor: AuthenticatedUser = { ...activeKaimahi, id: '1e9d0f7a-6f67-46ca-9b88-97d41ee75df5', roles: ['SPECIFICATION_EDITOR', 'SUPERVISOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:safety-editor', editor)
+    await Promise.all([
+      repository.createSession({ id: '9bbbc7f6-78c9-41eb-9dc2-fd84dfd7d39b', userId: activeKaimahi.id, tokenHash: sha256('kaimahi-safety-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: '1adf9545-13f9-4fc8-80f5-0b5604a50fce', userId: editor.id, tokenHash: sha256('editor-safety-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    const safetyPolicyAuthoringService = { list: vi.fn(async () => []), listActive: vi.fn(async () => []), createDraft: vi.fn(async () => ({ id: 'f054f54d-6c59-43e3-aea9-6a5f89165443' })) }
+    const app = await createApplication({ config: config(), repository, safetyPolicyAuthoringService: safetyPolicyAuthoringService as any, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: '/api/safety-policy-drafts', headers: { cookie: 'test_session=kaimahi-safety-authoring' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: '/api/safety-policy-drafts', headers: { cookie: 'test_session=editor-safety-authoring' } })).json()).toEqual({ drafts: [], activePolicies: [] })
+    const created = await app.inject({ method: 'POST', url: '/api/pou-specifications/whakapapa/safety-policy-drafts', headers: { cookie: 'test_session=editor-safety-authoring', origin: 'http://web.test' } })
+    expect(created.statusCode).toBe(201)
+    expect(safetyPolicyAuthoringService.createDraft).toHaveBeenCalledWith(editor, 'whakapapa')
+    await app.close()
+  })
+  it('forwards only review content when saving a Whakapapa draft and reloads its edited revision', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: 'a22f5c12-5dfa-4658-b4ea-b455ee5f0b6a', userId: activeKaimahi.id, tokenHash: sha256('review-draft-session'), expiresAt: new Date(Date.now() + 60_000) })
+    const generated = {
+      id: '11111111-1111-4111-8111-111111111111', revisionId: '22222222-2222-4222-8222-222222222222', revision: 1,
+      overallSummary: 'Identity context was explored.', strengthsSummary: 'Whānau strengths were named.', areasForAttentionSummary: null,
+      evidenceTurnIds: ['33333333-3333-4333-8333-333333333333'], generatedAt: new Date('2026-08-13T00:00:00.000Z'),
+    }
+    let current: {
+      id: string
+      revisionId: string
+      revision: number
+      overallSummary: string | null
+      strengthsSummary: string | null
+      areasForAttentionSummary: string | null
+      evidenceTurnIds: string[]
+      generatedAt: Date
+    } = generated
+    let captured: unknown
+    const reviewDraftRepository = {
+      findForKaimahi: async () => ({ status: 'ready' as const, assessmentCompleted: true, hasReviewableCandidate: false, draft: current }),
+      edit: async (_actor: AuthenticatedUser, _workflowSessionId: string, input: { reviewDraftId: string; expectedRevision: number; content: { overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: string[] } }) => {
+        captured = input
+        current = { ...current, revisionId: '44444444-4444-4444-8444-444444444444', revision: 2, ...input.content }
+        return current
+      },
+    }
+    const app = await createApplication({ config: config(), repository, reviewDraftRepository: reviewDraftRepository as any, oidcProvider: new FakeOidcProvider() })
+    const headers = { cookie: 'test_session=review-draft-session', origin: 'http://web.test' }
+    const url = '/api/workflows/55555555-5555-4555-8555-555555555555/pou/whakapapa/review-draft'
+    const before = await app.inject({ method: 'GET', url, headers })
+    expect(before.statusCode).toBe(200)
+    const saved = await app.inject({ method: 'PUT', url, headers, payload: { reviewDraftId: generated.id, expectedRevision: 1, overallSummary: 'Identity context was carefully explored.', strengthsSummary: generated.strengthsSummary, areasForAttentionSummary: null, evidenceTurnIds: generated.evidenceTurnIds } })
+    expect(saved.statusCode).toBe(200)
+    expect(captured).toEqual({ reviewDraftId: generated.id, expectedRevision: 1, content: { overallSummary: 'Identity context was carefully explored.', strengthsSummary: generated.strengthsSummary, areasForAttentionSummary: null, evidenceTurnIds: generated.evidenceTurnIds } })
+    const after = await app.inject({ method: 'GET', url, headers })
+    expect(after.statusCode).toBe(200)
+    expect(after.json()).toMatchObject({ review: { status: 'ready', draft: { revision: 2, overallSummary: 'Identity context was carefully explored.' } } })
+    await app.close()
+  })
+
   it('does not reveal a profile without an application session', async () => {
     const app = await createApplication({ config: config(), repository: new MemoryRepository(), oidcProvider: new FakeOidcProvider() })
     const response = await app.inject({ method: 'GET', url: '/api/me' })
@@ -428,6 +553,7 @@ describe('authenticated application shell API', () => {
     expect(callback.headers.location).toBe('http://web.test')
     expect(String(callback.headers['set-cookie'])).toContain('HttpOnly')
     expect(String(callback.headers['set-cookie'])).toContain('SameSite=Lax')
+    expect(String(callback.headers['set-cookie'])).toContain('Max-Age=43200')
 
     const sessionCookie = cookieFrom(callback, 'test_session')
     const me = await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })
@@ -456,6 +582,60 @@ describe('authenticated application shell API', () => {
     })
     expect(String(logout.headers['set-cookie'])).toContain('test_session=;')
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: sessionCookie } })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('binds an explicit trusted-device choice to the signed OIDC transaction without trusting callback input', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:cognito-subject', activeKaimahi)
+    const authenticatedAt = new Date('2026-09-01T09:00:00.000Z')
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => authenticatedAt })
+
+    const standardLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { origin: 'http://web.test' },
+      payload: { trustedDevice: false },
+    })
+    expect(standardLogin.statusCode).toBe(200)
+    const standardCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(standardLogin.json().authorizationUrl).searchParams.get('state')}&trustedDevice=true`,
+      headers: { cookie: cookieFrom(standardLogin) },
+    })
+    expect(standardCallback.statusCode).toBe(302)
+    expect(String(standardCallback.headers['set-cookie'])).toContain('Max-Age=43200')
+    const standardSession = [...repository.sessions.values()].find((session) => session.tokenHash === sha256(cookieFrom(standardCallback, 'test_session').split('=')[1]!))!
+    expect(standardSession).toMatchObject({ mode: 'standard', expiresAt: new Date('2026-09-01T21:00:00.000Z') })
+
+    const trustedLogin = await app.inject({
+      method: 'POST',
+      url: '/api/auth/login',
+      headers: { origin: 'http://web.test' },
+      payload: { trustedDevice: true },
+    })
+    expect(trustedLogin.statusCode).toBe(200)
+    const trustedCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(trustedLogin.json().authorizationUrl).searchParams.get('state')}`,
+      headers: { cookie: cookieFrom(trustedLogin) },
+    })
+    expect(trustedCallback.statusCode).toBe(302)
+    expect(String(trustedCallback.headers['set-cookie'])).toContain('Max-Age=2592000')
+    const trustedSession = [...repository.sessions.values()].find((session) => session.tokenHash === sha256(cookieFrom(trustedCallback, 'test_session').split('=')[1]!))!
+    expect(trustedSession).toMatchObject({ mode: 'trusted_device', expiresAt: new Date('2026-10-01T09:00:00.000Z') })
+
+    const tamperedLogin = await app.inject({ method: 'GET', url: '/api/auth/login' })
+    const originalTransaction = cookieFrom(tamperedLogin)
+    const tamperedTransaction = `${originalTransaction.slice(0, -1)}x`
+    const failedCallback = await app.inject({
+      method: 'GET',
+      url: `/api/auth/callback?code=code&state=${new URL(tamperedLogin.headers.location!).searchParams.get('state')}`,
+      headers: { cookie: tamperedTransaction },
+    })
+    expect(failedCallback.headers.location).toBe('http://web.test/?auth=failed')
+    expect([...repository.sessions.values()]).toHaveLength(2)
+    expect((await app.inject({ method: 'POST', url: '/api/auth/login', payload: { trustedDevice: true } })).statusCode).toBe(403)
     await app.close()
   })
 
@@ -514,35 +694,136 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
-  it('enforces server-side idle expiry without extending the absolute session lifetime', async () => {
+  it('enforces the 12-hour standard-session boundary and 8-hour idle boundary without sliding expiry', async () => {
     const repository = new MemoryRepository()
     repository.identities.set('cognito:kaimahi', activeKaimahi)
-    const now = new Date('2026-08-09T04:00:00.000Z')
-    const idleToken = 'idle-session'
+    const createdAt = new Date('2026-09-01T08:00:00.000Z')
+    let currentTime = new Date('2026-09-01T15:59:00.000Z')
+    const idleToken = 'standard-idle-boundary'
     await repository.createSession({
       id: '9f49620a-6a90-4739-934d-44c487c51d04',
       userId: activeKaimahi.id,
       tokenHash: sha256(idleToken),
-      expiresAt: new Date(now.getTime() + 12 * 60 * 60 * 1000),
-      lastActivityAt: new Date(now.getTime() - 61 * 60 * 1000),
+      mode: 'standard',
+      expiresAt: sessionExpiresAt('standard', createdAt),
+      lastActivityAt: createdAt,
     })
-    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
-    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${idleToken}` } })).statusCode).toBe(401)
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => currentTime })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${idleToken}` } })).statusCode).toBe(200)
+    const validStandard = repository.sessions.get(sha256(idleToken))!
+    expect(validStandard.lastActivityAt).toEqual(currentTime)
+    expect(validStandard.expiresAt).toEqual(new Date('2026-09-01T20:00:00.000Z'))
 
-    const activeToken = 'active-session'
+    const expiredIdleToken = 'standard-expired-idle'
+    await repository.createSession({
+      id: 'f6c2eb10-64bb-4f0f-86f2-7150d0812a02',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(expiredIdleToken),
+      mode: 'standard',
+      expiresAt: new Date('2026-09-02T03:59:00.000Z'),
+      lastActivityAt: new Date('2026-09-01T07:59:00.000Z'),
+    })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${expiredIdleToken}` } })).statusCode).toBe(401)
+
+    const activeToken = 'standard-active-session'
     await repository.createSession({
       id: '12834aa0-8e1e-4d43-a57f-ddecae4b95f9',
       userId: activeKaimahi.id,
       tokenHash: sha256(activeToken),
-      expiresAt: new Date(now.getTime() + 1),
-      lastActivityAt: now,
+      mode: 'standard',
+      expiresAt: new Date('2026-09-01T20:00:00.000Z'),
+      lastActivityAt: currentTime,
     })
+    currentTime = new Date('2026-09-01T17:00:00.000Z')
     expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(200)
-    const afterAbsoluteExpiry = new Date(now.getTime() + 2)
-    const expiredApp = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => afterAbsoluteExpiry })
-    expect((await expiredApp.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
+    expect(repository.sessions.get(sha256(activeToken))!.expiresAt).toEqual(new Date('2026-09-01T20:00:00.000Z'))
+    currentTime = new Date('2026-09-01T20:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${activeToken}` } })).statusCode).toBe(401)
     await app.close()
-    await expiredApp.close()
+  })
+
+  it('keeps a trusted-device session valid for its original 30 days without applying the standard idle limit', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const authenticatedAt = new Date('2026-09-01T09:00:00.000Z')
+    let currentTime = new Date('2026-09-10T09:00:00.000Z')
+    const token = 'trusted-device-session'
+    const expiresAt = sessionExpiresAt('trusted_device', authenticatedAt)
+    await repository.createSession({
+      id: '73c89849-4778-48cc-9b13-2675616d5d91',
+      userId: activeKaimahi.id,
+      tokenHash: sha256(token),
+      mode: 'trusted_device',
+      expiresAt,
+      lastActivityAt: authenticatedAt,
+    })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => currentTime })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    currentTime = new Date('2026-09-20T09:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    currentTime = new Date('2026-09-30T08:59:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(200)
+    expect(repository.sessions.get(sha256(token))!.expiresAt).toEqual(expiresAt)
+    currentTime = new Date('2026-10-01T09:00:00.000Z')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers: { cookie: `test_session=${token}` } })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('terminates a trusted-device session through the normal logout path', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const now = new Date('2026-09-01T09:00:00.000Z')
+    await repository.createSession({
+      id: 'c18cbd73-6ae8-41ef-a836-a16d310cb6c2', userId: activeKaimahi.id, tokenHash: sha256('logout-trusted'), mode: 'trusted_device',
+      expiresAt: sessionExpiresAt('trusted_device', now), lastActivityAt: now,
+    })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    const headers = { cookie: 'test_session=logout-trusted', origin: 'http://web.test' }
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'POST', url: '/api/auth/logout', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    await app.close()
+  })
+
+  it('persists both session modes across application restart and supports revoke-all server-side invalidation', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    const now = new Date('2026-09-10T09:00:00.000Z')
+    await repository.createSession({ id: '6e7f8dd7-9d88-4307-99b7-b0e55ca0f2a2', userId: activeKaimahi.id, tokenHash: sha256('restart-standard'), mode: 'standard', expiresAt: sessionExpiresAt('standard', now), lastActivityAt: now })
+    await repository.createSession({ id: '11e4df01-e82b-43cd-8adc-52c856bd0ece', userId: activeKaimahi.id, tokenHash: sha256('restart-trusted'), mode: 'trusted_device', expiresAt: sessionExpiresAt('trusted_device', now), lastActivityAt: now })
+    const beforeRestart = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    expect((await beforeRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(200)
+    await beforeRestart.close()
+    const afterRestart = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => now })
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(200)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-trusted' } })).statusCode).toBe(200)
+    await repository.invalidateSessionsForUser(activeKaimahi.id, now)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-standard' } })).statusCode).toBe(401)
+    expect((await afterRestart.inject({ method: 'GET', url: '/api/me', headers: { cookie: 'test_session=restart-trusted' } })).statusCode).toBe(401)
+    await afterRestart.close()
+  })
+
+  it('rechecks current user, organisation membership, and every role on each session request', async () => {
+    const repository = new MemoryRepository()
+    const fullyAuthorized: AuthenticatedUser = { ...activeKaimahi, roles: ['KAIMAHI', 'SUPERVISOR', 'SPECIFICATION_EDITOR'] }
+    repository.identities.set('cognito:kaimahi', fullyAuthorized)
+    await repository.createSession({ id: 'e7bc5750-cc5e-4f6d-a5ef-e45f902fc47a', userId: activeKaimahi.id, tokenHash: sha256('live-authority'), mode: 'trusted_device', expiresAt: new Date('2026-10-01T09:00:00.000Z'), lastActivityAt: new Date('2026-09-01T09:00:00.000Z') })
+    const app = await createApplication({ config: config(), repository, oidcProvider: new FakeOidcProvider(), now: () => new Date('2026-09-10T09:00:00.000Z') })
+    const headers = { cookie: 'test_session=live-authority' }
+    expect((await app.inject({ method: 'GET', url: '/api/entry/KAIMAHI', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SUPERVISOR', headers })).statusCode).toBe(200)
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SPECIFICATION_EDITOR', headers })).statusCode).toBe(200)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: ['SUPERVISOR', 'SPECIFICATION_EDITOR'] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/KAIMAHI', headers })).statusCode).toBe(403)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: ['SPECIFICATION_EDITOR'] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SUPERVISOR', headers })).statusCode).toBe(403)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, roles: [] })
+    expect((await app.inject({ method: 'GET', url: '/api/entry/SPECIFICATION_EDITOR', headers })).statusCode).toBe(403)
+    repository.identities.delete('cognito:kaimahi')
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    repository.identities.set('cognito:kaimahi', { ...fullyAuthorized, status: 'inactive' })
+    expect((await app.inject({ method: 'GET', url: '/api/me', headers })).statusCode).toBe(401)
+    await app.close()
   })
 
   it('persists Kaimahi workflow commands behind the existing session and CSRF boundaries', async () => {
@@ -599,22 +880,212 @@ describe('authenticated application shell API', () => {
     expect(setup.statusCode).toBe(200)
     expect(setup.json()).toMatchObject({ workflow: { status: 'in_progress', currentStage: 'pou-overview', version: 2 } })
 
-    const stale = await app.inject({
+    const rejectedLegacyFields = await app.inject({
       method: 'POST',
       url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
       headers: { cookie: sessionCookie, origin: 'http://web.test' },
       payload: {
         type: 'pou-review-confirmed',
         idempotencyKey: '99bd1f2c-4528-4fab-8bfa-96c4a11b0c07',
-        expectedVersion: 1,
+        expectedVersion: 2,
         pouId: 'whakapapa',
         userSelectedConcern: 'watch',
         referralSuggested: false,
         supervisorReviewSuggested: false,
       },
     })
+    expect(rejectedLegacyFields.statusCode).toBe(400)
+
+    const stale = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'pou-review-confirmed',
+        idempotencyKey: 'af9f9d73-b05d-455f-89fa-44f7db94d9ac',
+        expectedVersion: 1,
+        pouId: 'whakapapa',
+      },
+    })
     expect(stale.statusCode).toBe(409)
     expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
+    await app.close()
+  })
+
+  it('returns a bounded conflict for a direct Pou-confirmation attempt with an unresolved safety candidate', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '9f24db1f-bc8a-4a71-b1ef-29f3ebd0c1cb',
+      userId: activeKaimahi.id,
+      tokenHash: sha256('unresolved-candidate-session'),
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    vi.spyOn(workflows, 'submitCommand').mockRejectedValue(new UnresolvedSafetyCandidateError())
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: 'test_session=unresolved-candidate-session', origin: 'http://web.test' },
+      payload: { type: 'pou-review-confirmed', idempotencyKey: 'e08217ee-f7ba-431a-9b32-eac9f032c2f9', expectedVersion: 2, pouId: 'whakapapa' },
+    })
+
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toEqual({ error: 'unresolved_safety_candidate' })
+    await app.close()
+  })
+
+  it('keeps cross-Pou synthesis and final-record output owner-scoped and free of raw source material', async () => {
+    const repository = new MemoryRepository()
+    const supervisor: AuthenticatedUser = { ...activeKaimahi, id: 'dd8a7c03-c7a9-496f-b6c4-92a8f90f4f19', roles: ['SUPERVISOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:supervisor', supervisor)
+    await repository.createSession({ id: 'c46e9761-b689-4f73-b0ea-a26ed3e8395a', userId: activeKaimahi.id, tokenHash: sha256('synthesis-owner'), expiresAt: new Date(Date.now() + 60_000) })
+    await repository.createSession({ id: 'c0d7c224-22a8-467e-aeb7-099d17ed7158', userId: supervisor.id, tokenHash: sha256('synthesis-supervisor'), expiresAt: new Date(Date.now() + 60_000) })
+    const synthesis = {
+      status: 'ready', synthesisId: '0e24c9e7-af20-45e8-a706-549a15db4363', confirmedRevisionId: null, confirmedAt: null,
+      draft: { id: '4a419730-8136-4c0d-a1cb-64a3ed0da2b5', revision: 1, source: 'generated', createdAt: new Date(), content: { overallSummary: 'Bounded summary.', keyThemes: null, strengthsSummary: null, areasForAttentionSummary: null, informationStillToExploreSummary: null, confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.' } },
+    }
+    const finalRecord = { id: 'a4c4535f-c5f1-4d09-aa6d-d4495fc3f582', reference: 'TK-7K4M2P9Q', organisationName: 'Test organisation', kaimahiDisplayName: activeKaimahi.displayName, overallSummary: 'Bounded final record.', keyThemes: null, strengthsSummary: null, areasForAttentionSummary: null, informationStillToExploreSummary: null, confirmedSafetyConcernsSummary: 'No human-confirmed safety concerns are recorded.', actions: [], referrals: [], safetyObservations: [], finalizedAt: new Date() }
+    const synthesisRepository = {
+      findForKaimahi: vi.fn(async (actor: AuthenticatedUser) => { if (actor.id !== activeKaimahi.id) throw new WorkflowNotFoundError(); return synthesis }),
+      findFinalRecord: vi.fn(async (actor: AuthenticatedUser) => actor.id === activeKaimahi.id ? finalRecord : null),
+    }
+    const app = await createApplication({ config: config(), repository, workflowSynthesisRepository: synthesisRepository as any, oidcProvider: new FakeOidcProvider() })
+    const workflowId = '22b1f80c-2c12-4f82-bdd9-65d7b30712bb'
+    const ownerHeaders = { cookie: 'test_session=synthesis-owner' }
+    const synthesisResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/synthesis`, headers: ownerHeaders })
+    expect(synthesisResponse.statusCode).toBe(200)
+    expect(synthesisResponse.headers['cache-control']).toBe('no-store')
+    expect(synthesisResponse.body).not.toMatch(/transcript|payload|rationale/i)
+    expect((await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/synthesis`, headers: { cookie: 'test_session=synthesis-supervisor' } })).statusCode).toBe(403)
+    const textResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record.txt`, headers: ownerHeaders })
+    expect(textResponse.statusCode).toBe(200)
+    expect(textResponse.headers['cache-control']).toBe('no-store')
+    expect(textResponse.body).toContain('Bounded final record.')
+    const pdfResponse = await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record.pdf`, headers: ownerHeaders })
+    expect(pdfResponse.statusCode).toBe(200)
+    expect(pdfResponse.headers['content-type']).toContain('application/pdf')
+    expect(pdfResponse.headers['cache-control']).toBe('no-store')
+    expect((await app.inject({ method: 'GET', url: `/api/workflows/${workflowId}/final-record`, headers: { cookie: 'test_session=synthesis-supervisor' } })).statusCode).toBe(403)
+    await app.close()
+  })
+
+  it('authorizes a Whakapapa voice attempt behind Kaimahi, owner, and trusted-origin boundaries without changing workflow state', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '0ff258d3-3ca5-4cdd-bf5e-1dfe425b4624', userId: activeKaimahi.id, tokenHash: sha256('conversation-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: '4aa3c038-b5da-46e7-b11c-3f549416fcf4' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: 'db82d548-b703-4e0e-a5f7-f2d99c69c84a', expectedVersion: 1, whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+    const cookie = 'test_session=conversation-session'
+    const url = `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`
+
+    expect((await app.inject({ method: 'POST', url, headers: { origin: 'http://web.test' }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(401)
+    expect((await app.inject({ method: 'POST', url, headers: { cookie }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'POST', url, headers: { cookie, origin: 'http://web.test' }, payload: {
+      idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef',
+      agentId: 'browser-must-not-select-this',
+      branchId: 'browser-must-not-select-this',
+      environment: 'browser-must-not-select-this',
+    } })).statusCode).toBe(400)
+
+    const started = await app.inject({ method: 'POST', url, headers: { cookie, origin: 'http://web.test' }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })
+    expect(started.statusCode).toBe(201)
+    expect(started.headers['cache-control']).toBe('no-store')
+    expect(started.json()).toMatchObject({
+      conversation: { pouId: 'whakapapa', status: 'authorized', providerConversationId: 'provider-conversation-id' },
+      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } },
+    })
+    expect(JSON.stringify(started.json())).not.toContain('server-selected-agent')
+    expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'whakapapa', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])
+
+    const conversationId = started.json<{ conversation: { id: string } }>().conversation.id
+    const connected = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversationId}/client-connected`, headers: { cookie, origin: 'http://web.test' }, payload: { providerConversationId: 'provider-conversation-id' },
+    })
+    expect(connected.json()).toMatchObject({ conversation: { status: 'active' } })
+    expect(connected.headers['cache-control']).toBe('no-store')
+    const current = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversation`, headers: { cookie } })
+    expect(current.json()).toMatchObject({ conversation: { status: 'active' } })
+    expect(current.headers['cache-control']).toBe('no-store')
+    expect(JSON.stringify(current.json())).not.toContain('temporary-conversation-token')
+    const ended = await app.inject({
+      method: 'POST', url: `/api/conversations/${conversationId}/end`, headers: { cookie, origin: 'http://web.test' }, payload: { reason: 'user_ended' },
+    })
+    expect(ended.json()).toMatchObject({ conversation: { status: 'ended', terminationReason: 'user_ended' } })
+    expect(ended.headers['cache-control']).toBe('no-store')
+    expect(await workflows.findById(activeKaimahi, created.workflow.id)).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2 })
+    await app.close()
+  })
+
+  it('reports an invalid active assessment activation without exposing its internals', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    conversations.start = async () => { throw new SafetyAssessmentValidationError('durable activation detail must remain server-only') }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '50f4d472-fd36-4c9e-a354-2a5b2adabc8f', userId: activeKaimahi.id, tokenHash: sha256('invalid-activation-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: '3a379063-fcd9-4fea-b5fc-31fbdf6b3ff4' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: 'ab5e4581-508c-45a3-8dac-4d5dd72c0a5e', expectedVersion: 1, whanauReference: 'TW-05', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`,
+      headers: { cookie: 'test_session=invalid-activation-session', origin: 'http://web.test' },
+      payload: { idempotencyKey: '89a31317-47e4-44d2-8e85-a086e6495b38' },
+    })
+
+    expect(response.statusCode).toBe(503)
+    expect(response.json()).toEqual({ error: 'assessment_activation_invalid' })
+    expect(response.body).not.toContain('durable activation detail')
+    await app.close()
+  })
+
+  it('reports an invalid active Pou specification without exposing its provenance detail', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    const conversations = new FakeConversationService()
+    conversations.start = async () => { throw new PouSpecificationUnavailableError('stored projection provenance detail must remain server-only') }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '94296822-1f1e-467d-9695-376c8ff1e14f', userId: activeKaimahi.id, tokenHash: sha256('invalid-pou-specification-session'), expiresAt: new Date(Date.now() + 60_000),
+    })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'e3cb4362-16c3-4b17-9a75-f7fdb4518ccc' })
+    await workflows.submitCommand({
+      actor: activeKaimahi,
+      workflowSessionId: created.workflow.id,
+      command: { type: 'setup-confirmed', idempotencyKey: '9c8bbd3d-6de8-4ca5-8970-ee7c144c38fa', expectedVersion: 1, whanauReference: 'TW-06', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+    })
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`,
+      headers: { cookie: 'test_session=invalid-pou-specification-session', origin: 'http://web.test' },
+      payload: { idempotencyKey: '3477c367-ae47-4493-8a61-f7bf8f3e5e8b' },
+    })
+
+    expect(response.statusCode).toBe(503)
+    expect(response.json()).toEqual({ error: 'pou_specification_invalid' })
+    expect(response.body).not.toContain('stored projection provenance detail')
     await app.close()
   })
 

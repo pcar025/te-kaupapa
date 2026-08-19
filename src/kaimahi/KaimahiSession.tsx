@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type {
   ActiveSessionData,
   EngagementType,
@@ -10,9 +10,11 @@ import type {
   SafetyBroadClass,
   SafetyObservationConcernLevel,
   WorkflowActionInput,
+  WorkflowCarryForwardSource,
   WorkflowReferralInput,
   WorkflowStage,
 } from '../../shared/workflow'
+import { WORKFLOW_POU_NAMES } from '../../shared/workflow'
 import {
   STATUS_CONFIG,
   REFERRAL_SERVICES,
@@ -30,6 +32,16 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
+  getPouAssessmentCandidates,
+  getPouReviewDraft,
+  markPouReviewDraftReviewed,
+  editPouReviewDraft,
+  editWorkflowSynthesis,
+  generateWorkflowSynthesis,
+  getFinalRecord,
+  getWorkflowSynthesis,
+  copyFinalRecord,
+  reviewPouAssessmentCandidate,
   submitWorkflowCommand,
   type Workflow,
   type WorkflowAction,
@@ -37,7 +49,16 @@ import {
   type WorkflowReferral,
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
+  type PouAssessmentCandidate,
+  type PouReviewDraft,
+  type PouReviewDraftState,
+  type WorkflowSynthesisContent,
+  type WorkflowSynthesisState,
+  type FinalRecord,
 } from '../workflows'
+import { VoiceChunkBoundary, VoiceChunkLoading } from '../conversations/VoiceChunkBoundary'
+
+const ElevenLabsConversation = lazy(() => import('../conversations/ElevenLabsConversation'))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // SESSION STAGES
@@ -61,6 +82,24 @@ type PendingSafetySave = {
   retryable: boolean
 }
 
+/** Binds a human confirmation to the Pou that displayed the scoped candidate. */
+export function candidateConfirmationCommand(
+  candidate: PouAssessmentCandidate,
+  concernLevel: SafetyObservationConcernLevel,
+  pouId: (typeof TE_WAHAROA_POU)[number]['id'],
+  expectedVersion: number,
+) {
+  if (!candidate.canonicalBroadClass) return null
+  return {
+    type: 'safety-observation-confirmed' as const,
+    observationId: crypto.randomUUID(),
+    idempotencyKey: crypto.randomUUID(),
+    expectedVersion,
+    candidateAssessmentId: candidate.id,
+    observation: { assessmentContext: 'pou' as const, pouId, broadClass: candidate.canonicalBroadClass, concernLevel },
+  }
+}
+
 const SAFETY_CLASS_OPTIONS: Array<{ id: SafetyBroadClass; label: string }> = [
   { id: 'whanau_safety', label: 'Whānau safety' },
   { id: 'practice_quality', label: 'Practice quality' },
@@ -69,6 +108,11 @@ const SAFETY_CLASS_OPTIONS: Array<{ id: SafetyBroadClass; label: string }> = [
 
 const safetyClassLabel = (value: SafetyBroadClass) => SAFETY_CLASS_OPTIONS.find((option) => option.id === value)?.label ?? value
 
+/** Confirmation is allowed only for the authoritative revision currently displayed. */
+export function canConfirmWorkflowSynthesis(input: { saving: boolean; dirty: boolean; status: WorkflowSynthesisState['status'] }): boolean {
+  return !input.saving && !input.dirty && input.status === 'ready'
+}
+
 function SafetyConcernDisclosure({
   open,
   onOpenChange,
@@ -76,6 +120,7 @@ function SafetyConcernDisclosure({
   onBroadClassChange,
   contextNote,
   onContextNoteChange,
+  label = 'Record this as a safety concern',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -83,6 +128,7 @@ function SafetyConcernDisclosure({
   onBroadClassChange: (value: SafetyBroadClass) => void
   contextNote: string
   onContextNoteChange: (value: string) => void
+  label?: string
 }) {
   return (
     <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${open ? 'var(--color-caution)' : 'var(--color-border)'}`, padding: '0.875rem 1rem' }}>
@@ -92,7 +138,7 @@ function SafetyConcernDisclosure({
         className="w-full flex items-center justify-between gap-3 text-left min-h-[36px]"
         aria-expanded={open}
       >
-        <span className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Record this as a safety concern</span>
+        <span className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{label}</span>
         <span aria-hidden="true" style={{ color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{open ? '−' : '+'}</span>
       </button>
       {open && (
@@ -1683,14 +1729,24 @@ function PouConversationStage({
   data,
   onChange,
   onNext,
+  onReflectionEnded,
   pouIdx,
+  workflowId,
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
   onNext: () => void
+  onReflectionEnded: () => void
   pouIdx: number
+  workflowId: string
 }) {
-  return <GuidedReflectionStage data={data} onChange={onChange} onNext={onNext} pouIdx={pouIdx} />
+  return (
+    <VoiceChunkBoundary onProceedToReview={onNext}>
+      <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
+        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onProceedToReview={onNext} onReflectionEnded={onReflectionEnded} />
+      </Suspense>
+    </VoiceChunkBoundary>
+  )
 }
 
 // ─── Single Pou Review Stage ──────────────────────────────────────────────────
@@ -1705,10 +1761,359 @@ const CONCERN_META: Record<ConcernLevel, { label: string; color: string; bg: str
   urgent: { label: 'Urgent concern', color: 'var(--color-concern)', bg: '#fee8e6' },
 }
 
-function SinglePouReviewStage({
+export function PouAssessmentCandidates({
+  workflowId,
+  pouId,
+  hasReviewableCandidate = false,
+  onConfirm,
+  onReviewableCandidatesChange,
+}: {
+  workflowId: string
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
+  /** Authoritative review-read signal; the lookup itself remains read-only. */
+  hasReviewableCandidate?: boolean
+  onConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => boolean | void | Promise<boolean | void>
+  /** Lets the Pou confirmation control truthfully mirror the authoritative candidate read. */
+  onReviewableCandidatesChange?: (hasUnresolvedCandidates: boolean) => void
+}) {
+  const [candidates, setCandidates] = useState<PouAssessmentCandidate[]>([])
+  const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
+  const [selected, setSelected] = useState<Record<string, SafetyObservationConcernLevel | undefined>>({})
+  const activeCandidateRequest = useRef<number | null>(null)
+  const candidateRequestGeneration = useRef(0)
+  const automaticallyLoadedFor = useRef<string | null>(null)
+  const load = () => {
+    if (activeCandidateRequest.current !== null) return
+    const requestGeneration = ++candidateRequestGeneration.current
+    activeCandidateRequest.current = requestGeneration
+    setState('loading')
+    void getPouAssessmentCandidates(workflowId, pouId).then((items) => {
+      if (activeCandidateRequest.current !== requestGeneration) return
+      activeCandidateRequest.current = null
+      setCandidates(items)
+      onReviewableCandidatesChange?.(items.length > 0)
+      setState('idle')
+    }).catch(() => {
+      if (activeCandidateRequest.current !== requestGeneration) return
+      activeCandidateRequest.current = null
+      setState('failed')
+    })
+  }
+  useEffect(() => {
+    candidateRequestGeneration.current += 1
+    activeCandidateRequest.current = null
+    automaticallyLoadedFor.current = null
+    setCandidates([])
+    setSelected({})
+    setState('idle')
+    return () => {
+      candidateRequestGeneration.current += 1
+      activeCandidateRequest.current = null
+    }
+  }, [workflowId, pouId, onReviewableCandidatesChange])
+  useEffect(() => {
+    if (!hasReviewableCandidate) return
+    const key = `${workflowId}:${pouId}`
+    if (automaticallyLoadedFor.current === key) return
+    automaticallyLoadedFor.current = key
+    load()
+  }, [hasReviewableCandidate, workflowId, pouId])
+  if (!candidates.length && state === 'idle') return <div className="flex justify-between gap-3 px-4 py-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>You can check whether a formal safety concern needs your review.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
+  return <div className="space-y-3" aria-live="polite">
+    {state === 'loading' && <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Checking whether a formal safety concern needs your review…</p>}
+    {state === 'failed' && <div className="flex justify-between gap-3"><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>The formal safety review could not be loaded. Your Pou review remains available.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>}
+    {candidates.map((candidate) => candidate.outcome === 'possible_concern' ? <div key={candidate.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
+      <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-caution)', letterSpacing: '0.08em' }}>POSSIBLE CONCERN FOR YOUR REVIEW</p>
+      <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>The reflection suggests this may need your attention. This has not been confirmed.</p>
+      <p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{candidate.title}</p>
+      <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.description}</p>
+      <fieldset><legend className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS?</legend><div className="grid grid-cols-2 gap-1.5">{candidate.permittedHumanConcernLevels.map((level) => <button type="button" key={level} onClick={() => setSelected((current) => ({ ...current, [candidate.id]: level }))} className="px-3 py-2 text-left text-xs" style={{ backgroundColor: selected[candidate.id] === level ? 'var(--color-caution-light)' : 'var(--color-ground)', borderLeft: `3px solid ${selected[candidate.id] === level ? 'var(--color-caution)' : 'var(--color-border)'}`, fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          disabled={!selected[candidate.id]}
+          onClick={() => { if (!selected[candidate.id]) return; void Promise.resolve(onConfirm(candidate, selected[candidate.id]!, pouId)).then((confirmed) => { if (confirmed !== false) load() }).catch(() => undefined) }}
+          className="min-h-11 px-4 py-3 text-sm disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          style={{ backgroundColor: 'var(--color-concern)', color: 'white', fontFamily: 'var(--font-mono)' }}
+        >
+          Confirm concern
+        </button>
+        <button
+          type="button"
+          onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))}
+          className="min-h-11 px-4 py-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}
+        >
+          Dismiss suggestion
+        </button>
+      </div>
+    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>This formal safety review needs more information before you can continue. Acknowledging this records only that you have reviewed the information state; it does not record a safety concern.</p><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge information still needed</button></div> : null)}
+  </div>
+}
+
+export function PouNarrativeReview({
+  workflowId,
+  pouId,
+  onDraftState,
+  carriedSources = new Set(),
+  onMarkCarryForward = () => undefined,
+  presentation = 'review',
+  onReviewReady,
+  onManualReview,
+}: {
+  workflowId: string
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
+  onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean; hasReviewableCandidate?: boolean }) => void
+  carriedSources?: Set<string>
+  onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
+  presentation?: 'review' | 'processing'
+  onReviewReady?: () => void
+  onManualReview?: () => void
+}) {
+  const REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS = 4_000
+  const MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS = 15
+  const [review, setReview] = useState<PouReviewDraftState | null>(null)
+  const [draft, setDraft] = useState<PouReviewDraft | null>(null)
+  const [loadError, setLoadError] = useState(false)
+  const [saveError, setSaveError] = useState<'failed' | 'ambiguous' | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [automaticPollCount, setAutomaticPollCount] = useState(0)
+  const activeReviewRequest = useRef<number | null>(null)
+  const reviewRequestGeneration = useRef(0)
+  const readyTransitionRevision = useRef<string | null>(null)
+  const load = (preserveLocalDraftOnFailure = false, resetAutomaticPolling = false) => {
+    if (resetAutomaticPolling) setAutomaticPollCount(0)
+    if (activeReviewRequest.current !== null) return
+    const requestGeneration = ++reviewRequestGeneration.current
+    activeReviewRequest.current = requestGeneration
+    setLoadError(false)
+    void getPouReviewDraft(workflowId, pouId).then((next) => {
+      if (activeReviewRequest.current !== requestGeneration) return
+      activeReviewRequest.current = null
+      setReview(next)
+      setDraft(next.draft)
+      setDirty(false)
+      setSaveError(null)
+      // A formal candidate is independently authoritative. A failed/manual
+      // narrative draft must not hide it or enable Pou confirmation.
+      onDraftState({ reviewDraftRevisionId: next.draft?.revisionId, hasUnsavedChanges: false, loaded: true, hasReviewableCandidate: next.hasReviewableCandidate })
+      setAutomaticPollCount((current) => next.status === 'analysing' ? (resetAutomaticPolling ? 1 : current + 1) : 0)
+      if (next.draft && presentation !== 'processing') void markPouReviewDraftReviewed(workflowId, pouId, next.draft.id).catch(() => undefined)
+    }).catch(() => {
+      if (activeReviewRequest.current !== requestGeneration) return
+      activeReviewRequest.current = null
+      if (preserveLocalDraftOnFailure && draft) {
+        setSaveError('ambiguous')
+        return
+      }
+      setLoadError(true)
+      onDraftState({ hasUnsavedChanges: false, loaded: false })
+    })
+  }
+  useEffect(() => {
+    reviewRequestGeneration.current += 1
+    activeReviewRequest.current = null
+    setAutomaticPollCount(0)
+    load()
+    return () => {
+      reviewRequestGeneration.current += 1
+      activeReviewRequest.current = null
+    }
+  }, [workflowId, pouId])
+  useEffect(() => {
+    if (review?.status !== 'analysing' || automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS || activeReviewRequest.current !== null) return
+    const timer = window.setTimeout(load, REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS)
+    return () => window.clearTimeout(timer)
+  }, [review, automaticPollCount, workflowId, pouId])
+  useEffect(() => {
+    const revisionId = presentation === 'processing' && review?.status === 'ready' ? draft?.revisionId : undefined
+    if (!revisionId || readyTransitionRevision.current === revisionId) return
+    readyTransitionRevision.current = revisionId
+    onReviewReady?.()
+  }, [draft?.revisionId, onReviewReady, presentation, review?.status])
+  const update = (field: 'overallSummary' | 'strengthsSummary' | 'areasForAttentionSummary', value: string) => {
+    if (!draft) return
+    const next = { ...draft, [field]: value.trim() ? value : null }
+    setDraft(next); setDirty(true); onDraftState({ reviewDraftRevisionId: draft.revisionId, hasUnsavedChanges: true, loaded: true })
+  }
+  const save = () => {
+    if (!draft) return
+    setSaving(true)
+    void editPouReviewDraft(workflowId, pouId, { reviewDraftId: draft.id, expectedRevision: draft.revision, overallSummary: draft.overallSummary, strengthsSummary: draft.strengthsSummary, areasForAttentionSummary: draft.areasForAttentionSummary, evidenceTurnIds: draft.evidenceTurnIds })
+      .then((saved) => { setDraft(saved); setDirty(false); setSaveError(null); onDraftState({ reviewDraftRevisionId: saved.revisionId, hasUnsavedChanges: false, loaded: true }) })
+      .catch((error) => setSaveError(error instanceof WorkflowApiError && error.code === 'stale_review_draft' ? 'ambiguous' : 'failed')).finally(() => setSaving(false))
+  }
+  if (presentation === 'processing') {
+    if (loadError) return <PostReflectionProcessingScreen state="lookup-failed" onCheckAgain={() => load(false, true)} />
+    if (!review || review.status === 'analysing') return <PostReflectionProcessingScreen state={automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? 'waiting' : 'processing'} onCheckAgain={automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? () => load(false, true) : undefined} />
+    if (review.status === 'ready' && draft) return <PostReflectionProcessingScreen state="opening" />
+    if (review.status === 'failed') return <PostReflectionProcessingScreen state="failed" onContinueManual={onManualReview} />
+    return <PostReflectionProcessingScreen state="manual" onContinueManual={onManualReview} />
+  }
+  if (loadError) return <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>The reflection review could not be loaded. Manual Pou review remains available.</p><button type="button" onClick={() => load(false, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
+  if (!review || review.status === 'analysing') return <div aria-live="polite" style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Analysing your reflection…</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>{automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? 'Processing is still underway. Check again when you are ready.' : 'Your Pou review remains yours to complete.'}</p>{automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS && <button type="button" onClick={() => load(false, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button>}</div>
+  if (review.status === 'failed') return <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>A reflection draft could not be prepared.</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Manual Pou review remains available. This does not change any safety decision.</p></div>
+  if (review.status === 'manual' || !draft) return <div style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Manual {TE_WAHAROA_POU.find((pou) => pou.id === pouId)?.reo} review</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>No reflection draft is available. Complete your own Pou review below.</p></div>
+  return <div className="space-y-3" aria-live="polite">
+    <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
+      <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.08em' }}>WHAT WE HEARD — REVIEW DRAFT</p>
+      <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>This is a noncanonical draft from the reflection. Edit it before you confirm your Pou review.</p>
+    </div>
+    {draft.criterionAssessments && <StructuredCriterionReview draft={draft} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} />}
+    {([['overallSummary', 'OVERALL REFLECTION'], ['strengthsSummary', 'STRENGTHS / PROTECTIVE FACTORS'], ['areasForAttentionSummary', 'AREAS FOR ATTENTION']] as const).map(([field, label]) => <div key={field} style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>{label}</p><textarea value={draft[field] ?? ''} disabled={saving} onChange={(event) => update(field, event.target.value)} placeholder="Not identified in this reflection" rows={field === 'overallSummary' ? 4 : 3} className="w-full resize-none text-sm leading-relaxed outline-none disabled:opacity-70" style={{ color: 'var(--color-ink-secondary)', backgroundColor: 'transparent', fontFamily: 'var(--font-body)' }} /></div>)}
+    {saveError === 'failed' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Your review changes could not be saved. They are still shown here and have not been confirmed.</p><button type="button" onClick={save} disabled={saving} className="text-xs mt-2 disabled:opacity-50" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try saving again</button></div>}
+    {saveError === 'ambiguous' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>We could not confirm whether your changes were saved. Your wording is still shown here and has not been confirmed.</p><button type="button" onClick={() => load(true, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Load current saved review</button></div>}
+    {dirty && <button type="button" onClick={save} disabled={saving} className="w-full px-4 py-3 text-sm disabled:opacity-50" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{saving ? 'Saving review…' : 'Save review changes'}</button>}
+    {review.assessmentCompleted && !review.hasReviewableCandidate && <SafetyReviewCompleteNotice resolvedSafetyReview={review.resolvedSafetyReview} />}
+  </div>
+}
+
+function SafetyReviewCompleteNotice({
+  resolvedSafetyReview = { confirmedCount: 0, dismissedCount: 0, insufficientInformationAcknowledgedCount: 0 },
+}: {
+  resolvedSafetyReview?: { confirmedCount: number; dismissedCount: number; insufficientInformationAcknowledgedCount: number }
+}) {
+  const { confirmedCount, dismissedCount, insufficientInformationAcknowledgedCount } = resolvedSafetyReview
+  const message = confirmedCount > 0
+    ? 'All identified safety concerns from this reflection have been reviewed.'
+    : insufficientInformationAcknowledgedCount > 0 && dismissedCount > 0
+      ? 'Suggested safety concerns and information still needed for the safety review have been reviewed.'
+      : insufficientInformationAcknowledgedCount > 0
+        ? 'Information still needed for the safety review has been acknowledged.'
+        : dismissedCount > 1
+          ? 'The suggested safety concerns have been reviewed.'
+          : dismissedCount === 1
+            ? 'The suggested safety concern has been reviewed.'
+            : 'No formal safety concern was identified for review.'
+  return <div style={{ borderLeft: '3px solid var(--color-growth)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
+    <p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Safety review complete</p>
+    <p className="text-xs mt-1 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>{message}</p>
+  </div>
+}
+
+function PostReflectionProcessingScreen({
+  state,
+  onCheckAgain,
+  onContinueManual,
+}: {
+  state: 'processing' | 'waiting' | 'opening' | 'lookup-failed' | 'failed' | 'manual'
+  onCheckAgain?: () => void
+  onContinueManual?: () => void
+}) {
+  const waiting = state === 'processing' || state === 'waiting' || state === 'opening'
+  const heading = state === 'waiting'
+    ? 'Still bringing your reflection together…'
+    : state === 'opening'
+      ? 'Opening your Pou review…'
+      : 'Bringing together your reflection…'
+  const detail = state === 'waiting'
+    ? 'We’re still preparing your Pou review.'
+    : 'We’re reviewing what you’ve shared and preparing your Pou review.'
+
+  return (
+    <div className="flex flex-col items-center justify-center text-center px-6" style={{ minHeight: '72vh', fontFamily: 'var(--font-body)' }} aria-live="polite">
+      {waiting && <>
+        <div className="flex items-end gap-1.5 mb-10" style={{ height: 54 }} role="img" aria-label="Preparing your Pou review">
+          {[30, 46, 24, 52, 38, 28, 44].map((height, index) => (
+            <div
+              key={height}
+              className="reflection-processing-pou"
+              style={{ width: 7, height, backgroundColor: 'var(--color-ridge)', animationDelay: `${index * 0.24}s` }}
+            />
+          ))}
+        </div>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{heading}</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{detail}</p>
+        {state !== 'opening' && <p className="text-xs mt-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>This can take around 30 seconds.</p>}
+        {onCheckAgain && <button type="button" onClick={onCheckAgain} className="text-xs mt-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button>}
+      </>}
+      {state === 'lookup-failed' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>We couldn’t check whether your review is ready.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Your reflection remains available. Check again when you are ready.</p>
+        {onCheckAgain && <button type="button" onClick={onCheckAgain} className="mt-6 px-4 py-3 text-sm" style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>Check again</button>}
+      </>}
+      {state === 'failed' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>We couldn’t finish preparing your review.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Your reflection has been saved. You can continue with your own Pou review.</p>
+        {onContinueManual && <button type="button" onClick={onContinueManual} className="mt-6 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Continue with Pou review</button>}
+      </>}
+      {state === 'manual' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Your Pou review is ready for you.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>No reflection draft is available for this Pou.</p>
+        {onContinueManual && <button type="button" onClick={onContinueManual} className="mt-6 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Continue with Pou review</button>}
+      </>}
+    </div>
+  )
+}
+
+export function PouReviewProcessingStage({
+  workflowId,
+  pouId,
+  onReady,
+  onManualReview,
+}: {
+  workflowId: string
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
+  onReady: () => void
+  onManualReview: () => void
+}) {
+  return <PouNarrativeReview
+    workflowId={workflowId}
+    pouId={pouId}
+    presentation="processing"
+    onDraftState={() => undefined}
+    onReviewReady={onReady}
+    onManualReview={onManualReview}
+  />
+}
+
+function StructuredCriterionReview({
+  draft,
+  carriedSources,
+  onMarkCarryForward,
+}: {
+  draft: PouReviewDraft
+  carriedSources: Set<string>
+  onMarkCarryForward: (source: WorkflowCarryForwardSource) => void
+}) {
+  const assessments = draft.criterionAssessments ?? []
+  const established = assessments.filter(({ status }) => status === 'evidenced')
+  const strengths = assessments.filter(({ strengthsOrProtective, status }) => strengthsOrProtective && (status === 'evidenced' || status === 'partially_evidenced'))
+  const stillToExplore = assessments.filter(({ status }) => status === 'not_explored' || status === 'insufficient_information' || status === 'partially_evidenced')
+  const attention = assessments.filter(({ areasForAttention, status }) => areasForAttention && (status === 'partially_evidenced' || status === 'not_explored' || status === 'insufficient_information'))
+  const criterionSource = (criterionCode: string): WorkflowCarryForwardSource => ({ kind: 'review_criterion', reviewDraftRevisionId: draft.revisionId, criterionCode })
+  const sourceKey = (source: WorkflowCarryForwardSource) => source.kind === 'review_criterion' ? `criterion:${source.reviewDraftRevisionId}:${source.criterionCode}` : source.kind === 'areas_for_attention' ? `attention:${source.reviewDraftRevisionId}` : `safety:${source.observationId}`
+  const list = (items: typeof assessments, empty: string, showCarryForward = false) => items.length ? <div className="space-y-1.5">{items.map((assessment) => {
+    const source = criterionSource(assessment.criterionCode)
+    const key = sourceKey(source)
+    return <div key={assessment.criterionCode} className="flex items-center justify-between gap-3 px-3 py-2.5" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '2px solid var(--color-border)' }}><div><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{assessment.label}</p><p className="text-xs mt-0.5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>{assessment.status === 'partially_evidenced' ? 'Partly established — more kōrero may help' : assessment.status === 'not_explored' ? 'Not explored in this reflection' : assessment.status === 'insufficient_information' ? 'More information may be needed' : 'Established in this reflection'}</p></div>{showCarryForward && <button type="button" disabled={carriedSources.has(key)} onClick={() => onMarkCarryForward(source)} className="flex-shrink-0 text-xs disabled:opacity-55" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>{carriedSources.has(key) ? 'Carried forward' : 'Needs follow-up'}</button>}</div>
+  })}</div> : <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>{empty}</p>
+  return <>
+    <div style={{ borderLeft: '3px solid var(--color-border)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.08em' }}>WHAT WAS ESTABLISHED</p>{list(established, 'No criterion was established from this reflection.')}</div>
+    <div style={{ borderLeft: '3px solid var(--color-growth)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.08em' }}>STRENGTHS / PROTECTIVE FACTORS</p>{list(strengths, 'No strength or protective factor was established in this reflection.')}</div>
+    <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>STILL TO EXPLORE / INFORMATION NEEDED</p>{list(stillToExplore, 'No further exploration was identified from the approved criteria.', true)}<p className="text-xs mt-2 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Not explored is not evidence that an issue is absent.</p></div>
+    <div style={{ borderLeft: '3px solid var(--color-caution)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-caution)', letterSpacing: '0.08em' }}>AREAS FOR ATTENTION</p>{list(attention, 'No additional area was identified from the approved review criteria.', true)}{draft.areasForAttentionSummary && <button type="button" disabled={carriedSources.has(`attention:${draft.revisionId}`)} onClick={() => onMarkCarryForward({ kind: 'areas_for_attention', reviewDraftRevisionId: draft.revisionId })} className="text-xs mt-3 disabled:opacity-55" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>{carriedSources.has(`attention:${draft.revisionId}`) ? 'Review area carried forward' : 'Carry review area forward'}</button>}<p className="text-xs mt-2 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>These are review matters for the Kaimahi to keep in view, not formal safety findings.</p></div>
+  </>
+}
+
+/** Phase 5C test/import compatibility; all active Pou now use the generic view. */
+export function WhakapapaNarrativeReview(props: {
+  workflowId: string
+  onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean }) => void
+}) {
+  return <PouNarrativeReview workflowId={props.workflowId} onDraftState={props.onDraftState} pouId="whakapapa" carriedSources={new Set()} onMarkCarryForward={() => undefined} />
+}
+
+export function SinglePouReviewStage({
   pouIdx,
   checkpoint,
   onConfirm,
+  workflowId,
+  carryForwards,
+  safetyObservations,
+  onMarkCarryForward = () => undefined,
+  onCandidateConfirm,
   persistenceState,
   onRetry,
   onReload,
@@ -1716,41 +2121,50 @@ function SinglePouReviewStage({
   pouIdx: number
   checkpoint?: WorkflowCheckpoint
   onConfirm: (review: {
-    userSelectedConcern: ConcernLevel
-    note: string
-    referralSuggested: boolean
-    supervisorReviewSuggested: boolean
+    note?: string
+    reviewDraftRevisionId?: string
   }, safetyDraft?: SafetyDraft, supervisorReviewRequest?: { note?: string }) => void
+  workflowId: string
+  carryForwards?: Workflow['carryForwards']
+  safetyObservations?: Workflow['safety']['observations']
+  onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
+  onCandidateConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => boolean | void | Promise<boolean | void>
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
 }) {
   const ext = POU_EXTENDED[pouIdx]
-  const [concern, setConcern] = useState<ConcernLevel>(checkpoint?.userSelectedConcern ?? 'watch')
-  const [referralFlag, setReferralFlag] = useState(checkpoint?.referralSuggested ?? false)
-  const [supervisorFlag, setSupervisorFlag] = useState(checkpoint?.supervisorReviewSuggested ?? false)
-  const [notes, setNotes] = useState(checkpoint?.note ?? '')
   const [recordSafety, setRecordSafety] = useState(false)
   const [safetyClass, setSafetyClass] = useState<SafetyBroadClass | null>(null)
-  const [safetyNote, setSafetyNote] = useState(checkpoint?.note ?? '')
-  const [requestSupervisorReview, setRequestSupervisorReview] = useState(false)
-  const [supervisorRequestNote, setSupervisorRequestNote] = useState('')
+  const [safetyNote, setSafetyNote] = useState('')
+  const [manualSafetyLevel, setManualSafetyLevel] = useState<SafetyObservationConcernLevel>('low')
+  const [reviewDraftRevisionId, setReviewDraftRevisionId] = useState<string | undefined>()
+  const [hasUnsavedReviewDraftChanges, setHasUnsavedReviewDraftChanges] = useState(false)
+  const [reviewDraftLoaded, setReviewDraftLoaded] = useState(false)
+  const [hasReviewableCandidate, setHasReviewableCandidate] = useState(false)
+
+  useEffect(() => {
+    setHasReviewableCandidate(false)
+  }, [workflowId, pouIdx])
 
   const handleConfirm = () => {
     if (recordSafety && !safetyClass) return
+    if (!reviewDraftLoaded) return
+    if (hasUnsavedReviewDraftChanges || hasReviewableCandidate) return
     onConfirm({
-      userSelectedConcern: concern,
-      note: notes,
-      referralSuggested: referralFlag,
-      supervisorReviewSuggested: supervisorFlag,
+      reviewDraftRevisionId,
     }, recordSafety && safetyClass ? {
       assessmentContext: 'pou',
       pouId: TE_WAHAROA_POU[pouIdx]!.id,
       broadClass: safetyClass,
-      concernLevel: concern,
+      concernLevel: manualSafetyLevel,
       contextNote: safetyNote.trim() || undefined,
-    } : undefined, requestSupervisorReview ? { note: supervisorRequestNote.trim() || undefined } : undefined)
+    } : undefined)
   }
+  const carriedSources = new Set((carryForwards ?? []).map((item) => item.source.kind === 'review_criterion'
+    ? `criterion:${item.source.reviewDraftRevisionId}:${item.source.criterionCode}`
+    : item.source.kind === 'areas_for_attention' ? `attention:${item.source.reviewDraftRevisionId}` : `safety:${item.source.observationId}`))
+  const currentPouSafety = (safetyObservations ?? []).filter((observation) => observation.status === 'active' && observation.assessmentContext === 'pou' && observation.pouId === TE_WAHAROA_POU[pouIdx]!.id)
 
   if (persistenceState === 'saving' || persistenceState === 'retrying') {
     return (
@@ -1794,170 +2208,13 @@ function SinglePouReviewStage({
       </div>
 
       <div className="px-5 pt-5 space-y-5">
-        {/* What was discussed */}
-        <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
-          <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
-            I KŌREROTIA — DISCUSSED
-          </p>
-          <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
-            {ext.discussed}
-          </p>
-        </div>
-
-        {/* What was not covered */}
-        {ext.notCovered && (
-          <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
-            <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
-              KĀ ORA ANA — NEEDS MORE KŌRERO
-            </p>
-            <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>
-              {ext.notCovered}
-            </p>
-          </div>
-        )}
-
-        {/* Protective factors */}
-        {ext.protective.length > 0 && (
-          <div>
-            <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.08em' }}>
-              TIAKI — PROTECTIVE FACTORS
-            </p>
-            <div className="space-y-1.5">
-              {ext.protective.map((f, i) => (
-                <div key={i} className="flex items-start gap-3 px-3 py-2.5" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '2px solid var(--color-growth)' }}>
-                  <p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{f}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Risk factors */}
-        {ext.risk.length > 0 && (
-          <div>
-            <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)', letterSpacing: '0.08em' }}>
-              TŪRARU — RISK FACTORS
-            </p>
-            <div className="space-y-1.5">
-              {ext.risk.map((f, i) => (
-                <div key={i} className="flex items-start gap-3 px-3 py-2.5" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '2px solid var(--color-concern)' }}>
-                  <p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{f}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Reflective prompts */}
-        {'reflectivePrompts' in ext && (ext as typeof ext & { reflectivePrompts: string[] }).reflectivePrompts.length > 0 && (
-          <div style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
-            <p className="text-xs mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.08em' }}>
-              WHAKAARO — REFLECTIVE PROMPTS
-            </p>
-            <div className="space-y-2">
-              {(ext as typeof ext & { reflectivePrompts: string[] }).reflectivePrompts.map((q, i) => (
-                <p key={i} className="text-xs italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>
-                  {q}
-                </p>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Safety flags */}
-        {'safetyFlags' in ext && (ext as typeof ext & { safetyFlags: string[] }).safetyFlags.length > 0 && (
-          <div>
-            <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-caution)', letterSpacing: '0.08em' }}>
-              TOHU HAUMARU — SAFETY FLAGS
-            </p>
-            <div className="space-y-1.5">
-              {(ext as typeof ext & { safetyFlags: string[] }).safetyFlags.map((f, i) => (
-                <div key={i} className="px-3 py-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '2px solid var(--color-caution)' }}>
-                  <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>{f}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Concern level */}
-        <div>
-          <p className="text-xs mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
-            TŪ O TE POUāRUARU — CONCERN LEVEL
-          </p>
-          <div className="grid grid-cols-2 gap-1.5">
-            {(Object.keys(CONCERN_META) as ConcernLevel[]).map((lvl) => {
-              const meta = CONCERN_META[lvl]
-              const active = concern === lvl
-              return (
-                <button
-                  key={lvl}
-                  onClick={() => setConcern(lvl)}
-                  className="text-left px-3 py-3 transition-all"
-                  style={{
-                    backgroundColor: active ? meta.bg : 'var(--color-surface)',
-                    borderLeft: `3px solid ${active ? meta.color : 'var(--color-border)'}`,
-                    outline: active ? `1px solid ${meta.color}` : 'none',
-                  }}
-                >
-                  <p className="text-xs font-medium" style={{ fontFamily: 'var(--font-mono)', color: active ? meta.color : 'var(--color-ink-muted)' }}>
-                    {meta.label}
-                  </p>
-                </button>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Notes / suggested actions */}
-        <div>
-          <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
-            MAHI TŪTOHUTIA — SUGGESTED ACTIONS
-          </p>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            placeholder="Add notes or suggested actions for this Pou…"
-            rows={3}
-            className="w-full resize-none text-sm p-3 outline-none"
-            style={{
-              backgroundColor: 'var(--color-surface)',
-              border: '1px solid var(--color-border-strong)',
-              color: 'var(--color-ink)',
-              fontFamily: 'var(--font-body)',
-            }}
-          />
-        </div>
-
-        {/* Flags */}
-        <div className="space-y-2">
-          <p className="text-xs mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>
-            TOHU — FLAGS
-          </p>
-          {[
-            { label: 'Referral pathway recommended', value: referralFlag, toggle: () => setReferralFlag((v) => !v), color: 'var(--color-growth)' },
-            { label: 'Consider supervisor review', value: supervisorFlag, toggle: () => setSupervisorFlag((v) => !v), color: 'var(--color-ridge)' },
-          ].map((flag) => (
-            <button
-              key={flag.label}
-              onClick={flag.toggle}
-              className="w-full flex items-center gap-3 px-4 py-3 transition-all"
-              style={{
-                backgroundColor: flag.value ? 'var(--color-surface)' : 'transparent',
-                border: `1px solid ${flag.value ? flag.color : 'var(--color-border)'}`,
-              }}
-            >
-              <div
-                className="flex-shrink-0"
-                style={{ width: 14, height: 14, border: `2px solid ${flag.value ? flag.color : 'var(--color-border-strong)'}`, backgroundColor: flag.value ? flag.color : 'transparent' }}
-              />
-              <span className="text-sm" style={{ fontFamily: 'var(--font-mono)', color: flag.value ? flag.color : 'var(--color-ink-muted)', fontSize: '0.75rem' }}>
-                {flag.label}
-              </span>
-            </button>
-          ))}
-        </div>
-
+        <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded, hasReviewableCandidate: nextHasReviewableCandidate }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded); if (typeof nextHasReviewableCandidate === 'boolean') setHasReviewableCandidate(nextHasReviewableCandidate) }} />
+        <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} hasReviewableCandidate={hasReviewableCandidate} onConfirm={onCandidateConfirm} onReviewableCandidatesChange={setHasReviewableCandidate} />
+        {currentPouSafety.length > 0 && <div className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
+          <SectionLabel>Confirmed safety concerns</SectionLabel>
+          <p className="text-xs leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>These are human-confirmed concerns. They remain separate from this Pou review.</p>
+          {currentPouSafety.map((observation) => <div key={observation.id} className="flex items-center justify-between gap-3 px-3 py-2.5" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '2px solid var(--color-caution)' }}><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{safetyClassLabel(observation.broadClass)} · {observation.concernLevel}</p><button type="button" disabled={carriedSources.has(`safety:${observation.id}`)} onClick={() => onMarkCarryForward({ kind: 'safety_observation', observationId: observation.id })} className="flex-shrink-0 text-xs disabled:opacity-55" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>{carriedSources.has(`safety:${observation.id}`) ? 'Carried forward' : 'Carry forward'}</button></div>)}
+        </div>}
         <SafetyConcernDisclosure
           open={recordSafety}
           onOpenChange={setRecordSafety}
@@ -1965,15 +2222,9 @@ function SinglePouReviewStage({
           onBroadClassChange={setSafetyClass}
           contextNote={safetyNote}
           onContextNoteChange={setSafetyNote}
+          label={hasReviewableCandidate ? 'Record a different concern manually' : undefined}
         />
-
-        <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${requestSupervisorReview ? 'var(--color-ridge)' : 'var(--color-border)'}`, padding: '0.875rem 1rem' }}>
-          <button type="button" onClick={() => setRequestSupervisorReview((value) => !value)} className="w-full flex items-center justify-between gap-3 text-left min-h-[36px]" aria-expanded={requestSupervisorReview}>
-            <span className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Request supervisor review</span>
-            <span aria-hidden="true" style={{ color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{requestSupervisorReview ? '−' : '+'}</span>
-          </button>
-          {requestSupervisorReview && <div className="pt-4"><label className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>NOTE (OPTIONAL)</label><textarea value={supervisorRequestNote} onChange={(event) => setSupervisorRequestNote(event.target.value)} rows={2} className="mt-2 w-full resize-none p-3 text-sm outline-none" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /></div>}
-        </div>
+        {recordSafety && <fieldset className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><legend className="text-xs px-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS CONCERN?</legend><div className="grid grid-cols-3 gap-1.5 mt-2">{(['low', 'watch', 'action'] as SafetyObservationConcernLevel[]).map((level) => <button key={level} type="button" onClick={() => setManualSafetyLevel(level)} className="px-3 py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: manualSafetyLevel === level ? 'var(--color-caution-light)' : 'var(--color-ground)', color: manualSafetyLevel === level ? 'var(--color-caution)' : 'var(--color-ink-muted)', borderLeft: `3px solid ${manualSafetyLevel === level ? 'var(--color-caution)' : 'var(--color-border)'}` }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>}
 
         {/* Paepae before confirm */}
         <div className="relative flex items-center pt-2">
@@ -1986,14 +2237,17 @@ function SinglePouReviewStage({
           <div className="flex-1" style={{ height: 1, backgroundColor: 'var(--color-border-strong)' }} />
         </div>
 
+        {hasReviewableCandidate && <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Resolve each formal safety review above before confirming this Pou. You can still record a different concern manually if needed.</p></div>}
+
         {/* Confirm CTA */}
         <button
           onClick={handleConfirm}
-          className="w-full transition-all active:opacity-85"
+          disabled={hasUnsavedReviewDraftChanges || !reviewDraftLoaded || hasReviewableCandidate}
+          className="w-full transition-all active:opacity-85 disabled:opacity-50"
           style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}
         >
           <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>
-            {pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
+            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : hasReviewableCandidate ? 'Resolve formal safety review before confirming' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
           </p>
         </button>
         <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
@@ -5496,7 +5750,20 @@ function SafetyConcernList({ observations }: { observations: SafetyObservationCu
   return <div className="space-y-2 mt-2">{observations.map((observation) => <div key={observation.id} className="px-3 py-3" style={{ backgroundColor: 'var(--color-ground)', borderLeft: `3px solid ${observation.status === 'retracted' ? 'var(--color-border-strong)' : 'var(--color-caution)'}` }}><p className="text-xs font-medium" style={{ color: 'var(--color-ink)' }}>Safety concern · {safetyClassLabel(observation.broadClass)} · {observation.concernLevel}</p>{observation.contextNote && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{observation.contextNote}</p>}{observation.status === 'retracted' && <p className="text-xs mt-1" style={{ color: 'var(--color-ink-muted)' }}>Retracted concern retained in session history.</p>}</div>)}</div>
 }
 
-function RealPouSummaryStage({
+function CarryForwardSourceList({ items }: { items: Workflow['carryForwards'] }) {
+  if (items.length === 0) return <p className="text-xs mt-2 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>No follow-up items have been carried forward from the Pou reviews. Is there anything else you want to record or follow up?</p>
+  return <div className="mt-2 space-y-2">{items.map((item) => {
+    const fallbackSource = item.source.kind === 'areas_for_attention' ? 'Areas for attention' : item.source.kind === 'safety_observation' ? 'Confirmed safety concern' : 'Review item'
+    return <div key={item.id} className="px-3 py-2" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '2px solid var(--color-ridge)' }}>
+      <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === item.pouId)?.reo}</p>
+      <p className="text-sm mt-1" style={{ color: 'var(--color-ink)' }}>{item.presentation?.title ?? item.note ?? fallbackSource}</p>
+      <p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Source: {item.presentation?.sourceLabel ?? fallbackSource}</p>
+      {item.source.kind !== 'safety_observation' && <p className="text-xs mt-1 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>This is a follow-up item, not yet an action, referral, safety concern, escalation, or supervisor-review request.</p>}
+    </div>
+  })}</div>
+}
+
+function WorkflowSynthesisStage({
   workflow,
   onConfirm,
   persistenceState,
@@ -5504,48 +5771,78 @@ function RealPouSummaryStage({
   onReload,
 }: {
   workflow: Workflow
-  onConfirm: () => void
+  onConfirm: (revisionId: string) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
 }) {
-  const { checkpoints } = workflow
-  const byPou = new Map(checkpoints.map((checkpoint) => [checkpoint.pouId, checkpoint]))
+  const [synthesis, setSynthesis] = useState<WorkflowSynthesisState | null>(null)
+  const [content, setContent] = useState<WorkflowSynthesisContent | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [dirty, setDirty] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const load = async () => {
+    try {
+      const current = await getWorkflowSynthesis(workflow.id)
+      setSynthesis(current)
+      if (current.draft) { setContent(current.draft.content); setDirty(false) }
+      return current
+    } catch {
+      setError('The synthesis could not be loaded. Check your connection and try again.')
+      return null
+    } finally { setLoading(false) }
+  }
+  useEffect(() => { void load() }, [workflow.id])
+  useEffect(() => {
+    if (synthesis?.status !== 'not_ready') return
+    setLoading(true)
+    void generateWorkflowSynthesis(workflow.id).then((next) => { setSynthesis(next); if (next.draft) setContent(next.draft.content) }).catch(() => setError('The synthesis could not be generated. Nothing has been confirmed.')).finally(() => setLoading(false))
+  }, [synthesis?.status, workflow.id])
+  useEffect(() => {
+    if (synthesis?.status !== 'analysing') return
+    const timer = window.setTimeout(() => void load(), 3_000)
+    return () => window.clearTimeout(timer)
+  }, [synthesis?.status])
+  const update = (key: keyof WorkflowSynthesisContent, value: string) => { setDirty(true); setContent((current) => current ? { ...current, [key]: value.trim() || null } : current) }
+  const save = async () => {
+    if (!synthesis?.draft || !synthesis.synthesisId || !content) return
+    setSaving(true); setError(null)
+    try { const next = await editWorkflowSynthesis(workflow.id, { synthesisId: synthesis.synthesisId, expectedRevision: synthesis.draft.revision, content }); setSynthesis(next); setContent(next.draft?.content ?? null); setDirty(false) }
+    catch (failure) { setError(failure instanceof WorkflowApiError && failure.code === 'stale_synthesis' ? 'This synthesis changed elsewhere. Reload the saved version before editing again.' : 'The synthesis could not be saved. Nothing has been confirmed.') }
+    finally { setSaving(false) }
+  }
+  const sections: Array<[keyof WorkflowSynthesisContent, string, string]> = [
+    ['overallSummary', 'Overall reflection', 'This brings together what emerged across all seven Pou.'],
+    ['keyThemes', 'Key themes', ''], ['strengthsSummary', 'Strengths and protective factors', ''], ['areasForAttentionSummary', 'Areas requiring attention', ''], ['informationStillToExploreSummary', 'Information still to explore', ''], ['confirmedSafetyConcernsSummary', 'Confirmed safety concerns', 'Only human-confirmed safety state appears here.'],
+  ]
+  if (loading || !synthesis || synthesis.status === 'analysing') return <div className="px-6 py-10 text-center" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Bringing together the confirmed reflections…</div>
+  if (synthesis.status === 'failed' || !synthesis.draft || !content) return <div className="px-6 py-10 space-y-4" style={{ fontFamily: 'var(--font-body)' }}><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{error ?? 'The synthesis is not available yet. Nothing has been confirmed.'}</p><button onClick={() => { setLoading(true); void generateWorkflowSynthesis(workflow.id).then((next) => { setSynthesis(next); if (next.draft) setContent(next.draft.content) }).catch(() => setError('The synthesis could not be generated.')).finally(() => setLoading(false)) }} className="text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try again</button></div>
   return (
     <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
         <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>
-          Whakarāpopoto — Confirmed Pou review
+          Whakarāpopoto — Cross-Pou synthesis
         </p>
         <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>
-          Ngā Pou o Te Waharoa — all seven reviewed
+          Bring the seven Pou together
         </h2>
         <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>
-          Your confirmed Kaimahi attention selections and notes. These are not clinical or automated safety classifications.
+          Review and edit this draft before you confirm it. It does not make a safety, action, referral, or escalation decision.
         </p>
       </div>
-      <div className="px-5 pt-5 space-y-px">
-        {TE_WAHAROA_POU.map((pou) => {
-          const checkpoint = byPou.get(pou.id)
-          const concern = checkpoint?.userSelectedConcern ?? 'low'
-          const meta = CONCERN_META[concern]
-          return (
-            <div key={pou.id} className="px-4 py-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${meta.color}` }}>
-              <div className="flex items-center justify-between gap-3 mb-2">
-                <p className="text-xs font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{pou.reo}</p>
-                <span className="text-xs px-2 py-0.5" style={{ fontFamily: 'var(--font-mono)', backgroundColor: meta.bg, color: meta.color, fontSize: '0.6rem' }}>{meta.label}</span>
-              </div>
-              {checkpoint?.note && <p className="text-xs italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{checkpoint.note}</p>}
-              {checkpoint?.referralSuggested && <p className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Referral consideration marked</p>}
-              {checkpoint?.supervisorReviewSuggested && <p className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Consider supervisor review</p>}
-              {workflow.safety.observations.filter((observation) => observation.pouId === pou.id).length > 0 && <div className="mt-3"><SafetyConcernList observations={workflow.safety.observations.filter((observation) => observation.pouId === pou.id)} /></div>}
-            </div>
-          )
-        })}
+      <div className="px-5 pt-5 space-y-4">
+        {sections.map(([key, title, helper]) => <label key={key} className="block p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}>
+          <SectionLabel>{title}</SectionLabel>{helper && <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>{helper}</p>}
+          <textarea value={content[key] ?? ''} onChange={(event) => update(key, event.target.value)} rows={key === 'overallSummary' ? 5 : 3} disabled={saving || synthesis.status === 'confirmed'} className="mt-3 w-full resize-y p-3 text-sm outline-none disabled:opacity-70" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} />
+        </label>)}
       </div>
       <div className="px-5 pt-8">
-        <button onClick={onConfirm} className="w-full transition-all active:opacity-85" style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}>
-          <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>Haere tonu — Concerns &amp; Actions</p>
+        {error && <p className="text-xs mb-3" style={{ color: 'var(--color-concern)' }}>{error}</p>}
+        <button onClick={() => void save()} disabled={saving || synthesis.status === 'confirmed'} className="w-full py-3 mb-3 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)', borderLeft: '3px solid var(--color-ridge)' }}>Save synthesis</button>
+        {dirty && <p className="text-xs mb-3" style={{ color: 'var(--color-caution)' }}>Save your edits before confirming this synthesis.</p>}
+        <button onClick={() => onConfirm(synthesis.draft!.id)} disabled={!canConfirmWorkflowSynthesis({ saving, dirty, status: synthesis.status })} className="w-full transition-all active:opacity-85 disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}>
+          <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>Whakaū — Confirm synthesis</p>
         </button>
         <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
       </div>
@@ -5580,11 +5877,15 @@ function RealActionsStage({
   return (
     <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
-        <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)', letterSpacing: '0.14em' }}>Āwangawanga — Concerns &amp; Actions</p>
-        <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Name the actions you will carry forward</h2>
-        <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Actions are created only from your own confirmed input. No notification or escalation is sent from this screen.</p>
+        <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Mahere mahi — Action planning</p>
+        <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Decide what to carry forward</h2>
+        <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>This is where you decide whether a carried-forward item becomes an action, a referral, future follow-up, or needs no further action. Nothing is created automatically.</p>
       </div>
       <div className="px-5 pt-5 space-y-3">
+        <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}>
+          <SectionLabel>From the Pou reviews</SectionLabel>
+          <CarryForwardSourceList items={workflow.carryForwards}/>
+        </div>
         {actions.map((action, index) => (
           <div key={action.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}>
             <div className="flex items-center justify-between gap-3"><SectionLabel>Action {index + 1}</SectionLabel><button onClick={() => setActions((items) => items.filter((item) => item.id !== action.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div>
@@ -5632,13 +5933,107 @@ function RealReferralsStage({
   )
 }
 
+function RealStructuredReviewStage({
+  workflow,
+  onConfirm,
+  persistenceState,
+  onRetry,
+  onReload,
+}: {
+  workflow: Workflow
+  onConfirm: () => void
+  persistenceState: WorkflowPersistenceState
+  onRetry: () => void
+  onReload: () => void
+}) {
+  const review = workflow.structuredReview
+  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+    <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+      <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>He Arotake Hanganga — Structured review</p>
+      <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Review the confirmed record</h2>
+      <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>This record is assembled from the Pou reviews and safety concerns you explicitly confirmed. It is not a new AI or safety decision.</p>
+    </div>
+    <div className="px-5 pt-5 space-y-4">
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}>
+        <SectionLabel>Session</SectionLabel>
+        <p className="text-sm mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{review.reference} · {review.setup?.whanauReference ?? 'Setup not confirmed'}</p>
+        <p className="text-xs mt-1" style={{ color: 'var(--color-ink-muted)' }}>{review.setup?.sessionFocus}</p>
+      </div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}>
+        <SectionLabel>Confirmed Pou reviews</SectionLabel>
+        {review.pouReviews.length === 0
+          ? <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No canonical Pou reviews are available.</p>
+          : review.pouReviews.map((pouReview) => <div key={pouReview.pouId} className="mt-3 px-3 py-3" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '2px solid var(--color-ridge)' }}>
+              <p className="text-xs font-medium" style={{ color: 'var(--color-ink)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === pouReview.pouId)?.reo} — Confirmed</p>
+              {pouReview.overallSummary && <p className="text-xs mt-1 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{pouReview.overallSummary}</p>}
+              {pouReview.strengthsSummary && <p className="text-xs mt-1" style={{ color: 'var(--color-growth)' }}>Strengths: {pouReview.strengthsSummary}</p>}
+              {pouReview.areasForAttentionSummary && <p className="text-xs mt-1" style={{ color: 'var(--color-caution)' }}>Attention: {pouReview.areasForAttentionSummary}</p>}
+            </div>)}
+      </div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><SectionLabel>Safety concerns</SectionLabel><SafetyConcernList observations={workflow.safety.observations} /></div>
+      <SafetyRequirements workflow={workflow}/>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}><SectionLabel>Items carried forward</SectionLabel><CarryForwardSourceList items={workflow.carryForwards}/></div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Actions</SectionLabel>{review.actions.length ? review.actions.map((action) => <p key={action.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{action.title} · {action.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No actions confirmed.</p>}</div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Referral drafts</SectionLabel>{review.referrals.length ? review.referrals.map((referral) => <p key={referral.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{referral.destinationName} · {referral.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No referrals confirmed.</p>}</div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}><SectionLabel>Supervisor review requests</SectionLabel>{workflow.safety.supervisorReviewRequests.length ? workflow.safety.supervisorReviewRequests.map((request) => <p key={request.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>Request recorded in Te Kaupapa{request.requestNote ? ` — ${request.requestNote}` : ''}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No supervisor review requests recorded.</p>}</div>
+    </div>
+    <div className="px-5 pt-6"><button onClick={onConfirm} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Review record</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+  </div>
+}
+
 function StructuredReviewStage({ workflow, onConfirm, persistenceState, onRetry, onReload }: { workflow: Workflow; onConfirm: () => void; persistenceState: WorkflowPersistenceState; onRetry: () => void; onReload: () => void }) {
   const review = workflow.structuredReview
   return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}><div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>He Arotake Hanganga — Structured review</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Review the confirmed record</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>This review is assembled from confirmed Te Kaupapa information. It is not AI-generated.</p></div><div className="px-5 pt-5 space-y-4"><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}><SectionLabel>Session</SectionLabel><p className="text-sm mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{review.reference} · {review.setup?.whanauReference ?? 'Setup not confirmed'}</p><p className="text-xs mt-1" style={{ color: 'var(--color-ink-muted)' }}>{review.setup?.sessionFocus}</p></div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Confirmed Pou responses</SectionLabel>{review.checkpoints.map((checkpoint) => <p key={checkpoint.pouId} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === checkpoint.pouId)?.reo}: {checkpoint.userSelectedConcern ? CONCERN_META[checkpoint.userSelectedConcern as ConcernLevel].label : 'Not confirmed'}{checkpoint.note ? ` — ${checkpoint.note}` : ''}</p>)}</div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Actions</SectionLabel>{review.actions.length ? review.actions.map((action) => <p key={action.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{action.title} · {action.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No actions confirmed.</p>}</div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Referral drafts</SectionLabel>{review.referrals.length ? review.referrals.map((referral) => <p key={referral.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>{referral.destinationName} · {referral.status}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No referrals confirmed.</p>}</div><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><SectionLabel>Safety concerns</SectionLabel><SafetyConcernList observations={workflow.safety.observations} /></div><SafetyRequirements workflow={workflow}/><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}><SectionLabel>Supervisor review requests</SectionLabel>{workflow.safety.supervisorReviewRequests.length ? workflow.safety.supervisorReviewRequests.map((request) => <p key={request.id} className="text-xs mt-2" style={{ color: 'var(--color-ink-secondary)' }}>Request recorded in Te Kaupapa{request.requestNote ? ` — ${request.requestNote}` : ''}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No supervisor review requests recorded.</p>}</div></div><div className="px-5 pt-6"><button onClick={onConfirm} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Review record</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div></div>
 }
 
 function RecordReviewStage({ workflow, onComplete, persistenceState, onRetry, onReload }: { workflow: Workflow; onComplete: () => void; persistenceState: WorkflowPersistenceState; onRetry: () => void; onReload: () => void }) {
-  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}><div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.14em' }}>Tohu — Record review</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Complete this Te Kaupapa record</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Completing saves the confirmed workflow record in Te Kaupapa. It does not send email, referrals, notifications, or escalation.</p></div><div className="px-5 pt-5 space-y-4"><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>Reference: {workflow.reference}</p><p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>{workflow.structuredReview.actions.length} acknowledged action(s) · {workflow.structuredReview.referrals.length} referral draft(s)</p></div><SafetyRequirements workflow={workflow}/></div><div className="px-5 pt-6"><button onClick={onComplete} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-growth)', color: 'white', fontFamily: 'var(--font-mono)' }}>Kua oti — Complete session</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div></div>
+  const [synthesis, setSynthesis] = useState<WorkflowSynthesisState | null>(null)
+  useEffect(() => { void getWorkflowSynthesis(workflow.id).then(setSynthesis).catch(() => setSynthesis(null)) }, [workflow.id])
+  const content = synthesis?.draft?.content
+  const actions = workflow.actions.filter((action) => action.status !== 'withdrawn')
+  const referrals = workflow.referrals.filter((referral) => referral.status !== 'withdrawn')
+  const activeObservations = workflow.safety.observations.filter((observation) => observation.status === 'active')
+  const sections: Array<{ label: string; value: string | null; color: string }> = content ? [
+    { label: 'Confirmed engagement summary', value: content.overallSummary, color: 'var(--color-ridge)' },
+    { label: 'Key themes', value: content.keyThemes, color: 'var(--color-ridge)' },
+    { label: 'Strengths and protective factors', value: content.strengthsSummary, color: 'var(--color-growth)' },
+    { label: 'Areas requiring attention', value: content.areasForAttentionSummary, color: 'var(--color-caution)' },
+    { label: 'Information still to explore', value: content.informationStillToExploreSummary, color: 'var(--color-ridge)' },
+    { label: 'Confirmed safety concerns', value: content.confirmedSafetyConcernsSummary, color: 'var(--color-caution)' },
+  ] : []
+  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+    <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+      <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.14em' }}>Tohu — Final record review</p>
+      <h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Review the final Te Kaupapa record</h2>
+      <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Finalising creates an immutable record from the synthesis you confirmed and the current acknowledged workflow state. It does not send anything externally.</p>
+    </div>
+    <div className="px-5 pt-5 space-y-4">
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}>
+        <p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>Reference: {workflow.reference}</p>
+        <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>{actions.length} acknowledged action(s) · {referrals.length} referral draft(s)</p>
+      </div>
+      {sections.map((section) => section.value && <div key={section.label} className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${section.color}` }}>
+        <SectionLabel>{section.label}</SectionLabel>
+        <p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{section.value}</p>
+      </div>)}
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><SectionLabel>Confirmed safety observations</SectionLabel><SafetyConcernList observations={activeObservations}/></div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Actions / follow-up</SectionLabel>{actions.length ? actions.map((action) => <p key={action.id} className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{[action.pouId ? WORKFLOW_POU_NAMES[action.pouId] : null, action.title, action.status, action.dueDate ? `due ${action.dueDate}` : null].filter(Boolean).join(' — ')}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No actions confirmed.</p>}</div>
+      <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Referrals</SectionLabel>{referrals.length ? referrals.map((referral) => <p key={referral.id} className="text-xs mt-2 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{[referral.pouId ? WORKFLOW_POU_NAMES[referral.pouId] : null, referral.destinationName, referral.reason, referral.status].filter(Boolean).join(' — ')}</p>) : <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>No referrals confirmed.</p>}</div>
+      <SafetyRequirements workflow={workflow}/>
+    </div>
+    <div className="px-5 pt-6"><button onClick={onComplete} className="w-full py-4 text-sm" style={{ backgroundColor: 'var(--color-growth)', color: 'white', fontFamily: 'var(--font-mono)' }}>Kua oti — Finalise record and complete session</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+  </div>
+}
+
+function FinalRecordCompletion({ workflow }: { workflow: Workflow }) {
+  const [record, setRecord] = useState<FinalRecord | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  useEffect(() => { void getFinalRecord(workflow.id).then(setRecord).catch(() => setRecord(null)) }, [workflow.id])
+  const copy = async () => {
+    try { await navigator.clipboard.writeText(await copyFinalRecord(workflow.id)); setCopyState('copied') } catch { setCopyState('failed') }
+  }
+  if (!record) return null
+  return <div className="space-y-4 text-left"><div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><SectionLabel>Final record</SectionLabel><p className="text-sm mt-2 leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{record.overallSummary}</p>{record.strengthsSummary && <p className="text-xs mt-2" style={{ color: 'var(--color-growth)' }}>Strengths: {record.strengthsSummary}</p>}{record.areasForAttentionSummary && <p className="text-xs mt-2" style={{ color: 'var(--color-caution)' }}>Attention: {record.areasForAttentionSummary}</p>}</div><div className="grid grid-cols-2 gap-3"><button onClick={() => void copy()} className="py-3 text-xs" style={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)', borderLeft: '3px solid var(--color-ridge)' }}>Copy summary</button><a href={`/api/workflows/${encodeURIComponent(workflow.id)}/final-record.pdf`} className="py-3 text-center text-xs" style={{ backgroundColor: 'var(--color-surface)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)', borderLeft: '3px solid var(--color-ridge)' }}>Download PDF</a></div>{copyState === 'copied' && <p className="text-xs" style={{ color: 'var(--color-growth)' }}>Summary copied.</p>}{copyState === 'failed' && <p className="text-xs" style={{ color: 'var(--color-concern)' }}>Copy was not available. You can download the PDF instead.</p>}</div>
 }
 
 function MilestoneThreeCompleteStage({
@@ -5719,13 +6114,22 @@ export function SessionShell({
   const [pendingSafetySave, setPendingSafetySave] = useState<PendingSafetySave | null>(null)
   const retrySubmission = useRef<(() => Promise<void>) | null>(null)
   const pendingSafetyRetry = useRef<(() => Promise<void>) | null>(null)
+  const preserveNextWorkflowStage = useRef(false)
 
   const patch = (update: Partial<ActiveSessionData>) => setData((p) => ({ ...p, ...update }))
 
   useEffect(() => {
     const nextPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
-    setStage(sessionStageForWorkflow(workflow.currentStage))
-    setCurrentPouIdx(nextPouIdx)
+    const preserveLocalStage = preserveNextWorkflowStage.current
+    const hasCurrentPouCarryForward = workflow.currentPouId !== null && (workflow.carryForwards ?? []).some((item) => item.pouId === workflow.currentPouId)
+    preserveNextWorkflowStage.current = false
+    if (!preserveLocalStage) {
+      // A carry-forward is created from the current Pou review but does not
+      // advance canonical workflow state. Reopening that workflow must return
+      // the Kaimahi to the same review, not the canonical overview/conversation.
+      setStage(hasCurrentPouCarryForward ? 'pou-review' : sessionStageForWorkflow(workflow.currentStage))
+      setCurrentPouIdx(nextPouIdx)
+    }
     setData((current) => ({
       ...current,
       ref: workflow.reference,
@@ -5761,12 +6165,14 @@ export function SessionShell({
   const persist = async (
     submit: () => Promise<{ workflow: Workflow }>,
     retrying = false,
+    preserveLocalStage = false,
   ) => {
     setPersistenceState(retrying ? 'retrying' : 'saving')
     try {
       const result = await submit()
       retrySubmission.current = null
       setPersistenceState('saved')
+      if (preserveLocalStage) preserveNextWorkflowStage.current = true
       onWorkflowChange(result.workflow)
     } catch (error) {
       setPersistenceState(error instanceof WorkflowApiError && error.code === 'stale_workflow' ? 'stale' : 'failed')
@@ -5879,6 +6285,28 @@ export function SessionShell({
     void attempt()
   }
 
+  const confirmAssessmentCandidate = async (candidate: PouAssessmentCandidate, concernLevel: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']): Promise<boolean> => {
+    const command = candidateConfirmationCommand(candidate, concernLevel, pouId, workflow.version)
+    if (!command) return false
+    const attempt = async (retrying = false): Promise<boolean> => {
+      setPersistenceState(retrying ? 'retrying' : 'saving')
+      try {
+        const result = await submitWorkflowCommand(workflow.id, command)
+        retrySubmission.current = null
+        setPersistenceState('saved')
+        // Candidate resolution is a safety-only command. Keep the populated
+        // Pou review mounted while its authoritative workflow snapshot updates.
+        preserveNextWorkflowStage.current = true
+        onWorkflowChange(result.workflow)
+        return true
+      } catch (error) {
+        setFollowUpFailure(error, async () => { await attempt(true) })
+        return false
+      }
+    }
+    return attempt()
+  }
+
   const correctSafetyConcern = (observation: SafetyObservationCurrentView, replacement: SafetyDraft, reason: string) => {
     const command = { type: 'safety-observation-corrected' as const, observationId: observation.id, expectedObservationRevision: observation.currentRevision, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version, replacement, reason }
     const attempt = async (retrying = false) => {
@@ -5941,10 +6369,7 @@ export function SessionShell({
   }
 
   const confirmPouReview = (review: {
-    userSelectedConcern: ConcernLevel
-    note: string
-    referralSuggested: boolean
-    supervisorReviewSuggested: boolean
+    note?: string
   }, safetyDraft?: SafetyDraft, supervisorReviewRequest?: { note?: string }) => {
     const command = {
       type: 'pou-review-confirmed' as const,
@@ -5976,15 +6401,30 @@ export function SessionShell({
     void attempt()
   }
 
+  const markCarryForward = (source: WorkflowCarryForwardSource) => {
+    const command = {
+      type: 'carry-forward-marked' as const,
+      itemId: crypto.randomUUID(),
+      idempotencyKey: crypto.randomUUID(),
+      expectedVersion: workflow.version,
+      pouId: TE_WAHAROA_POU[currentPouIdx]!.id,
+      source,
+    }
+    const submit = () => submitWorkflowCommand(workflow.id, command)
+    retrySubmission.current = () => persist(submit, true, true)
+    void persist(submit, false, true)
+  }
+
   const confirmDownstream = (
     command:
+      | { type: 'workflow-synthesis-confirmed'; synthesisRevisionId: string }
       | { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }
       | { type: 'action-plan-confirmed'; actions: ManualAction[] }
       | { type: 'referral-plan-confirmed'; referrals: ManualReferral[] },
   ) => {
     const submission = command.type === 'action-plan-confirmed' || command.type === 'referral-plan-confirmed'
       ? { ...command, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
-      : { ...(command as { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }), idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
+      : { ...command, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
     const submit = () => submitWorkflowCommand(workflow.id, submission)
     retrySubmission.current = () => persist(submit, true)
     void persist(submit)
@@ -5998,6 +6438,7 @@ export function SessionShell({
     if (stage === 'setup') { return }
     if (stage === 'pou-overview') { setCurrentPouIdx(0); setStage('pou-convo'); return }
     if (stage === 'pou-convo') { setStage('pou-review'); return }
+    if (stage === 'pou-processing') { return }
     if (stage === 'pou-review') {
       if (currentPouIdx < 6) {
         setCurrentPouIdx((i) => i + 1)
@@ -6015,6 +6456,7 @@ export function SessionShell({
     if (stage === 'pou-overview') { setStage('setup'); return }
     if (stage === 'pou-convo' && currentPouIdx === 0) { setStage('pou-overview'); return }
     if (stage === 'pou-convo') { setCurrentPouIdx((i) => i - 1); setStage('pou-review'); return }
+    if (stage === 'pou-processing') { setStage('pou-convo'); return }
     if (stage === 'pou-review') { setStage('pou-convo'); return }
     if (stage === 'pou-summary') { setCurrentPouIdx(6); setStage('pou-review'); return }
     const linear: SessionStageKey[] = ['risks', 'referrals', 'synthesis', 'record']
@@ -6031,6 +6473,7 @@ export function SessionShell({
         <div className="flex-1 overflow-y-auto">
           <PendingSafetySaveNotice pending={pendingSafetySave} state={persistenceState} onRetry={retryPendingSafetySave} onReview={reviewPendingSafetySave} />
           <MilestoneThreeCompleteStage workflow={workflow} onDone={onDone} onCorrect={correctSafetyConcern} onRetract={retractSafetyConcern} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />
+          <div className="px-5 pb-8"><FinalRecordCompletion workflow={workflow} /></div>
         </div>
       </WhareShell>
     )
@@ -6053,13 +6496,14 @@ export function SessionShell({
         {stage === 'setup'        && <SetupStage data={data} onChange={patch} onConfirm={confirmSetup} displayName={displayName} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-overview' && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} />}
+        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'pou-summary'  && <RealPouSummaryStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'pou-summary-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'synthesis'    && <StructuredReviewStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'structured-review-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'synthesis'    && <RealStructuredReviewStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'structured-review-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'record'       && <RecordReviewStage workflow={workflow} onComplete={() => confirmDownstream({ type: 'workflow-completed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
       </div>
     </WhareShell>

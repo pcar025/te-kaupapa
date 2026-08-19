@@ -1,0 +1,2 @@
+ALTER TABLE "conversation_provider_rule_assessment" DROP CONSTRAINT "provider_rule_assessment_level_outcome";--> statement-breakpoint
+ALTER TABLE "conversation_provider_rule_assessment" ADD CONSTRAINT "provider_rule_assessment_level_outcome" CHECK ("conversation_provider_rule_assessment"."candidate_concern_level" is null);

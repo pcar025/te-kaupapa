@@ -1,14 +1,16 @@
-import { and, eq, gt, isNull } from 'drizzle-orm'
+import { and, eq, gt, isNull, or } from 'drizzle-orm'
 import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres'
 import { Pool } from 'pg'
 
 import type { ApplicationRole, AuthenticatedUser } from '../domain/auth.js'
 import * as schema from './schema.js'
+import { STANDARD_SESSION_POLICY, type ApplicationSessionMode } from '../auth/session-policy.js'
 
 export interface CreateSessionInput {
   id: string
   userId: string
   tokenHash: string
+  mode?: ApplicationSessionMode
   expiresAt: Date
   lastActivityAt?: Date
 }
@@ -16,9 +18,10 @@ export interface CreateSessionInput {
 export interface AuthRepository {
   findUserByExternalIdentity(provider: string, providerSubject: string): Promise<AuthenticatedUser | null>
   createSession(input: CreateSessionInput): Promise<void>
-  findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number): Promise<AuthenticatedUser | null>
+  findUserBySessionHash(tokenHash: string, now: Date): Promise<AuthenticatedUser | null>
   touchSession(tokenHash: string, activityAt: Date): Promise<void>
   invalidateSession(tokenHash: string, invalidatedAt: Date): Promise<void>
+  invalidateSessionsForUser(userId: string, invalidatedAt: Date): Promise<void>
   isSupervisorOf(supervisorUserId: string, kaimahiUserId: string): Promise<boolean>
 }
 
@@ -62,7 +65,7 @@ export class PostgresAuthRepository implements AuthRepository {
     await this.db.insert(schema.applicationSessions).values(input)
   }
 
-  async findUserBySessionHash(tokenHash: string, now: Date, idleTimeoutMinutes: number): Promise<AuthenticatedUser | null> {
+  async findUserBySessionHash(tokenHash: string, now: Date): Promise<AuthenticatedUser | null> {
     const rows = await this.db
       .select({
         id: schema.appUsers.id,
@@ -79,7 +82,13 @@ export class PostgresAuthRepository implements AuthRepository {
         eq(schema.applicationSessions.tokenHash, tokenHash),
         isNull(schema.applicationSessions.invalidatedAt),
         gt(schema.applicationSessions.expiresAt, now),
-        gt(schema.applicationSessions.lastActivityAt, new Date(now.getTime() - idleTimeoutMinutes * 60 * 1000)),
+        or(
+          eq(schema.applicationSessions.mode, 'trusted_device'),
+          and(
+            eq(schema.applicationSessions.mode, 'standard'),
+            gt(schema.applicationSessions.lastActivityAt, new Date(now.getTime() - STANDARD_SESSION_POLICY.idleTimeoutSeconds! * 1000)),
+          ),
+        ),
       ))
       .limit(1)
 
@@ -99,6 +108,13 @@ export class PostgresAuthRepository implements AuthRepository {
       .update(schema.applicationSessions)
       .set({ invalidatedAt })
       .where(and(eq(schema.applicationSessions.tokenHash, tokenHash), isNull(schema.applicationSessions.invalidatedAt)))
+  }
+
+  async invalidateSessionsForUser(userId: string, invalidatedAt: Date): Promise<void> {
+    await this.db
+      .update(schema.applicationSessions)
+      .set({ invalidatedAt })
+      .where(and(eq(schema.applicationSessions.userId, userId), isNull(schema.applicationSessions.invalidatedAt)))
   }
 
   async isSupervisorOf(supervisorUserId: string, kaimahiUserId: string): Promise<boolean> {
