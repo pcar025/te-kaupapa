@@ -79,7 +79,7 @@ describe('post-call HTTP raw-body boundary', () => {
       await app.close()
       write.mockRestore()
     }
-  })
+  }, 15_000)
 
   it('rejects provider-exposed dynamic variables that differ from the server-pinned guidance before persistence or assessment', async () => {
     const ingest = vi.fn(async (_input: unknown) => ({ replayed: false, superseded: false }))

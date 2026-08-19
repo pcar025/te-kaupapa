@@ -10,7 +10,7 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway', '0013_wooden_triathlon', '0014_ordinary_lady_mastermind', '0015_yellow_microbe', '0016_lonely_vance_astro', '0017_flashy_betty_ross', '0018_trusted_device_sessions', '0019_absurd_norrin_radd', '0020_final_record_confirmed_synthesis_lineage']
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway', '0013_wooden_triathlon', '0014_ordinary_lady_mastermind', '0015_yellow_microbe', '0016_lonely_vance_astro', '0017_flashy_betty_ross', '0018_trusted_device_sessions', '0019_absurd_norrin_radd', '0020_final_record_confirmed_synthesis_lineage', '0021_useful_anita_blake']
 const PRE_MILESTONE_5_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 6)
 
 interface MigrationJournal {
@@ -200,10 +200,10 @@ export async function verifyUpgradeFromPreMilestone5TestDatabase(): Promise<void
     }
     const authoringRelations = await connection.db.execute(sql`
       select count(*)::int as count from pg_class
-      where oid = 'public.organisation_pou_specification_draft'::regclass
+      where oid in ('public.organisation_pou_specification_draft'::regclass, 'public.organisation_pou_safety_policy_draft'::regclass)
     `)
-    if (Number(authoringRelations.rows[0]?.count ?? 0) !== 1) {
-      throw new Error('The SME Pou specification draft relation was not created by the later migration chain.')
+    if (Number(authoringRelations.rows[0]?.count ?? 0) !== 2) {
+      throw new Error('The SME Pou specification and formal safety-policy draft relations were not created by the later migration chain.')
     }
     const assessmentProviderColumns = await connection.db.execute(sql`
       select count(*)::int as count from information_schema.columns

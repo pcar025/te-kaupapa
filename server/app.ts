@@ -44,7 +44,7 @@ import {
   type ConversationRecord,
 } from './conversations/repository.js'
 import { contentHash } from './safety-assessments/domain.js'
-import { AssessmentCandidateUnavailableError, PostgresSafetyAssessmentRepository, ProviderDeliveryConflictError, SafetyAssessmentValidationError } from './safety-assessments/repository.js'
+import { AssessmentCandidateUnavailableError, PostgresSafetyAssessmentRepository, ProviderDeliveryConflictError, SafetyAssessmentValidationError, UnresolvedSafetyCandidateError } from './safety-assessments/repository.js'
 import { ConversationAssessmentProviderError, type ConversationAssessmentProvider } from './safety-assessments/assessment-provider.js'
 import { ElevenLabsGuidanceProvenanceMismatchError, ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
 import { normaliseSignedTranscript } from './transcripts/domain.js'
@@ -67,6 +67,14 @@ import {
   StalePouSpecificationDraftError,
   pouSpecificationDraftContentSchema,
 } from './pou-specifications/authoring.js'
+import {
+  IncompleteSafetyPolicyDraftError,
+  PostgresSafetyPolicyAuthoringService,
+  SafetyPolicyAuthoringError,
+  SafetyPolicyDraftNotFoundError,
+  StaleSafetyPolicyDraftError,
+  safetyPolicyDraftContentSchema,
+} from './safety-assessments/authoring.js'
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
@@ -114,6 +122,7 @@ export interface AppDependencies {
   transcriptRepository?: PostgresTranscriptRepository
   elevenLabsWebhookVerifier?: ElevenLabsWebhookVerifier
   pouSpecificationAuthoringService?: PostgresOrganisationPouSpecificationAuthoringService
+  safetyPolicyAuthoringService?: PostgresSafetyPolicyAuthoringService
   oidcProvider?: OidcProvider
   now?: () => Date
 }
@@ -125,7 +134,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -372,6 +381,14 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     return reply.code(503).send({ error: 'specification_authoring_unavailable' })
   }
 
+  function safetyPolicyAuthoringFailure(error: unknown, reply: FastifyReply) {
+    if (error instanceof StaleSafetyPolicyDraftError) return reply.code(409).send({ error: 'stale_safety_policy_draft', currentRevision: error.currentRevision })
+    if (error instanceof IncompleteSafetyPolicyDraftError) return reply.code(409).send({ error: 'formal_safety_policy_incomplete' })
+    if (error instanceof SafetyPolicyDraftNotFoundError) return reply.code(404).send({ error: 'not_found' })
+    if (error instanceof SafetyPolicyAuthoringError || error instanceof z.ZodError) return reply.code(400).send({ error: 'invalid_request' })
+    return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+  }
+
   app.get('/api/pou-specifications', async (request, reply) => {
     const user = await requireSpecificationEditor(request, reply)
     if (!user) return reply
@@ -420,11 +437,60 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     try { return { result: await pouSpecificationAuthoringService.approveAndActivate(user, parsed.data.draftId, body.data.expectedRevision) } } catch (error) { return authoringFailure(error, reply) }
   })
 
+  app.get('/api/safety-policy-drafts', async (request, reply) => {
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!safetyPolicyAuthoringService) return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+    try { return { drafts: await safetyPolicyAuthoringService.list(user), activePolicies: await safetyPolicyAuthoringService.listActive(user) } } catch (error) { return safetyPolicyAuthoringFailure(error, reply) }
+  })
+
+  app.post('/api/pou-specifications/:pouId/safety-policy-drafts', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!safetyPolicyAuthoringService) return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+    const parsed = z.object({ pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try { return reply.code(201).send({ draft: await safetyPolicyAuthoringService.createDraft(user, parsed.data.pouId) }) } catch (error) { return safetyPolicyAuthoringFailure(error, reply) }
+  })
+
+  app.get('/api/safety-policy-drafts/:draftId', async (request, reply) => {
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!safetyPolicyAuthoringService) return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try { return { draft: await safetyPolicyAuthoringService.getDraft(user, parsed.data.draftId) } } catch (error) { return safetyPolicyAuthoringFailure(error, reply) }
+  })
+
+  app.put('/api/safety-policy-drafts/:draftId', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!safetyPolicyAuthoringService) return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    const body = z.object({ expectedRevision: z.number().int().positive(), policy: safetyPolicyDraftContentSchema }).safeParse(request.body)
+    if (!parsed.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try { return { draft: await safetyPolicyAuthoringService.saveDraft(user, parsed.data.draftId, body.data.expectedRevision, body.data.policy) } } catch (error) { return safetyPolicyAuthoringFailure(error, reply) }
+  })
+
+  app.post('/api/safety-policy-drafts/:draftId/approve-and-activate', async (request, reply) => {
+    if (!requireTrustedOrigin(request, reply)) return reply
+    const user = await requireSpecificationEditor(request, reply)
+    if (!user) return reply
+    if (!safetyPolicyAuthoringService) return reply.code(503).send({ error: 'safety_policy_authoring_unavailable' })
+    const parsed = z.object({ draftId: z.string().uuid() }).safeParse(request.params)
+    const body = z.object({ expectedRevision: z.number().int().positive() }).safeParse(request.body)
+    if (!parsed.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
+    try { return { result: await safetyPolicyAuthoringService.approveAndActivate(user, parsed.data.draftId, body.data.expectedRevision) } } catch (error) { return safetyPolicyAuthoringFailure(error, reply) }
+  })
+
   function workflowFailure(error: unknown, request: FastifyRequest, reply: FastifyReply) {
     if (error instanceof IdempotencyKeyReuseError) return reply.code(409).send({ error: 'idempotency_key_reused' })
     if (error instanceof StaleWorkflowError) return reply.code(409).send({ error: 'stale_workflow', currentVersion: error.currentVersion })
     if (error instanceof StaleSafetyObservationError) return reply.code(409).send({ error: 'stale_safety_observation', currentRevision: error.currentRevision })
     if (error instanceof SafetyObservationIdentifierReuseError) return reply.code(409).send({ error: 'safety_observation_identifier_reused' })
+    if (error instanceof UnresolvedSafetyCandidateError) return reply.code(409).send({ error: 'unresolved_safety_candidate' })
     if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
     if (error instanceof StaleWorkflowSynthesisError) return reply.code(409).send({ error: 'stale_synthesis', currentRevision: error.currentRevision })
     if (error instanceof WorkflowSynthesisUnavailableError) return reply.code(409).send({ error: 'synthesis_unavailable' })

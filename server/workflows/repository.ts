@@ -720,9 +720,17 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             .where(and(
               eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
               eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
-            ))
-            .limit(1)
+          ))
+          .limit(1)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
+          if (this.safetyAssessments) {
+            await this.safetyAssessments.assertNoUnresolvedForPouConfirmation(
+              tx,
+              input.actor,
+              workflow.id,
+              input.command.pouId,
+            )
+          }
           if (this.reviewDrafts) {
             await this.reviewDrafts.requireRevisionForConfirmation(tx, { actor: input.actor, workflowSessionId: workflow.id, pouId: input.command.pouId, reviewDraftRevisionId: input.command.reviewDraftRevisionId })
           }

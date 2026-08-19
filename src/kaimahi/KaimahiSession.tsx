@@ -120,6 +120,7 @@ function SafetyConcernDisclosure({
   onBroadClassChange,
   contextNote,
   onContextNoteChange,
+  label = 'Record this as a safety concern',
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -127,6 +128,7 @@ function SafetyConcernDisclosure({
   onBroadClassChange: (value: SafetyBroadClass) => void
   contextNote: string
   onContextNoteChange: (value: string) => void
+  label?: string
 }) {
   return (
     <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: `3px solid ${open ? 'var(--color-caution)' : 'var(--color-border)'}`, padding: '0.875rem 1rem' }}>
@@ -136,7 +138,7 @@ function SafetyConcernDisclosure({
         className="w-full flex items-center justify-between gap-3 text-left min-h-[36px]"
         aria-expanded={open}
       >
-        <span className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Record this as a safety concern</span>
+        <span className="text-sm font-medium" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{label}</span>
         <span aria-hidden="true" style={{ color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{open ? '−' : '+'}</span>
       </button>
       {open && (
@@ -1762,19 +1764,60 @@ const CONCERN_META: Record<ConcernLevel, { label: string; color: string; bg: str
 export function PouAssessmentCandidates({
   workflowId,
   pouId,
+  hasReviewableCandidate = false,
   onConfirm,
+  onReviewableCandidatesChange,
 }: {
   workflowId: string
   pouId: (typeof TE_WAHAROA_POU)[number]['id']
-  onConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => void
+  /** Authoritative review-read signal; the lookup itself remains read-only. */
+  hasReviewableCandidate?: boolean
+  onConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => boolean | void | Promise<boolean | void>
+  /** Lets the Pou confirmation control truthfully mirror the authoritative candidate read. */
+  onReviewableCandidatesChange?: (hasUnresolvedCandidates: boolean) => void
 }) {
   const [candidates, setCandidates] = useState<PouAssessmentCandidate[]>([])
   const [state, setState] = useState<'idle' | 'loading' | 'failed'>('idle')
   const [selected, setSelected] = useState<Record<string, SafetyObservationConcernLevel | undefined>>({})
+  const activeCandidateRequest = useRef<number | null>(null)
+  const candidateRequestGeneration = useRef(0)
+  const automaticallyLoadedFor = useRef<string | null>(null)
   const load = () => {
+    if (activeCandidateRequest.current !== null) return
+    const requestGeneration = ++candidateRequestGeneration.current
+    activeCandidateRequest.current = requestGeneration
     setState('loading')
-    void getPouAssessmentCandidates(workflowId, pouId).then((items) => { setCandidates(items); setState('idle') }).catch(() => setState('failed'))
+    void getPouAssessmentCandidates(workflowId, pouId).then((items) => {
+      if (activeCandidateRequest.current !== requestGeneration) return
+      activeCandidateRequest.current = null
+      setCandidates(items)
+      onReviewableCandidatesChange?.(items.length > 0)
+      setState('idle')
+    }).catch(() => {
+      if (activeCandidateRequest.current !== requestGeneration) return
+      activeCandidateRequest.current = null
+      setState('failed')
+    })
   }
+  useEffect(() => {
+    candidateRequestGeneration.current += 1
+    activeCandidateRequest.current = null
+    automaticallyLoadedFor.current = null
+    setCandidates([])
+    setSelected({})
+    setState('idle')
+    return () => {
+      candidateRequestGeneration.current += 1
+      activeCandidateRequest.current = null
+    }
+  }, [workflowId, pouId, onReviewableCandidatesChange])
+  useEffect(() => {
+    if (!hasReviewableCandidate) return
+    const key = `${workflowId}:${pouId}`
+    if (automaticallyLoadedFor.current === key) return
+    automaticallyLoadedFor.current = key
+    load()
+  }, [hasReviewableCandidate, workflowId, pouId])
   if (!candidates.length && state === 'idle') return <div className="flex justify-between gap-3 px-4 py-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>You can check whether a formal safety concern needs your review.</p><button type="button" onClick={load} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
   return <div className="space-y-3" aria-live="polite">
     {state === 'loading' && <p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Checking whether a formal safety concern needs your review…</p>}
@@ -1785,8 +1828,26 @@ export function PouAssessmentCandidates({
       <p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{candidate.title}</p>
       <p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.description}</p>
       <fieldset><legend className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS?</legend><div className="grid grid-cols-2 gap-1.5">{candidate.permittedHumanConcernLevels.map((level) => <button type="button" key={level} onClick={() => setSelected((current) => ({ ...current, [candidate.id]: level }))} className="px-3 py-2 text-left text-xs" style={{ backgroundColor: selected[candidate.id] === level ? 'var(--color-caution-light)' : 'var(--color-ground)', borderLeft: `3px solid ${selected[candidate.id] === level ? 'var(--color-caution)' : 'var(--color-border)'}`, fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>
-      <div className="flex gap-3"><button type="button" disabled={!selected[candidate.id]} onClick={() => selected[candidate.id] && onConfirm(candidate, selected[candidate.id]!, pouId)} className="text-xs disabled:opacity-40" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Confirm concern</button><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Dismiss suggestion</button></div>
-    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>This formal safety review needs more information before it can be considered.</p><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge</button></div> : null)}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <button
+          type="button"
+          disabled={!selected[candidate.id]}
+          onClick={() => { if (!selected[candidate.id]) return; void Promise.resolve(onConfirm(candidate, selected[candidate.id]!, pouId)).then((confirmed) => { if (confirmed !== false) load() }).catch(() => undefined) }}
+          className="min-h-11 px-4 py-3 text-sm disabled:opacity-40 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          style={{ backgroundColor: 'var(--color-concern)', color: 'white', fontFamily: 'var(--font-mono)' }}
+        >
+          Confirm concern
+        </button>
+        <button
+          type="button"
+          onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'dismissed').then(load).catch(() => setState('failed'))}
+          className="min-h-11 px-4 py-3 text-sm focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}
+        >
+          Dismiss suggestion
+        </button>
+      </div>
+    </div> : candidate.outcome === 'insufficient_information' ? <div key={candidate.id} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>MORE INFORMATION MAY BE NEEDED</p><p className="text-xs" style={{ color: 'var(--color-ink-secondary)' }}>This formal safety review needs more information before you can continue. Acknowledging this records only that you have reviewed the information state; it does not record a safety concern.</p><button type="button" onClick={() => void reviewPouAssessmentCandidate(workflowId, candidate.id, 'insufficient_information_acknowledged').then(load).catch(() => setState('failed'))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Acknowledge information still needed</button></div> : null)}
   </div>
 }
 
@@ -1802,7 +1863,7 @@ export function PouNarrativeReview({
 }: {
   workflowId: string
   pouId: (typeof TE_WAHAROA_POU)[number]['id']
-  onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean }) => void
+  onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean; hasReviewableCandidate?: boolean }) => void
   carriedSources?: Set<string>
   onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
   presentation?: 'review' | 'processing'
@@ -1834,7 +1895,9 @@ export function PouNarrativeReview({
       setDraft(next.draft)
       setDirty(false)
       setSaveError(null)
-      onDraftState({ reviewDraftRevisionId: next.draft?.revisionId, hasUnsavedChanges: false, loaded: true })
+      // A formal candidate is independently authoritative. A failed/manual
+      // narrative draft must not hide it or enable Pou confirmation.
+      onDraftState({ reviewDraftRevisionId: next.draft?.revisionId, hasUnsavedChanges: false, loaded: true, hasReviewableCandidate: next.hasReviewableCandidate })
       setAutomaticPollCount((current) => next.status === 'analysing' ? (resetAutomaticPolling ? 1 : current + 1) : 0)
       if (next.draft && presentation !== 'processing') void markPouReviewDraftReviewed(workflowId, pouId, next.draft.id).catch(() => undefined)
     }).catch(() => {
@@ -1902,7 +1965,30 @@ export function PouNarrativeReview({
     {saveError === 'failed' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>Your review changes could not be saved. They are still shown here and have not been confirmed.</p><button type="button" onClick={save} disabled={saving} className="text-xs mt-2 disabled:opacity-50" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try saving again</button></div>}
     {saveError === 'ambiguous' && <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>We could not confirm whether your changes were saved. Your wording is still shown here and has not been confirmed.</p><button type="button" onClick={() => load(true, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Load current saved review</button></div>}
     {dirty && <button type="button" onClick={save} disabled={saving} className="w-full px-4 py-3 text-sm disabled:opacity-50" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{saving ? 'Saving review…' : 'Save review changes'}</button>}
-    {review.assessmentCompleted && !review.hasReviewableCandidate && <div style={{ borderLeft: '3px solid var(--color-growth)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Reflection analysed</p><p className="text-xs mt-1 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>No additional safety concern was suggested from this reflection. You still complete the Pou review.</p></div>}
+    {review.assessmentCompleted && !review.hasReviewableCandidate && <SafetyReviewCompleteNotice resolvedSafetyReview={review.resolvedSafetyReview} />}
+  </div>
+}
+
+function SafetyReviewCompleteNotice({
+  resolvedSafetyReview = { confirmedCount: 0, dismissedCount: 0, insufficientInformationAcknowledgedCount: 0 },
+}: {
+  resolvedSafetyReview?: { confirmedCount: number; dismissedCount: number; insufficientInformationAcknowledgedCount: number }
+}) {
+  const { confirmedCount, dismissedCount, insufficientInformationAcknowledgedCount } = resolvedSafetyReview
+  const message = confirmedCount > 0
+    ? 'All identified safety concerns from this reflection have been reviewed.'
+    : insufficientInformationAcknowledgedCount > 0 && dismissedCount > 0
+      ? 'Suggested safety concerns and information still needed for the safety review have been reviewed.'
+      : insufficientInformationAcknowledgedCount > 0
+        ? 'Information still needed for the safety review has been acknowledged.'
+        : dismissedCount > 1
+          ? 'The suggested safety concerns have been reviewed.'
+          : dismissedCount === 1
+            ? 'The suggested safety concern has been reviewed.'
+            : 'No formal safety concern was identified for review.'
+  return <div style={{ borderLeft: '3px solid var(--color-growth)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}>
+    <p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Safety review complete</p>
+    <p className="text-xs mt-1 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>{message}</p>
   </div>
 }
 
@@ -2042,7 +2128,7 @@ export function SinglePouReviewStage({
   carryForwards?: Workflow['carryForwards']
   safetyObservations?: Workflow['safety']['observations']
   onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
-  onCandidateConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => void
+  onCandidateConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => boolean | void | Promise<boolean | void>
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
@@ -2055,11 +2141,16 @@ export function SinglePouReviewStage({
   const [reviewDraftRevisionId, setReviewDraftRevisionId] = useState<string | undefined>()
   const [hasUnsavedReviewDraftChanges, setHasUnsavedReviewDraftChanges] = useState(false)
   const [reviewDraftLoaded, setReviewDraftLoaded] = useState(false)
+  const [hasReviewableCandidate, setHasReviewableCandidate] = useState(false)
+
+  useEffect(() => {
+    setHasReviewableCandidate(false)
+  }, [workflowId, pouIdx])
 
   const handleConfirm = () => {
     if (recordSafety && !safetyClass) return
     if (!reviewDraftLoaded) return
-    if (hasUnsavedReviewDraftChanges) return
+    if (hasUnsavedReviewDraftChanges || hasReviewableCandidate) return
     onConfirm({
       reviewDraftRevisionId,
     }, recordSafety && safetyClass ? {
@@ -2117,8 +2208,8 @@ export function SinglePouReviewStage({
       </div>
 
       <div className="px-5 pt-5 space-y-5">
-        <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded) }} />
-        <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onConfirm={onCandidateConfirm} />
+        <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded, hasReviewableCandidate: nextHasReviewableCandidate }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded); if (typeof nextHasReviewableCandidate === 'boolean') setHasReviewableCandidate(nextHasReviewableCandidate) }} />
+        <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} hasReviewableCandidate={hasReviewableCandidate} onConfirm={onCandidateConfirm} onReviewableCandidatesChange={setHasReviewableCandidate} />
         {currentPouSafety.length > 0 && <div className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
           <SectionLabel>Confirmed safety concerns</SectionLabel>
           <p className="text-xs leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>These are human-confirmed concerns. They remain separate from this Pou review.</p>
@@ -2131,6 +2222,7 @@ export function SinglePouReviewStage({
           onBroadClassChange={setSafetyClass}
           contextNote={safetyNote}
           onContextNoteChange={setSafetyNote}
+          label={hasReviewableCandidate ? 'Record a different concern manually' : undefined}
         />
         {recordSafety && <fieldset className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><legend className="text-xs px-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>HOW WOULD YOU ASSESS THIS CONCERN?</legend><div className="grid grid-cols-3 gap-1.5 mt-2">{(['low', 'watch', 'action'] as SafetyObservationConcernLevel[]).map((level) => <button key={level} type="button" onClick={() => setManualSafetyLevel(level)} className="px-3 py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: manualSafetyLevel === level ? 'var(--color-caution-light)' : 'var(--color-ground)', color: manualSafetyLevel === level ? 'var(--color-caution)' : 'var(--color-ink-muted)', borderLeft: `3px solid ${manualSafetyLevel === level ? 'var(--color-caution)' : 'var(--color-border)'}` }}>{level[0]!.toUpperCase() + level.slice(1)}</button>)}</div></fieldset>}
 
@@ -2145,15 +2237,17 @@ export function SinglePouReviewStage({
           <div className="flex-1" style={{ height: 1, backgroundColor: 'var(--color-border-strong)' }} />
         </div>
 
+        {hasReviewableCandidate && <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Resolve each formal safety review above before confirming this Pou. You can still record a different concern manually if needed.</p></div>}
+
         {/* Confirm CTA */}
         <button
           onClick={handleConfirm}
-          disabled={hasUnsavedReviewDraftChanges || !reviewDraftLoaded}
+          disabled={hasUnsavedReviewDraftChanges || !reviewDraftLoaded || hasReviewableCandidate}
           className="w-full transition-all active:opacity-85 disabled:opacity-50"
           style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}
         >
           <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>
-            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
+            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : hasReviewableCandidate ? 'Resolve formal safety review before confirming' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
           </p>
         </button>
         <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
@@ -6191,14 +6285,26 @@ export function SessionShell({
     void attempt()
   }
 
-  const confirmAssessmentCandidate = (candidate: PouAssessmentCandidate, concernLevel: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => {
+  const confirmAssessmentCandidate = async (candidate: PouAssessmentCandidate, concernLevel: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']): Promise<boolean> => {
     const command = candidateConfirmationCommand(candidate, concernLevel, pouId, workflow.version)
-    if (!command) return
-    retrySubmission.current = async () => {
-      const result = await submitWorkflowCommand(workflow.id, command)
-      onWorkflowChange(result.workflow)
+    if (!command) return false
+    const attempt = async (retrying = false): Promise<boolean> => {
+      setPersistenceState(retrying ? 'retrying' : 'saving')
+      try {
+        const result = await submitWorkflowCommand(workflow.id, command)
+        retrySubmission.current = null
+        setPersistenceState('saved')
+        // Candidate resolution is a safety-only command. Keep the populated
+        // Pou review mounted while its authoritative workflow snapshot updates.
+        preserveNextWorkflowStage.current = true
+        onWorkflowChange(result.workflow)
+        return true
+      } catch (error) {
+        setFollowUpFailure(error, async () => { await attempt(true) })
+        return false
+      }
     }
-    void persist(() => submitWorkflowCommand(workflow.id, command))
+    return attempt()
   }
 
   const correctSafetyConcern = (observation: SafetyObservationCurrentView, replacement: SafetyDraft, reason: string) => {

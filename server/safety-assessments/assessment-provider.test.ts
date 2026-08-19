@@ -6,7 +6,7 @@ import { ConversationAssessmentProviderError, OpenAIConversationAssessmentProvid
 const projection = providerProjection(approvedWhakapapaPilotV01({ approvedForPilotBy: '11111111-1111-4111-8111-111111111111', approvedForPilotAt: '2026-08-12T00:00:00.000Z' }), { projectionCode: 'test', projectionVersion: '1' })
 const turns = [{ id: '22222222-2222-4222-8222-222222222222', ordinal: 1, speaker: 'unknown' as const, text: 'SYNTHETIC_TRANSCRIPT_ONLY', providerSequence: null, providerTimestamp: null }]
 const input = { transcriptTurns: turns, assessmentProjection: projection }
-const valid = { assessments: projection.rules.map((rule) => ({ ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: 'no_candidate_concern', candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [] })) }
+const valid = { assessments: projection.rules.map((rule) => ({ ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: 'no_candidate_concern', candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [rule.protectiveIndicators[0]!.code], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [turns[0]!.id] })) }
 
 describe('OpenAIConversationAssessmentProvider', () => {
   it('uses non-stored strict structured output then independently validates bounded results', async () => {

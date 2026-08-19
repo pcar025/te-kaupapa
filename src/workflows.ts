@@ -144,6 +144,11 @@ export interface PouReviewDraftState {
   draft: PouReviewDraft | null
   assessmentCompleted: boolean
   hasReviewableCandidate: boolean
+  resolvedSafetyReview?: {
+    confirmedCount: number
+    dismissedCount: number
+    insufficientInformationAcknowledgedCount: number
+  }
 }
 export type WhakapapaReviewDraftState = PouReviewDraftState
 

@@ -489,6 +489,43 @@ export const organisationPouSpecificationDrafts = pgTable(
   ],
 )
 
+/**
+ * Mutable workshop policy only.  It is deliberately separate from both the
+ * ordinary Pou draft and the immutable safety runtime records it can later
+ * materialise through an explicit activation transaction.
+ */
+export const organisationPouSafetyPolicyDrafts = pgTable(
+  'organisation_pou_safety_policy_draft',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    organisationId: uuid('organisation_id').notNull().references(() => organisations.id),
+    pouId: workflowPouId('pou_id').notNull(),
+    baseSafetySpecificationId: uuid('base_safety_specification_id').notNull(),
+    draftVersion: text('draft_version').notNull(),
+    revision: integer('revision').notNull().default(1),
+    policy: jsonb('policy').notNull(),
+    createdByUserId: uuid('created_by_user_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    updatedByUserId: uuid('updated_by_user_id').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+    approvedByUserId: uuid('approved_by_user_id'),
+    approvedAt: timestamp('approved_at', { withTimezone: true }),
+    activatedByUserId: uuid('activated_by_user_id'),
+    activatedAt: timestamp('activated_at', { withTimezone: true }),
+  },
+  (table) => [
+    foreignKey({ columns: [table.baseSafetySpecificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'organisation_pou_safety_policy_draft_base_scope_fk' }),
+    foreignKey({ columns: [table.createdByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_safety_policy_draft_created_by_scope_fk' }),
+    foreignKey({ columns: [table.updatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_safety_policy_draft_updated_by_scope_fk' }),
+    foreignKey({ columns: [table.approvedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_safety_policy_draft_approved_by_scope_fk' }),
+    foreignKey({ columns: [table.activatedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'organisation_pou_safety_policy_draft_activated_by_scope_fk' }),
+    uniqueIndex('organisation_pou_safety_policy_draft_one_open_uq').on(table.organisationId, table.pouId).where(sql`${table.activatedAt} is null`),
+    check('organisation_pou_safety_policy_draft_positive_revision', sql`${table.revision} > 0`),
+    check('organisation_pou_safety_policy_draft_version', sql`${table.draftVersion} ~ '^[0-9]+\\.[0-9]+(\\.[0-9]+)?$'`),
+    check('organisation_pou_safety_policy_draft_approval_lifecycle', sql`(${table.approvedByUserId} is null and ${table.approvedAt} is null and ${table.activatedByUserId} is null and ${table.activatedAt} is null) or (${table.approvedByUserId} is not null and ${table.approvedAt} is not null and ((${table.activatedByUserId} is null and ${table.activatedAt} is null) or (${table.activatedByUserId} is not null and ${table.activatedAt} is not null)))`),
+  ],
+)
+
 export const organisationPouSpecificationActivations = pgTable(
   'organisation_pou_specification_activation',
   {
@@ -552,7 +589,6 @@ export const organisationPouSafetySpecificationLinks = pgTable(
     foreignKey({ columns: [table.organisationPouSpecificationId, table.organisationId, table.pouId], foreignColumns: [organisationPouSpecificationVersions.id, organisationPouSpecificationVersions.organisationId, organisationPouSpecificationVersions.pouId], name: 'organisation_pou_safety_link_pou_specification_scope_fk' }),
     foreignKey({ columns: [table.safetySpecificationId, table.organisationId, table.pouId], foreignColumns: [safetySpecificationVersions.id, safetySpecificationVersions.organisationId, safetySpecificationVersions.pouId], name: 'organisation_pou_safety_link_safety_specification_scope_fk' }),
     foreignKey({ columns: [table.safetyProjectionId, table.organisationId, table.pouId], foreignColumns: [providerAssessmentProjections.id, providerAssessmentProjections.organisationId, providerAssessmentProjections.pouId], name: 'organisation_pou_safety_link_safety_projection_scope_fk' }),
-    uniqueIndex('organisation_pou_safety_link_specification_uq').on(table.organisationPouSpecificationId),
     uniqueIndex('organisation_pou_safety_link_id_organisation_pou_uq').on(table.id, table.organisationId, table.pouId),
   ],
 )

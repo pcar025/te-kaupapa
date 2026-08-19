@@ -39,12 +39,6 @@ export interface OrganisationPouSpecificationProvisioningResult {
   activationId: string
 }
 
-function sameRuleReferences(specification: OrganisationPouSpecificationVersion, safety: SafetySpecificationVersion): boolean {
-  const expected = specification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-  const actual = safety.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-  return expected.length === actual.length && expected.every((reference, index) => reference === actual[index])
-}
-
 function sameSourceProvenance(specification: OrganisationPouSpecificationVersion, safety: SafetySpecificationVersion): boolean {
   return specification.sourceDocumentCode === safety.sourceDocumentCode
     && specification.sourceDocumentStatus === safety.sourceDocumentStatus
@@ -110,7 +104,6 @@ export class OrganisationPouSpecificationProvisioningService {
         || contentHash(safetySpecification) !== safetyRow.specification_hash
         || contentHash(safetyProjection) !== safetyRow.projection_hash
         || safetyProjection.specificationHash !== safetyRow.specification_hash
-        || !sameRuleReferences(specification, safetySpecification)
         || !sameSourceProvenance(specification, safetySpecification)
       ) {
         throw new OrganisationPouSpecificationProvisioningError('The active safety projection is not an approved exact match for the organisation Pou specification linkage.')

@@ -163,7 +163,9 @@ export function validateProviderAssessmentSet(projection: ProviderAssessmentProj
     } else if (assessment.outcome === 'not_applicable') {
       if (!assessment.applicabilityReasonCode || !rule.applicabilityReasonCodes.includes(assessment.applicabilityReasonCode)) throw new Error('Not applicable requires an approved applicability reason.')
     } else if (assessment.outcome === 'no_candidate_concern') {
-      if (assessment.matchedConcernIndicatorCodes.length !== 0 || assessment.applicabilityReasonCode !== null) throw new Error('No candidate concern cannot contain contradictory concern or applicability evidence.')
+      if (assessment.matchedProtectiveIndicatorCodes.length === 0 || assessment.evidenceTurnIds.length === 0 || assessment.matchedConcernIndicatorCodes.length !== 0 || assessment.applicabilityReasonCode !== null) {
+        throw new Error('No candidate concern requires explicit approved adequate-exploration evidence and source turns only.')
+      }
     }
   }
   return parsed

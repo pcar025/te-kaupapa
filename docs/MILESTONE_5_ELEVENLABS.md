@@ -22,6 +22,8 @@ The browser asks Te Kaupapa to start only the authoritative Whakapapa conversati
 
 The server uses the ElevenLabs WebRTC conversation-token endpoint. The browser receives only a short-lived `conversationToken` and starts the SDK with explicit `connectionType: 'webrtc'`. The API key remains server-only. Tokens are not persisted, logged, put in URLs, or exposed through Vite configuration.
 
+Before a controlled local voice test, run `npm run check:local-live-runtime`. It fails closed unless exactly one loopback-bound Fastify listener on `127.0.0.1:3011`, one webhook relay on `127.0.0.1:3012`, and one Vite frontend on `127.0.0.1:8443` are present. It reports listener and command mismatches but never stops processes itself.
+
 ## Durable provenance
 
 Migration `0005_living_thena` adds `workflow_conversation`. It records only:
@@ -159,6 +161,16 @@ Formal safety remains conditional and separate from narrative review. Low, Watch
 `workflow_carry_forward` is a forward-only, human-owned pre-action marker. It pins the current scoped review criterion, area for attention, or confirmed safety observation with its organisation, workflow, Pou, actor, and timestamp. It cannot create an action, referral, escalation, or supervisor request. After all seven Pou are confirmed, a server-assembled synthesis shows the confirmed Pou reviews, confirmed safety observations, and carry-forward count before Action Planning. Action Planning is always available, including when there are zero carry-forwards; the Kaimahi decides whether anything becomes an action, referral, future follow-up, or no further action.
 
 Supervisor transcript/source UI and any new formal Pou 2–7 safety rules remain deferred. The SME specification editor is available only for authorised organisation-scoped working drafts; activating a new immutable version or publishing provider configuration remains a separate human gate. SME validation continues to decide core versus conditional exploration, adequate evidence, follow-up for missing information, strengths, attention items, formal safety rules, and decisions that must remain human. The established privacy boundary remains unchanged: provider transcript/audio are not surfaced in normal UI, and ZRM remains enabled.
+
+### Formal safety-policy workshop foundation
+
+The Pou specification workshop also contains a visibly separate **Formal safety concerns** working draft. `SPECIFICATION_EDITOR` is required to create, edit, save, preview, and—during the controlled local programme—explicitly approve and activate that draft. Ordinary Pou guidance saves and activations never alter a formal safety policy.
+
+The draft is non-executable. Only its separate explicit activation materialises a new immutable organisation/Pou `safety_specification_version` and `provider_assessment_projection`, then atomically re-links the unchanged active Pou specification to that new policy. Future conversations pin the resulting version; existing conversations and assessments remain historical. Only `current_conversation` rules are projected to the assessment provider. `application_state` and `longitudinal` entries remain recorded policy intent only until separately governed evidence contexts exist.
+
+Formal policy authoring uses practitioner-facing indicators, evidence required, possible-concern and adequately-explored evidence, missing-information requirements, applicability, human levels, and provenance notes. Provider output remains bounded and noncanonical: it cannot select Low/Watch/Action or create actions, referrals, escalation, or supervisor review. Low, Watch, and Action remain human selections on an approved candidate; no rule-specific consequence mapping is defined. Pou 2–7 still begin with no approved active formal rules—zero rules is not a safety clearance.
+
+Deferred: rule-specific deterministic consequences, application-state and longitudinal assessment, separate maker/checker governance, recent-authentication enforcement for activation, AI drafting, Supervisor source-transcript UI, and Pou-review latency optimisation (timing instrumentation, live-transcript fast-path investigation, webhook reconciliation, provider parallelism, and benchmarking).
 
 ## Cross-Pou synthesis and immutable final record
 

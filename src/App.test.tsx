@@ -201,6 +201,71 @@ describe('approved application smoke paths', () => {
     expect(screen.queryByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeNull()
   })
 
+  it('keeps a populated Pou review open after confirming a formal safety candidate', async () => {
+    const initial = workflowFixture({
+      currentStage: 'pou-overview', currentPouId: 'manaakitanga', version: 2,
+      // A persisted noncanonical carry-forward is an existing supported way
+      // to resume the active Pou review without changing canonical stage.
+      carryForwards: [{
+        id: 'a68bcbd4-d73d-457a-8c1e-2d5fe0e3d223', pouId: 'manaakitanga', note: null, createdAt: '2026-08-19T00:00:00.000Z',
+        source: { kind: 'review_criterion', reviewDraftRevisionId: 'f90d0b5e-2794-4a1b-b719-2edc1861132b', criterionCode: 'duty_of_care' },
+      }],
+    })
+    const draft = {
+      id: 'cccd0d9f-24c2-4e86-9a02-5b95942539f1',
+      revisionId: 'f90d0b5e-2794-4a1b-b719-2edc1861132b',
+      revision: 1,
+      overallSummary: 'Duty of care was thoughtfully explored.',
+      strengthsSummary: 'Whānau relationships were identified as a strength.',
+      areasForAttentionSummary: null,
+      evidenceTurnIds: [],
+      criterionAssessments: [],
+      generatedAt: '2026-08-19T00:00:00.000Z',
+    }
+    const candidate = {
+      id: 'd87987a6-3a4f-4a9f-af0e-eec1f825099a', outcome: 'possible_concern',
+      title: 'Whānau safety may need attention', description: 'A human decision is required.',
+      ruleCode: 'MANA_TEST_001', ruleVersion: 1, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: ['attention'], missingInformationCodes: [],
+      permittedHumanConcernLevels: ['watch'], canonicalBroadClass: 'whanau_safety',
+    }
+    const acknowledged = workflowFixture({
+      currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3,
+      safety: {
+        ...emptySafety,
+        observations: [{
+          id: 'e73e9be5-7247-4fb4-a745-5b0e24e86e30', assessmentContext: 'pou', pouId: 'manaakitanga', broadClass: 'whanau_safety', concernLevel: 'watch', contextNote: null,
+          status: 'active', currentRevision: 1, confirmedAt: '2026-08-19T00:00:00.000Z', updatedAt: '2026-08-19T00:00:00.000Z', retractedAt: null,
+        }],
+        indicators: { ...emptySafety.indicators, activeObservationCount: 1 },
+      },
+    })
+    let unresolved = true
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/review-draft')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: unresolved, draft } }) })
+      if (url.endsWith('/assessment-candidates')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: unresolved ? [candidate] : [] }) })
+      if (url.endsWith('/reviewed')) return Promise.resolve({ ok: true, status: 204, json: async () => ({}) })
+      if (url.endsWith('/interactions') && init?.method === 'POST') { unresolved = false; return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) }) }
+      throw new Error(`Unexpected request: ${url}`)
+    }))
+    function Harness() {
+      const [workflow, setWorkflow] = useState(initial)
+      return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} />
+    }
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    expect(await screen.findByText('WHAT WE HEARD — REVIEW DRAFT')).toBeTruthy()
+    expect(await screen.findByText(/possible concern for your review/i)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Watch' }))
+    await user.click(screen.getByRole('button', { name: 'Confirm concern' }))
+    expect(await screen.findByText('Confirmed safety concerns')).toBeTruthy()
+    expect(screen.getByText(/Whānau safety · watch/i)).toBeTruthy()
+    expect(screen.getByDisplayValue(draft.overallSummary)).toBeTruthy()
+    expect(screen.queryByText('Your Pou review is ready')).toBeNull()
+    expect(screen.queryByText(/Manual Manaakitanga review/i)).toBeNull()
+  })
+
   it('shows only the approved manual Low/Watch/Action safety path after a deliberate human choice', async () => {
     const initial = workflowFixture()
     const pouAcknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })

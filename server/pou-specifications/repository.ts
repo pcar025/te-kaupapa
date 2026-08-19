@@ -48,8 +48,6 @@ export class PostgresOrganisationPouSpecificationRepository {
       && specification.sourceDocumentStatus === safetyPin.specification.sourceDocumentStatus
       && specification.sourceReference === safetyPin.specification.sourceReference
       && specification.sourceDocumentHash === safetyPin.specification.sourceDocumentHash
-    const linkedRules = specification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-    const safetyRules = safetyPin.specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
     const currentDerivationMatches = contentHash(expectedGuidance) === row.guidance.projectionHash
       && contentHash(expectedReview) === row.review.projectionHash
     const historicWhakapapaV01Matches = isExactHistoricWhakapapaV01ProjectionPair({
@@ -58,7 +56,11 @@ export class PostgresOrganisationPouSpecificationRepository {
       guidance,
       review,
     })
-    if (contentHash(specification) !== row.specification.contentHash || contentHash(guidance) !== row.guidance.projectionHash || contentHash(review) !== row.review.projectionHash || (!currentDerivationMatches && !historicWhakapapaV01Matches) || guidance.specificationHash !== row.specification.contentHash || review.specificationHash !== row.specification.contentHash || !sameSourceProvenance || linkedRules.length !== safetyRules.length || linkedRules.some((rule, index) => rule !== safetyRules[index])) throw new PouSpecificationUnavailableError('The active organisation Pou projection provenance is invalid.')
+    // Formal safety policy is independently versioned and linked.  The
+    // ordinary Pou specification's historical references describe the source
+    // version it was authored from; the active scoped link is authoritative
+    // for a separately activated safety policy.
+    if (contentHash(specification) !== row.specification.contentHash || contentHash(guidance) !== row.guidance.projectionHash || contentHash(review) !== row.review.projectionHash || (!currentDerivationMatches && !historicWhakapapaV01Matches) || guidance.specificationHash !== row.specification.contentHash || review.specificationHash !== row.specification.contentHash || !sameSourceProvenance) throw new PouSpecificationUnavailableError('The active organisation Pou projection provenance is invalid.')
     return { specificationId: row.specification.id, specification, specificationHash: row.specification.contentHash, conversationGuidanceProjectionId: row.guidance.id, conversationGuidanceProjection: guidance, conversationGuidanceProjectionHash: row.guidance.projectionHash, pouReviewProjectionId: row.review.id, pouReviewProjection: review, pouReviewProjectionHash: row.review.projectionHash }
   }
 }

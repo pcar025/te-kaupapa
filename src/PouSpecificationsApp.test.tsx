@@ -154,10 +154,113 @@ describe('SME Pou specification authoring controls', () => {
     expect(followUp.value).toBe('Invite clarification without assumptions.\nAsk what support would be helpful.')
     expect(vi.mocked(fetch).mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'PUT')).toBe(false)
 
-    await user.click(screen.getByRole('button', { name: 'Save draft' }))
+    await user.click(screen.getByRole('button', { name: 'Save Pou draft' }))
     await waitFor(() => expect(savedContent).toMatchObject({
       conversationExplorationAreas: [{ followUpGuidance: ['Invite clarification without assumptions.', 'Ask what support would be helpful.'] }],
     }))
     expect((screen.getAllByLabelText('Follow-up guidance (one item per line)')[0] as HTMLTextAreaElement).value).toBe('Invite clarification without assumptions.\nAsk what support would be helpful.')
+  })
+
+  it('requires explicit safety-policy choices instead of preselecting a mapping or human levels', async () => {
+    const safetyDraft = { id: 'b782ff42-d28e-429a-9596-d0bc9d5641f2', pouId: 'whakapapa', draftVersion: '0.2', revision: 1, activatedAt: null, policy: { rules: [] }, canApproveAndActivate: false }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/safety-policy-drafts') return Promise.resolve({ ok: true, json: async () => ({ drafts: [], activePolicies: [] }) })
+      if (url.endsWith('/safety-policy-drafts') && init?.method === 'POST') return Promise.resolve({ ok: true, json: async () => ({ draft: safetyDraft }) })
+      return Promise.resolve({ ok: true, json: async () => ({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: specification, draft }] }) })
+    }))
+    const user = userEvent.setup()
+    render(<PouSpecificationsApp profile={{ id: 'editor', displayName: 'Specification editor', organisation: { id: 'organisation', slug: 'organisation', name: 'Test organisation' }, roles: ['SPECIFICATION_EDITOR'] }} onBack={() => undefined} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Continue v0.2 draft' }))
+    await user.click(screen.getByRole('button', { name: 'Add proposed safety rule' }))
+    await user.click(await screen.findByRole('button', { name: 'Add proposed safety rule' }))
+
+    expect((screen.getByLabelText('Safety area') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByRole('checkbox', { name: 'possible concern' }) as HTMLInputElement).checked).toBe(false)
+    expect((screen.getByRole('checkbox', { name: 'Low' }) as HTMLInputElement).checked).toBe(false)
+    expect((screen.getByRole('button', { name: 'Save formal safety draft' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Approve and activate formal safety policy' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.getByText(/Choose the applicable candidate outcomes/)).toBeTruthy()
+    expect(vi.mocked(fetch).mock.calls.some(([, options]) => (options as RequestInit | undefined)?.method === 'PUT')).toBe(false)
+  })
+
+  it('keeps formal safety text fields visibly editable before focus', async () => {
+    const safetyDraft = { id: 'b782ff42-d28e-429a-9596-d0bc9d5641f2', pouId: 'whakapapa', draftVersion: '0.2', revision: 1, activatedAt: null, policy: { rules: [] }, canApproveAndActivate: false }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url === '/api/safety-policy-drafts') return Promise.resolve({ ok: true, json: async () => ({ drafts: [], activePolicies: [] }) })
+      if (url.endsWith('/safety-policy-drafts') && init?.method === 'POST') return Promise.resolve({ ok: true, json: async () => ({ draft: safetyDraft }) })
+      return Promise.resolve({ ok: true, json: async () => ({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: specification, draft }] }) })
+    }))
+    const user = userEvent.setup()
+    render(<PouSpecificationsApp profile={{ id: 'editor', displayName: 'Specification editor', organisation: { id: 'organisation', slug: 'organisation', name: 'Test organisation' }, roles: ['SPECIFICATION_EDITOR'] }} onBack={() => undefined} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Continue v0.2 draft' }))
+    await user.click(screen.getByRole('button', { name: 'Add proposed safety rule' }))
+    await user.click(await screen.findByRole('button', { name: 'Add proposed safety rule' }))
+
+    for (const control of [
+      screen.getByLabelText('Safety indicator — what would make you concerned?'),
+      screen.getByLabelText('Why this matters'),
+      screen.getByLabelText('Evidence required — what needs to be heard or established?'),
+      screen.getByLabelText('Possible-concern indicators (one item per line)'),
+      screen.getByLabelText('No-candidate evidence where appropriate (one item per line)'),
+      screen.getByLabelText('What still needs to be explored (one item per line)'),
+      screen.getByLabelText('When this rule applies (one item per line)'),
+      screen.getByLabelText('When this rule does not apply (one item per line)'),
+      screen.getByLabelText('Source / provenance notes (one item per line)'),
+    ]) {
+      expect(control.className).toContain('border')
+      expect(control.className).toContain('w-full')
+    }
+    expect(screen.getByLabelText('Why this matters').className).toContain('resize-y')
+  })
+
+  it('shows inactive proposed safety policy changes separately from active policy', async () => {
+    const safetyDraft = {
+      id: 'b782ff42-d28e-429a-9596-d0bc9d5641f2', pouId: 'whakapapa', draftVersion: '0.2', revision: 1, activatedAt: null, canApproveAndActivate: false,
+      policy: { rules: [{ id: 'rule', safetyIndicator: 'A bounded concern', whyThisMatters: '', evidenceRequired: ['A specific detail'], possibleConcernIndicators: ['A possible indicator'], noCandidateEvidence: ['A protective indicator'], missingInformation: ['Clarify context'], appliesWhen: ['When discussed'], doesNotApplyWhen: [], candidateOutcomes: ['possible_concern'], humanJudgement: { reportOnly: false, permittedLevels: ['watch'], broadClass: 'whanau_safety' }, evidenceScope: 'current_conversation', sourceNotes: ['Workshop note'] }] },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === '/api/safety-policy-drafts') return Promise.resolve({ ok: true, json: async () => ({ drafts: [safetyDraft], activePolicies: [{ pouId: 'whakapapa', version: '0.1', ruleCount: 0 }] }) })
+      return Promise.resolve({ ok: true, json: async () => ({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: specification, draft }] }) })
+    }))
+    const user = userEvent.setup()
+    render(<PouSpecificationsApp profile={{ id: 'editor', displayName: 'Specification editor', organisation: { id: 'organisation', slug: 'organisation', name: 'Test organisation' }, roles: ['SPECIFICATION_EDITOR'] }} onBack={() => undefined} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Continue v0.2 draft' }))
+    await user.click(screen.getByText('Changes from active v0.1'))
+
+    expect(screen.getByText(/1 proposed safety rule added — draft only, not active/)).toBeTruthy()
+    expect(screen.getByText((_, element) => element?.tagName === 'P' && element.textContent?.includes('Draft proposal includes: safety indicator, evidence requirement, possible-concern indicators') === true)).toBeTruthy()
+    expect(screen.queryByText(/unchanged here/)).toBeNull()
+  })
+
+  it('keeps Pou and formal-safety save and activation requests on their separate routes', async () => {
+    const safetyDraft = {
+      id: 'b782ff42-d28e-429a-9596-d0bc9d5641f2', pouId: 'whakapapa', draftVersion: '0.2', revision: 1, activatedAt: null, canApproveAndActivate: false,
+      policy: { rules: [{ id: 'rule', safetyIndicator: '', whyThisMatters: '', evidenceRequired: ['Evidence'], possibleConcernIndicators: [], noCandidateEvidence: ['Protective evidence'], missingInformation: [], appliesWhen: [], doesNotApplyWhen: [], candidateOutcomes: ['no_candidate_concern'], humanJudgement: { reportOnly: false, permittedLevels: [], broadClass: null }, evidenceScope: 'current_conversation', sourceNotes: [] }] },
+    }
+    const calls: Array<{ url: string; method?: string }> = []
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input); calls.push({ url, method: init?.method })
+      if (url === '/api/safety-policy-drafts') return Promise.resolve({ ok: true, json: async () => ({ drafts: [safetyDraft], activePolicies: [{ pouId: 'whakapapa', version: '0.1', ruleCount: 0 }] }) })
+      if (url === `/api/pou-specification-drafts/${draft.id}`) return Promise.resolve({ ok: true, json: async () => ({ draft }) })
+      if (url === `/api/safety-policy-drafts/${safetyDraft.id}`) return Promise.resolve({ ok: true, json: async () => ({ draft: safetyDraft }) })
+      return Promise.resolve({ ok: true, json: async () => ({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: specification, draft }] }) })
+    }))
+    const user = userEvent.setup()
+    render(<PouSpecificationsApp profile={{ id: 'editor', displayName: 'Specification editor', organisation: { id: 'organisation', slug: 'organisation', name: 'Test organisation' }, roles: ['SPECIFICATION_EDITOR'] }} onBack={() => undefined} />)
+
+    await user.click(await screen.findByRole('button', { name: 'Continue v0.2 draft' }))
+    expect(screen.getByRole('button', { name: 'Approve & activate Pou specification' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve and activate formal safety policy' })).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Save Pou draft' }))
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/pou-specification-drafts/${draft.id}` && call.method === 'PUT')).toBe(true))
+    expect(calls.some((call) => call.url.includes('/safety-policy-drafts/') && call.method === 'POST')).toBe(false)
+    await user.click(screen.getByRole('button', { name: 'Save formal safety draft' }))
+    await waitFor(() => expect(calls.some((call) => call.url === `/api/safety-policy-drafts/${safetyDraft.id}` && call.method === 'PUT')).toBe(true))
+    expect(calls.some((call) => call.url.endsWith('/approve-and-activate') && call.method === 'POST')).toBe(false)
   })
 })

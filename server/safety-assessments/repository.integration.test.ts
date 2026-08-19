@@ -9,7 +9,7 @@ import { withPhase5BTestContext } from './integration-fixture.js'
 import { PostgresConversationRepository } from '../conversations/repository.js'
 import { ConversationService } from '../conversations/service.js'
 import { ConversationEligibilityError } from '../conversations/domain.js'
-import { PostgresSafetyAssessmentRepository, type SafetyTransaction } from './repository.js'
+import { PostgresSafetyAssessmentRepository, UnresolvedSafetyCandidateError, type SafetyTransaction } from './repository.js'
 import { SafetyProvisioningService } from './provisioning.js'
 import { PostgresWorkflowRepository } from '../workflows/repository.js'
 import { contentHash } from './domain.js'
@@ -324,7 +324,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       const foreign = await transcriptRepository.retainForConversation({ organisationId: actor.organisation.id, workflowSessionId: foreignWorkflowId, pouId: 'whakapapa', workflowConversationId: foreignConversationId, provider: 'elevenlabs', providerConversationId: foreignProviderConversationId, turns: [{ id: randomUUID(), ordinal: 1, speaker: 'unknown', text: 'Synthetic foreign transcript.', providerSequence: null, providerTimestamp: null }] })
       await expect(transcriptRepository.retainForConversation({ organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'whakapapa', workflowConversationId: conversationId, provider: 'elevenlabs', providerConversationId: `wrong-${randomUUID()}`, turns: [{ id: randomUUID(), ordinal: 1, speaker: 'unknown', text: 'Synthetic mismatched provider reference.', providerSequence: null, providerTimestamp: null }] })).rejects.toThrow('provider provenance')
       await expect(connection.db.insert(schema.conversationTranscripts).values({ organisationId: actor.organisation.id, workflowSessionId: foreignWorkflowId, pouId: 'whakapapa', workflowConversationId: conversationId, provider: 'elevenlabs', providerConversationId })).rejects.toThrow()
-      const assessments = projection.rules.map((rule: any, index: number) => ({ ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: index === 0 ? 'possible_concern' as const : 'no_candidate_concern' as const, candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: index === 0 ? [rule.concernIndicators[0]!.code] : [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: index === 0 ? [foreign.turns[0]!.id] : [] }))
+      const assessments = projection.rules.map((rule: any, index: number) => ({ ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: index === 0 ? 'possible_concern' as const : 'no_candidate_concern' as const, candidateConcernLevel: null, matchedProtectiveIndicatorCodes: index === 0 ? [] : [rule.protectiveIndicators[0]!.code], matchedConcernIndicatorCodes: index === 0 ? [rule.concernIndicators[0]!.code] : [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [foreign.turns[0]!.id] }))
       const deliveryId = `foreign-evidence-${randomUUID()}`
       const payloadHash = 'b'.repeat(64)
       await repository.reserveDelivery({ provider: 'elevenlabs', deliveryId, payloadHash, assessmentRunId: run.id })
@@ -352,6 +352,137 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       await repository.acknowledge(actor, workflowId, candidate!.id, 'insufficient_information_acknowledged')
       const [review] = await connection.db.select().from(schema.providerAssessmentReviews); expect(review).toMatchObject({ status: 'insufficient_information_acknowledged', canonicalObservationId: null })
       expect(await canonicalSnapshot()).toEqual(before)
+    })
+  })
+
+  it('blocks direct Pou confirmation for an unresolved possible concern without changing canonical state, then permits the explicit dismissal path', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, canonicalSnapshot, connection, run }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload())).statusCode).toBe(202)
+      const [candidate] = await repository.listReviewable(actor, workflowId)
+      const before = await canonicalSnapshot()
+
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).rejects.toBeInstanceOf(UnresolvedSafetyCandidateError)
+      expect(await canonicalSnapshot()).toEqual(before)
+      expect(await repository.listReviewable(actor, workflowId)).toHaveLength(1)
+      expect((await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id)))[0]).toMatchObject({ status: 'received' })
+
+      await repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+      expect((await connection.db.select().from(schema.workflowSafetyObservations))).toHaveLength(0)
+    })
+  })
+
+  it('permits Pou confirmation only after an explicit possible-concern confirmation', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, connection }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload())).statusCode).toBe(202)
+      const [candidate] = await repository.listReviewable(actor, workflowId)
+      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: candidateConfirmationCommand(candidate!.id, 2) })
+
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(3) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+      expect(await connection.db.select().from(schema.workflowSafetyObservations)).toHaveLength(1)
+    })
+  })
+
+  it('blocks insufficient information until it is explicitly acknowledged, without creating a safety observation', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, canonicalSnapshot, connection }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:insufficient]' }))).statusCode).toBe(202)
+      const [candidate] = await repository.listReviewable(actor, workflowId)
+      const before = await canonicalSnapshot()
+
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).rejects.toBeInstanceOf(UnresolvedSafetyCandidateError)
+      expect(await canonicalSnapshot()).toEqual(before)
+      await repository.acknowledge(actor, workflowId, candidate!.id, 'insufficient_information_acknowledged')
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+      expect(await connection.db.select().from(schema.workflowSafetyObservations)).toHaveLength(0)
+      expect(await connection.db.select().from(schema.providerAssessmentReviews)).toMatchObject([{ status: 'insufficient_information_acknowledged', canonicalObservationId: null }])
+    })
+  })
+
+  it('allows no-candidate outcomes to continue without an unnecessary human safety review', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, connection, payload, request }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+    })
+  }, 15_000)
+
+  it('requires every reviewable assessment to resolve and preserves the invariant when acknowledgement races confirmation', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, connection }) => {
+      const directConfirmation = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:multiple]' }))).statusCode).toBe(202)
+      const candidates = await repository.listReviewable(actor, workflowId)
+      expect(candidates).toHaveLength(2)
+      await repository.acknowledge(actor, workflowId, candidates[0]!.id, 'dismissed')
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).rejects.toBeInstanceOf(UnresolvedSafetyCandidateError)
+
+      const acknowledgementConnection = createDatabaseConnection(getTestDatabaseUrl())
+      const confirmationConnection = createDatabaseConnection(getTestDatabaseUrl())
+      try {
+        const acknowledgement = new PostgresSafetyAssessmentRepository(acknowledgementConnection.db, () => new Date('2026-08-12T00:00:00.000Z'))
+        const confirmation = new PostgresWorkflowRepository(confirmationConnection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, new PostgresSafetyAssessmentRepository(confirmationConnection.db, () => new Date('2026-08-12T00:00:00.000Z')))
+        const outcomes = await Promise.allSettled([
+          acknowledgement.acknowledge(actor, workflowId, candidates[1]!.id, 'dismissed'),
+          confirmation.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) }),
+        ])
+        // If acknowledgement wins the lock, confirmation can legitimately
+        // follow it.  If confirmation wins, it must reject and leave the
+        // candidate reviewable until acknowledgement commits.
+        expect(outcomes[0]!.status).toBe('fulfilled')
+        expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
+        const [workflow] = await connection.db.select().from(schema.workflowSessions).where(eq(schema.workflowSessions.id, workflowId))
+        if (workflow!.currentPouId === 'whakapapa') {
+          await expect(directConfirmation.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(workflow!.version) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+        }
+        const [confirmedWorkflow] = await connection.db.select().from(schema.workflowSessions).where(eq(schema.workflowSessions.id, workflowId))
+        expect(confirmedWorkflow).toMatchObject({ currentPouId: 'manaakitanga' })
+        expect(await connection.db.select().from(schema.workflowSafetyObservations)).toHaveLength(0)
+      } finally {
+        await Promise.all([acknowledgementConnection.close(), confirmationConnection.close()])
+      }
+    })
+  })
+
+  it('requires both a possible concern and insufficient information to resolve before continuation', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, canonicalSnapshot, connection }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:mixed]' }))).statusCode).toBe(202)
+      const candidates = await repository.listReviewable(actor, workflowId)
+      expect(candidates.map((candidate: { outcome: string }) => candidate.outcome).sort()).toEqual(['insufficient_information', 'possible_concern'])
+      const possibleConcern = candidates.find((candidate: { outcome: string }) => candidate.outcome === 'possible_concern')!
+      const insufficientInformation = candidates.find((candidate: { outcome: string }) => candidate.outcome === 'insufficient_information')!
+      const before = await canonicalSnapshot()
+
+      await repository.acknowledge(actor, workflowId, possibleConcern.id, 'dismissed')
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).rejects.toBeInstanceOf(UnresolvedSafetyCandidateError)
+      expect(await canonicalSnapshot()).toEqual(before)
+      await repository.acknowledge(actor, workflowId, insufficientInformation.id, 'insufficient_information_acknowledged')
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+      expect(await connection.db.select().from(schema.workflowSafetyObservations)).toHaveLength(0)
+    })
+  })
+
+  it('keeps a second possible concern reviewable after the first is confirmed', async () => {
+    await withPhase5BTestContext(async ({ actor, workflowId, repository, workflowRepository, payload, request, canonicalSnapshot, connection }) => {
+      const confirmationRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-12T00:00:00.000Z'), undefined, repository)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:multiple]' }))).statusCode).toBe(202)
+      const candidates = await repository.listReviewable(actor, workflowId)
+      expect(candidates).toHaveLength(2)
+      const confirmedCandidate = candidates[0]!
+      const remainingCandidate = candidates[1]!
+
+      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: candidateConfirmationCommand(confirmedCandidate.id, 2) })
+      expect(await connection.db.select().from(schema.workflowSafetyObservations)).toHaveLength(1)
+      expect(await repository.listReviewable(actor, workflowId)).toMatchObject([{ id: remainingCandidate.id, outcome: 'possible_concern' }])
+      const afterFirstConfirmation = await canonicalSnapshot()
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(3) })).rejects.toBeInstanceOf(UnresolvedSafetyCandidateError)
+      expect(await canonicalSnapshot()).toEqual(afterFirstConfirmation)
+
+      await repository.acknowledge(actor, workflowId, remainingCandidate.id, 'dismissed')
+      await expect(confirmationRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(3) })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
     })
   })
 
@@ -412,30 +543,32 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
     })
   })
 
-  it('12B. ordinary Whakapapa Pou confirmation supersedes candidates without creating candidate-derived canonical state', async () => {
+  it('12B. ordinary Whakapapa Pou confirmation supersedes an explicitly dismissed candidate without creating candidate-derived canonical state', async () => {
     await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, reviewDraftRepository, workflowRepository, payload, request, canonicalSnapshot }) => {
       expect((await request(payload())).statusCode).toBe(202)
       const [candidate] = await repository.listReviewable(actor, workflowId)
+      await repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')
       const before = await canonicalSnapshot()
       const draft = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       const confirmed = await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2, draft.draft!.revisionId) })
-      const [superseded] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const [supersededRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
       const after = await canonicalSnapshot()
 
       expect(confirmed.workflow).toMatchObject({ version: 3, currentStage: 'pou-convo', currentPouId: 'manaakitanga' })
-      expect(superseded).toMatchObject({ status: 'superseded' })
+      expect(supersededRun).toMatchObject({ status: 'superseded' })
       expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
       await expect(repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')).rejects.toThrow()
       expect(after).toMatchObject({ session: { version: 3, stage: 'pou-convo', pou: 'manaakitanga' }, checkpoint: { progress: 'confirmed', concern: null }, counts: { ...before.counts, workflowInteractions: before.counts.workflowInteractions + 1, workflowSafetyObservations: 0, workflowSafetyObservationRevisions: 0, workflowSafetyRuleEvaluations: 0, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
     })
   })
 
-  it('12C. late provider delivery and direct stale-ID confirmation cannot resurrect a Pou-confirmed run', async () => {
+  it('12C. late provider delivery and direct stale-ID confirmation cannot resurrect a Pou-confirmed run after explicit candidate dismissal', async () => {
     await withPhase5BTestContext(async ({ connection, actor, workflowId, run, repository, reviewDraftRepository, workflowRepository, payload, request, canonicalSnapshot }) => {
       expect((await request(payload())).statusCode).toBe(202)
       const [retainedBeforeConfirmation] = await connection.db.select().from(schema.conversationTranscripts)
       const [retainedTurnBeforeConfirmation] = await connection.db.select().from(schema.conversationTranscriptTurns)
       const [candidate] = await repository.listReviewable(actor, workflowId)
+      await repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')
       const draft = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: pouReviewCommand(2, draft.draft!.revisionId) })
       const afterPouConfirmation = await canonicalSnapshot()
@@ -444,19 +577,19 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       const afterDeliveries = await connection.db.select().from(schema.providerAssessmentDeliveries).where(eq(schema.providerAssessmentDeliveries.assessmentRunId, run.id))
       const retainedAfterLateDelivery = await connection.db.select().from(schema.conversationTranscripts)
       const retainedTurnsAfterLateDelivery = await connection.db.select().from(schema.conversationTranscriptTurns)
-      const [superseded] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const [supersededRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
 
       expect(late.statusCode).toBe(202)
       expect(late.json()).toMatchObject({ accepted: true, replayed: false, superseded: true })
       expect(afterDeliveries).toHaveLength(beforeDeliveries.length + 1)
       expect(retainedAfterLateDelivery).toEqual([retainedBeforeConfirmation])
       expect(retainedTurnsAfterLateDelivery).toEqual([retainedTurnBeforeConfirmation])
-      expect(superseded).toMatchObject({ status: 'superseded' })
+      expect(supersededRun).toMatchObject({ status: 'superseded' })
       expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
       await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: candidateConfirmationCommand(candidate!.id, 3) })).rejects.toThrow()
       await expect(repository.acknowledge(actor, workflowId, candidate!.id, 'dismissed')).rejects.toThrow()
       expect(await canonicalSnapshot()).toEqual(afterPouConfirmation)
-      expect(await connection.db.select().from(schema.providerAssessmentReviews)).toHaveLength(0)
+      expect(await connection.db.select().from(schema.providerAssessmentReviews)).toMatchObject([{ status: 'dismissed', canonicalObservationId: null }])
     })
   })
 
@@ -519,12 +652,12 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       const after = await canonicalSnapshot()
       const [review] = await connection.db.select().from(schema.providerAssessmentReviews)
       const [observation] = await connection.db.select().from(schema.workflowSafetyObservations)
-      const [superseded] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const [receivedRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
 
       expect(confirmed.workflow).toMatchObject({ version: 3, currentStage: 'pou-overview', currentPouId: 'whakapapa' })
       expect(observation).toMatchObject({ assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low', status: 'active' })
       expect(review).toMatchObject({ status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observation!.id })
-      expect(superseded).toMatchObject({ status: 'superseded' })
+      expect(receivedRun).toMatchObject({ status: 'received' })
       expect(await repository.listReviewable(actor, workflowId)).toHaveLength(0)
       expect(after).toMatchObject({ session: { version: 3, stage: 'pou-overview', pou: 'whakapapa' }, checkpoint: { progress: 'not_started' }, counts: { ...before.counts, workflowInteractions: before.counts.workflowInteractions + 1, workflowSafetyObservations: 1, workflowSafetyObservationRevisions: 1, workflowSafetyRuleEvaluations: 1, workflowSafetyConsequences: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 } })
     })

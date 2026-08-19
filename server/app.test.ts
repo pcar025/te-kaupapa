@@ -33,6 +33,7 @@ import {
 import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
 import type { ConversationRecord } from './conversations/repository.js'
+import { UnresolvedSafetyCandidateError } from './safety-assessments/repository.js'
 import type { ConversationApplicationService } from './conversations/service.js'
 import { SafetyAssessmentValidationError } from './safety-assessments/repository.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
@@ -468,6 +469,24 @@ describe('authenticated application shell API', () => {
     expect(permitted.json()).toEqual({ specifications: [{ pouId: 'whakapapa', activeVersion: '0.1', activeStatus: 'approved_for_pilot', activeSpecification: {}, draft: null }] })
     await app.close()
   })
+  it('keeps formal safety-policy drafts behind the same organisation-scoped editor capability', async () => {
+    const repository = new MemoryRepository()
+    const editor: AuthenticatedUser = { ...activeKaimahi, id: '1e9d0f7a-6f67-46ca-9b88-97d41ee75df5', roles: ['SPECIFICATION_EDITOR', 'SUPERVISOR'] }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:safety-editor', editor)
+    await Promise.all([
+      repository.createSession({ id: '9bbbc7f6-78c9-41eb-9dc2-fd84dfd7d39b', userId: activeKaimahi.id, tokenHash: sha256('kaimahi-safety-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+      repository.createSession({ id: '1adf9545-13f9-4fc8-80f5-0b5604a50fce', userId: editor.id, tokenHash: sha256('editor-safety-authoring'), expiresAt: new Date(Date.now() + 60_000) }),
+    ])
+    const safetyPolicyAuthoringService = { list: vi.fn(async () => []), listActive: vi.fn(async () => []), createDraft: vi.fn(async () => ({ id: 'f054f54d-6c59-43e3-aea9-6a5f89165443' })) }
+    const app = await createApplication({ config: config(), repository, safetyPolicyAuthoringService: safetyPolicyAuthoringService as any, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: '/api/safety-policy-drafts', headers: { cookie: 'test_session=kaimahi-safety-authoring' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: '/api/safety-policy-drafts', headers: { cookie: 'test_session=editor-safety-authoring' } })).json()).toEqual({ drafts: [], activePolicies: [] })
+    const created = await app.inject({ method: 'POST', url: '/api/pou-specifications/whakapapa/safety-policy-drafts', headers: { cookie: 'test_session=editor-safety-authoring', origin: 'http://web.test' } })
+    expect(created.statusCode).toBe(201)
+    expect(safetyPolicyAuthoringService.createDraft).toHaveBeenCalledWith(editor, 'whakapapa')
+    await app.close()
+  })
   it('forwards only review content when saving a Whakapapa draft and reloads its edited revision', async () => {
     const repository = new MemoryRepository()
     repository.identities.set('cognito:kaimahi', activeKaimahi)
@@ -890,6 +909,31 @@ describe('authenticated application shell API', () => {
     })
     expect(stale.statusCode).toBe(409)
     expect(stale.json()).toEqual({ error: 'stale_workflow', currentVersion: 2 })
+    await app.close()
+  })
+
+  it('returns a bounded conflict for a direct Pou-confirmation attempt with an unresolved safety candidate', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({
+      id: '9f24db1f-bc8a-4a71-b1ef-29f3ebd0c1cb',
+      userId: activeKaimahi.id,
+      tokenHash: sha256('unresolved-candidate-session'),
+      expiresAt: new Date(Date.now() + 60_000),
+    })
+    vi.spyOn(workflows, 'submitCommand').mockRejectedValue(new UnresolvedSafetyCandidateError())
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: 'test_session=unresolved-candidate-session', origin: 'http://web.test' },
+      payload: { type: 'pou-review-confirmed', idempotencyKey: 'e08217ee-f7ba-431a-9b32-eac9f032c2f9', expectedVersion: 2, pouId: 'whakapapa' },
+    })
+
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toEqual({ error: 'unresolved_safety_candidate' })
     await app.close()
   })
 

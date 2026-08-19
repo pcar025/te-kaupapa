@@ -5,6 +5,12 @@ import { candidateConfirmationCommand, PouAssessmentCandidates, PouNarrativeRevi
 import { TE_WAHAROA_POU } from '../pou'
 
 const workflowId = '11111111-1111-4111-8111-111111111111'
+const reviewableCandidate = {
+  id: '22222222-2222-4222-8222-222222222222', outcome: 'possible_concern' as const,
+  title: 'Bounded candidate', description: 'Requires human review.', ruleCode: 'MANA_TEST_001', ruleVersion: 1,
+  matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: ['attention'], missingInformationCodes: [],
+  permittedHumanConcernLevels: ['watch' as const], canonicalBroadClass: 'practice_quality' as const,
+}
 
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -97,7 +103,7 @@ describe('WhakapapaNarrativeReview', () => {
     let resolveManualRead: (response: Response) => void = () => undefined
     const manualRead = new Promise<Response>((resolve) => { resolveManualRead = resolve })
     let reviewReadCount = 0
-    const fetchMock = vi.fn((path: string) => {
+    const fetchMock = vi.fn((path: string, _init?: RequestInit) => {
       if (String(path).endsWith('/reviewed')) return Promise.resolve(new Response(null, { status: 204 }))
       reviewReadCount += 1
       return reviewReadCount === 16 ? manualRead : Promise.resolve(analysing())
@@ -192,10 +198,37 @@ describe('WhakapapaNarrativeReview', () => {
     vi.stubGlobal('fetch', fetchMock)
     render(<WhakapapaNarrativeReview workflowId={workflowId} onDraftState={() => undefined} />)
     expect(await screen.findByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeTruthy()
-    expect(screen.getByText(/No additional safety concern was suggested/i)).toBeTruthy()
+    expect(screen.getByText('Safety review complete')).toBeTruthy()
+    expect(screen.getByText('No formal safety concern was identified for review.')).toBeTruthy()
     expect(screen.getByDisplayValue('Identity context was explored.')).toBeTruthy()
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
     expect(JSON.stringify(fetchMock.mock.calls)).not.toContain('44444444-4444-4444-8444-444444444444')
+  })
+
+  it.each([
+    [{ confirmedCount: 1, dismissedCount: 0, insufficientInformationAcknowledgedCount: 0 }, 'All identified safety concerns from this reflection have been reviewed.'],
+    [{ confirmedCount: 0, dismissedCount: 1, insufficientInformationAcknowledgedCount: 0 }, 'The suggested safety concern has been reviewed.'],
+    [{ confirmedCount: 0, dismissedCount: 2, insufficientInformationAcknowledgedCount: 0 }, 'The suggested safety concerns have been reviewed.'],
+    [{ confirmedCount: 0, dismissedCount: 0, insufficientInformationAcknowledgedCount: 1 }, 'Information still needed for the safety review has been acknowledged.'],
+  ] as const)('renders bounded post-resolution safety wording for %o', async (resolvedSafetyReview, message) => {
+    const draft = { id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-19T00:00:00.000Z' }
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => String(path).endsWith('/reviewed')
+      ? new Response(null, { status: 204 })
+      : new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, resolvedSafetyReview, draft } }), { status: 200 })))
+    render(<PouNarrativeReview workflowId={workflowId} pouId="manaakitanga" onDraftState={() => undefined} />)
+    expect(await screen.findByText('Safety review complete')).toBeTruthy()
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.queryByText('No formal safety concern was identified for review.')).toBeNull()
+  })
+
+  it('does not claim safety review completion while a candidate remains unresolved', async () => {
+    const draft = { id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-19T00:00:00.000Z' }
+    vi.stubGlobal('fetch', vi.fn(async (path: string) => String(path).endsWith('/reviewed')
+      ? new Response(null, { status: 204 })
+      : new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: true, resolvedSafetyReview: { confirmedCount: 0, dismissedCount: 0, insufficientInformationAcknowledgedCount: 0 }, draft } }), { status: 200 })))
+    render(<PouNarrativeReview workflowId={workflowId} pouId="manaakitanga" onDraftState={() => undefined} />)
+    expect(await screen.findByDisplayValue(draft.overallSummary)).toBeTruthy()
+    expect(screen.queryByText('Safety review complete')).toBeNull()
   })
 
   it('uses generic narrative headings for Manaakitanga rather than Whakapapa labels', async () => {
@@ -306,17 +339,155 @@ describe('WhakapapaNarrativeReview', () => {
   })
 
   it('passes the current Pou into an explicit candidate confirmation and never falls back to Whakapapa', async () => {
-    const candidate = { id: '22222222-2222-4222-8222-222222222222', outcome: 'possible_concern' as const, title: 'Bounded candidate', description: 'Requires human review.', ruleCode: 'MANA_TEST_001', ruleVersion: 1, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: ['attention'], missingInformationCodes: [], permittedHumanConcernLevels: ['watch' as const], canonicalBroadClass: 'practice_quality' as const }
-    const command = candidateConfirmationCommand(candidate, 'watch', 'manaakitanga', 7)
+    const command = candidateConfirmationCommand(reviewableCandidate, 'watch', 'manaakitanga', 7)
     expect(command?.observation).toMatchObject({ assessmentContext: 'pou', pouId: 'manaakitanga', broadClass: 'practice_quality', concernLevel: 'watch' })
     const onConfirm = vi.fn()
-    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ candidates: [candidate] }), { status: 200 }))
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ candidates: [reviewableCandidate] }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)
     render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" onConfirm={onConfirm} />)
     fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
     fireEvent.click(await screen.findByRole('button', { name: 'Watch' }))
     fireEvent.click(screen.getByRole('button', { name: 'Confirm concern' }))
-    expect(onConfirm).toHaveBeenCalledWith(candidate, 'watch', 'manaakitanga')
+    expect(onConfirm).toHaveBeenCalledWith(reviewableCandidate, 'watch', 'manaakitanga')
+  })
+
+  it('uses clear primary and secondary safety-decision controls without preselecting a level', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ candidates: [reviewableCandidate] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" onConfirm={() => undefined} />)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    const confirm = await screen.findByRole('button', { name: 'Confirm concern' }) as HTMLButtonElement
+    const dismiss = screen.getByRole('button', { name: 'Dismiss suggestion' }) as HTMLButtonElement
+    expect(confirm.disabled).toBe(true)
+    expect(confirm.style.backgroundColor).toBe('var(--color-concern)')
+    expect(confirm.style.color).toBe('white')
+    expect(dismiss.disabled).toBe(false)
+    expect(dismiss.style.borderLeft).toBe('3px solid var(--color-ridge)')
+    expect((screen.getByRole('button', { name: 'Watch' }) as HTMLButtonElement).style.backgroundColor).toBe('var(--color-ground)')
+  })
+
+  it('automatically reveals an authoritative reviewable candidate without a preliminary click', async () => {
+    const draft = { id: '33333333-3333-4333-8333-333333333333', revisionId: '44444444-4444-4444-8444-444444444444', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-19T00:00:00.000Z' }
+    const fetchMock = vi.fn((path: string, _init?: RequestInit) => {
+      if (path.endsWith('/review-draft')) return Promise.resolve(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: true, draft } }), { status: 200 }))
+      if (path.endsWith('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: [reviewableCandidate] }), { status: 200 }))
+      if (path.endsWith('/reviewed')) return Promise.resolve(new Response(null, { status: 204 }))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SinglePouReviewStage pouIdx={1} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(await screen.findByText(/possible concern for your review/i)).toBeTruthy()
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/assessment-candidates'))).toHaveLength(1)
+    expect((screen.getByRole('button', { name: 'Confirm concern' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST' && String(init?.body ?? '').includes('safety-observation-confirmed'))).toBe(false)
+  })
+
+  it('reveals and requires resolution of a formal candidate when narrative generation failed', async () => {
+    let unresolved = true
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path.endsWith('/review-draft')) return Promise.resolve(new Response(JSON.stringify({ review: { status: 'failed', assessmentCompleted: true, hasReviewableCandidate: true, draft: null } }), { status: 200 }))
+      if (path.endsWith('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: unresolved ? [reviewableCandidate] : [] }), { status: 200 }))
+      if (path.endsWith('/review') && init?.method === 'POST') { unresolved = false; return Promise.resolve(new Response(null, { status: 204 })) }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onConfirm = vi.fn()
+    render(<SinglePouReviewStage pouIdx={1} workflowId={workflowId} onConfirm={onConfirm} onCandidateConfirm={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+
+    expect(await screen.findByText(/could not be prepared/i)).toBeTruthy()
+    expect(await screen.findByText(/possible concern for your review/i)).toBeTruthy()
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).endsWith('/assessment-candidates'))).toHaveLength(1)
+    expect((screen.getByRole('button', { name: 'Resolve formal safety review before confirming' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Low' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss suggestion' }))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 3' }) as HTMLButtonElement).disabled).toBe(false))
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.some(([, init]) => (init as RequestInit | undefined)?.method === 'POST' && String(init?.body ?? '').includes('safety-observation-confirmed'))).toBe(false)
+  })
+
+  it('blocks Pou confirmation until insufficient information is explicitly acknowledged, then re-enables it without a concern level', async () => {
+    const draft = { id: '33333333-3333-4333-8333-333333333333', revisionId: '44444444-4444-4444-8444-444444444444', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-19T00:00:00.000Z' }
+    const insufficientCandidate = { ...reviewableCandidate, outcome: 'insufficient_information' as const, canonicalBroadClass: null, permittedHumanConcernLevels: [] }
+    let unresolved = true
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path.endsWith('/review-draft')) return Promise.resolve(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: true, draft } }), { status: 200 }))
+      if (path.endsWith('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: unresolved ? [insufficientCandidate] : [] }), { status: 200 }))
+      if (path.endsWith('/reviewed')) return Promise.resolve(new Response(null, { status: 204 }))
+      if (path.endsWith('/review') && init?.method === 'POST') { unresolved = false; return Promise.resolve(new Response(null, { status: 204 })) }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const onConfirm = vi.fn()
+    render(<SinglePouReviewStage pouIdx={1} workflowId={workflowId} onConfirm={onConfirm} onCandidateConfirm={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+
+    expect(await screen.findByRole('button', { name: 'Acknowledge information still needed' })).toBeTruthy()
+    const confirmation = screen.getByRole('button', { name: 'Resolve formal safety review before confirming' }) as HTMLButtonElement
+    expect(confirmation.disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Low' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge information still needed' }))
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 3' }) as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 3' }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the populated narrative review visible after a safety suggestion is dismissed', async () => {
+    const draft = { id: '33333333-3333-4333-8333-333333333333', revisionId: '44444444-4444-4444-8444-444444444444', revision: 1, overallSummary: 'Duty of care was discussed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-19T00:00:00.000Z' }
+    let unresolved = true
+    const fetchMock = vi.fn((path: string, init?: RequestInit) => {
+      if (path.endsWith('/review-draft')) return Promise.resolve(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: unresolved, draft } }), { status: 200 }))
+      if (path.endsWith('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: unresolved ? [reviewableCandidate] : [] }), { status: 200 }))
+      if (path.endsWith('/reviewed')) return Promise.resolve(new Response(null, { status: 204 }))
+      if (path.endsWith('/review') && init?.method === 'POST') { unresolved = false; return Promise.resolve(new Response(null, { status: 204 })) }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SinglePouReviewStage pouIdx={1} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+
+    expect(await screen.findByText(/possible concern for your review/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss suggestion' }))
+    await waitFor(() => expect(screen.getByDisplayValue(draft.overallSummary)).toBeTruthy())
+    expect(screen.queryByText(/Manual Manaakitanga review/i)).toBeNull()
+    expect(screen.queryByText('Your Pou review is ready')).toBeNull()
+  })
+
+  it('does not automatically query candidates when the authoritative signal is false', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" hasReviewableCandidate={false} onConfirm={() => undefined} />)
+    await act(async () => { await Promise.resolve() })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Check again' })).toBeTruthy()
+  })
+
+  it('keeps a safe manual refresh after an automatic candidate lookup fails', async () => {
+    const fetchMock = vi.fn()
+      .mockRejectedValueOnce(new Error('temporary lookup failure'))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ candidates: [reviewableCandidate] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" hasReviewableCandidate onConfirm={() => undefined} />)
+    expect(await screen.findByText(/could not be loaded/i)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Check again' }))
+    expect(await screen.findByText(/possible concern for your review/i)).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('ignores a late candidate response after workflow rehydration', async () => {
+    let resolveFirst: (response: Response) => void = () => undefined
+    const first = new Promise<Response>((resolve) => { resolveFirst = resolve })
+    const secondWorkflowId = '55555555-5555-4555-8555-555555555555'
+    const currentCandidate = { ...reviewableCandidate, id: '66666666-6666-4666-8666-666666666666', title: 'Current workflow candidate' }
+    const fetchMock = vi.fn((path: string) => String(path).includes(workflowId)
+      ? first
+      : Promise.resolve(new Response(JSON.stringify({ candidates: [currentCandidate] }), { status: 200 })))
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<PouAssessmentCandidates workflowId={workflowId} pouId="manaakitanga" hasReviewableCandidate onConfirm={() => undefined} />)
+    view.rerender(<PouAssessmentCandidates workflowId={secondWorkflowId} pouId="manaakitanga" hasReviewableCandidate onConfirm={() => undefined} />)
+    expect(await screen.findByText('Current workflow candidate')).toBeTruthy()
+    resolveFirst(new Response(JSON.stringify({ candidates: [reviewableCandidate] }), { status: 200 }))
+    await act(async () => { await Promise.resolve() })
+    expect(screen.getByText('Current workflow candidate')).toBeTruthy()
+    expect(screen.queryByText('Bounded candidate')).toBeNull()
   })
 
   it('keeps manual review available when narrative generation failed', async () => {
@@ -450,6 +621,6 @@ describe('WhakapapaNarrativeReview', () => {
 
     fireEvent.click(view.getByRole('button', { name: 'Load current saved review' }))
     expect(await view.findByDisplayValue(edited.overallSummary)).toBeTruthy()
-    await waitFor(() => expect(states).toHaveBeenLastCalledWith({ reviewDraftRevisionId: edited.revisionId, hasUnsavedChanges: false, loaded: true }))
+    await waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ reviewDraftRevisionId: edited.revisionId, hasUnsavedChanges: false, loaded: true })))
   })
 })

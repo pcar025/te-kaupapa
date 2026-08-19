@@ -24,7 +24,7 @@ function postgresCause(error: unknown): { code?: unknown; message?: unknown } | 
 describe('Whakapapa review-draft reconciliation', () => {
   it('keeps the generated revision noncanonical, preserves an edit, and creates canonical narrative only on explicit Pou confirmation', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, run, reviewDraftRepository, repository, canonicalSnapshot }: any) => {
-      const raw = payload({ transcript: [{ role: 'user', message: 'Synthetic Whakapapa reflection with strength and cultural connection.' }, { role: 'agent', message: 'Thank you for sharing that.' }] })
+      const raw = payload({ transcript: [{ role: 'user', message: 'Synthetic Whakapapa reflection with strength and cultural connection. [scenario:all-no-concern]' }, { role: 'agent', message: 'Thank you for sharing that.' }] })
       expect((await request(raw)).statusCode).toBe(202)
       const before = await canonicalSnapshot()
       expect(before.counts.workflowInteractions).toBe(0)
@@ -55,7 +55,7 @@ describe('Whakapapa review-draft reconciliation', () => {
 
   it('does not expose or permit a review draft outside the owning Kaimahi workflow scope', async () => {
     await withPhase5BTestContext(async ({ request, payload, actor, workflowId, reviewDraftRepository }: any) => {
-      expect((await request(payload())).statusCode).toBe(202)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       await expect(reviewDraftRepository.edit({ ...actor, id: randomUUID() }, workflowId, { reviewDraftId: ready.draft.id, expectedRevision: 1, content: { overallSummary: 'Not allowed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: ready.draft.evidenceTurnIds } })).rejects.toThrow('review draft')
     })
@@ -63,7 +63,7 @@ describe('Whakapapa review-draft reconciliation', () => {
 
   it('rejects forged evidence and direct Whakapapa confirmation that omits an available review-draft revision', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository, run }: any) => {
-      expect((await request(payload())).statusCode).toBe(202)
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       await expect(reviewDraftRepository.edit(actor, workflowId, { reviewDraftId: ready.draft.id, expectedRevision: ready.draft.revision, content: { overallSummary: 'Forged evidence attempt.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [randomUUID()] } })).rejects.toThrow('outside its retained transcript')
       const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
@@ -73,7 +73,7 @@ describe('Whakapapa review-draft reconciliation', () => {
     })
   })
 
-  it('rejects a generated revision after its assessment run is superseded', async () => {
+  it('keeps an ordinary superseded run unavailable for canonical Pou confirmation', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository, run }: any) => {
       expect((await request(payload())).statusCode).toBe(202)
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
@@ -83,6 +83,163 @@ describe('Whakapapa review-draft reconciliation', () => {
       expect(await connection.db.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflowId))).toHaveLength(0)
     })
   })
+
+  it('reads only the narrowly eligible historic generated review without mutating superseded provenance', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, conversationId, run, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload())).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const [draft] = await connection.db.select().from(schema.conversationReviewDrafts).where(eq(schema.conversationReviewDrafts.assessmentRunId, run.id))
+      const [revision] = await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id))
+      const [assessment] = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id))
+      const observationId = randomUUID()
+      const historicAt = new Date('2026-08-13T01:00:00.000Z')
+      await connection.db.insert(schema.workflowSafetyObservations).values({ id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id, assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low', status: 'active', currentRevision: 1, confirmedByUserId: actor.id, confirmedAt: historicAt, updatedAt: historicAt })
+      await connection.db.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessment.id, assessmentRunId: run.id, workflowSessionId: workflowId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observationId, reviewedAt: historicAt })
+      await connection.db.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: historicAt }).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const before = {
+        run: (await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id)))[0],
+        revision: (await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.id, revision.id)))[0],
+        workflow: (await connection.db.select().from(schema.workflowSessions).where(eq(schema.workflowSessions.id, workflowId)))[0],
+      }
+
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId)).toMatchObject({ status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft: { id: draft.id, revisionId: revision.id, revision: 1 } })
+      expect(await reviewDraftRepository.findForKaimahi({ ...actor, id: randomUUID() }, workflowId)).toMatchObject({ status: 'manual', draft: null })
+      expect(await reviewDraftRepository.findForKaimahi(actor, randomUUID())).toMatchObject({ status: 'manual', draft: null })
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId, 'manaakitanga')).toMatchObject({ status: 'manual', draft: null })
+      expect((await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id)))[0]).toEqual(before.run)
+      expect((await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.id, revision.id)))[0]).toEqual(before.revision)
+      expect((await connection.db.select().from(schema.workflowSessions).where(eq(schema.workflowSessions.id, workflowId)))[0]).toEqual(before.workflow)
+      expect(ready.draft?.id).toBe(draft.id)
+      expect(conversationId).toBeDefined()
+
+      const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T02:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      await expect(workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa', reviewDraftRevisionId: revision.id } })).resolves.toMatchObject({ workflow: { currentPouId: 'manaakitanga' } })
+      expect(await connection.db.select().from(schema.workflowPouReviews).where(and(eq(schema.workflowPouReviews.workflowSessionId, workflowId), eq(schema.workflowPouReviews.reviewDraftRevisionId, revision.id)))).toHaveLength(1)
+    })
+  }, 15_000)
+
+  it('keeps a normally received review available after a candidate is explicitly confirmed', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, run, reviewDraftRepository, workflowRepository, repository, assessmentCallCount }: any) => {
+      expect((await request(payload())).statusCode).toBe(202)
+      const before = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const [candidate] = await repository.listReviewable(actor, workflowId)
+      if (!candidate || candidate.outcome !== 'possible_concern' || !candidate.canonicalBroadClass) throw new Error('Expected the fixture possible-concern candidate.')
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'safety-observation-confirmed',
+          observationId: randomUUID(),
+          idempotencyKey: randomUUID(),
+          expectedVersion: 2,
+          candidateAssessmentId: candidate.id,
+          observation: {
+            assessmentContext: 'pou',
+            pouId: 'whakapapa',
+            broadClass: candidate.canonicalBroadClass,
+            concernLevel: candidate.permittedHumanConcernLevels[0]!,
+          },
+        },
+      })
+      const after = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      expect(after).toMatchObject({ status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft: { id: before.draft!.id, revisionId: before.draft!.revisionId } })
+      expect((await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id)))[0]).toMatchObject({ status: 'received', supersededAt: null })
+      expect(assessmentCallCount()).toBe(1)
+    })
+  }, 15_000)
+
+  it('does not use historic compatibility after a later ended conversation or canonical Pou review', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, conversationId, run, reviewDraftRepository }: any) => {
+      expect((await request(payload())).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const [draft] = await connection.db.select().from(schema.conversationReviewDrafts).where(eq(schema.conversationReviewDrafts.assessmentRunId, run.id))
+      const [revision] = await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id))
+      const [assessment] = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id))
+      const observationId = randomUUID()
+      const historicAt = new Date('2026-08-13T01:00:00.000Z')
+      await connection.db.insert(schema.workflowSafetyObservations).values({ id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id, assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low', status: 'active', currentRevision: 1, confirmedByUserId: actor.id, confirmedAt: historicAt, updatedAt: historicAt })
+      await connection.db.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessment.id, assessmentRunId: run.id, workflowSessionId: workflowId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observationId, reviewedAt: historicAt })
+      await connection.db.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: historicAt }).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      await connection.db.insert(schema.workflowConversations).values({ id: randomUUID(), organisationId: actor.organisation.id, workflowSessionId: workflowId, pouId: 'whakapapa', startedByUserId: actor.id, provider: 'elevenlabs', providerConversationId: `later-${randomUUID()}`, providerAgentReference: 'agent-test', providerBranchReference: 'branch-test', providerEnvironment: 'test', conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'ended', startIdempotencyKey: randomUUID(), requestFingerprint: 'later-fixture', authorizedAt: historicAt, endedAt: new Date('2026-08-13T02:00:00.000Z'), terminationReason: 'user_ended', createdAt: historicAt, updatedAt: historicAt })
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId)).toMatchObject({ status: 'manual', draft: null })
+      await connection.db.delete(schema.workflowConversations).where(sql`${schema.workflowConversations.providerConversationId} like 'later-%'`)
+      await connection.db.insert(schema.workflowPouReviews).values({ workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa', reviewDraftRevisionId: revision.id, overallSummary: 'Canonical narrative review.', strengthsSummary: null, areasForAttentionSummary: null, confirmedByUserId: actor.id, confirmedAt: historicAt })
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId)).toMatchObject({ status: 'manual', draft: null })
+      expect(ready.draft?.id).toBe(draft.id)
+      expect(conversationId).toBeDefined()
+    })
+  }, 15_000)
+
+  it('fails closed when equal timestamps make historic conversation or generated-review ordering ambiguous', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, conversationId, run, reviewDraftRepository }: any) => {
+      expect((await request(payload())).statusCode).toBe(202)
+      const [draft] = await connection.db.select().from(schema.conversationReviewDrafts).where(eq(schema.conversationReviewDrafts.assessmentRunId, run.id))
+      const [assessment] = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id))
+      const [conversation] = await connection.db.select().from(schema.workflowConversations).where(eq(schema.workflowConversations.id, conversationId))
+      const observationId = randomUUID()
+      const historicAt = new Date('2026-08-13T01:00:00.000Z')
+      await connection.db.insert(schema.workflowSafetyObservations).values({ id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id, assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low', status: 'active', currentRevision: 1, confirmedByUserId: actor.id, confirmedAt: historicAt, updatedAt: historicAt })
+      await connection.db.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessment.id, assessmentRunId: run.id, workflowSessionId: workflowId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observationId, reviewedAt: historicAt })
+      await connection.db.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: historicAt }).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+
+      const equalConversationId = randomUUID()
+      await connection.db.insert(schema.workflowConversations).values({
+        id: equalConversationId,
+        organisationId: actor.organisation.id,
+        workflowSessionId: workflowId,
+        pouId: 'whakapapa',
+        startedByUserId: actor.id,
+        provider: 'elevenlabs',
+        providerConversationId: `equal-ended-${randomUUID()}`,
+        providerAgentReference: 'agent-test',
+        providerBranchReference: 'branch-test',
+        providerEnvironment: 'test',
+        conversationSpecificationCode: 'whakapapa-reflection',
+        conversationSpecificationVersion: 1,
+        status: 'ended',
+        startIdempotencyKey: randomUUID(),
+        requestFingerprint: 'equal-ended-fixture',
+        authorizedAt: conversation.authorizedAt,
+        endedAt: conversation.endedAt,
+        terminationReason: 'user_ended',
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      })
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId)).toMatchObject({ status: 'manual', draft: null })
+      await connection.db.delete(schema.workflowConversations).where(eq(schema.workflowConversations.id, equalConversationId))
+
+      const equalRunConversationId = randomUUID()
+      await connection.db.insert(schema.workflowConversations).values({
+        id: equalRunConversationId,
+        organisationId: actor.organisation.id,
+        workflowSessionId: workflowId,
+        pouId: 'whakapapa',
+        startedByUserId: actor.id,
+        provider: 'elevenlabs',
+        providerConversationId: `equal-run-${randomUUID()}`,
+        providerAgentReference: 'agent-test',
+        providerBranchReference: 'branch-test',
+        providerEnvironment: 'test',
+        conversationSpecificationCode: 'whakapapa-reflection',
+        conversationSpecificationVersion: 1,
+        status: 'ended',
+        startIdempotencyKey: randomUUID(),
+        requestFingerprint: 'equal-run-fixture',
+        authorizedAt: conversation.authorizedAt,
+        endedAt: new Date(conversation.endedAt.getTime() - 1),
+        terminationReason: 'user_ended',
+        createdAt: conversation.createdAt,
+        updatedAt: conversation.updatedAt,
+      })
+      const [currentRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, run.id))
+      const equalRunId = randomUUID()
+      await connection.db.insert(schema.conversationSafetyAssessmentRuns).values({ ...currentRun, id: equalRunId, workflowConversationId: equalRunConversationId, status: 'superseded', supersededAt: historicAt })
+      await connection.db.insert(schema.conversationReviewDrafts).values({ ...draft, id: randomUUID(), assessmentRunId: equalRunId, workflowConversationId: equalRunConversationId })
+      const [equalRun] = await connection.db.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, equalRunId))
+      expect(equalRun.createdAt).toEqual(currentRun.createdAt)
+      expect(await reviewDraftRepository.findForKaimahi(actor, workflowId)).toMatchObject({ status: 'manual', draft: null })
+    })
+  }, 15_000)
 
   it('lets the Kaimahi carry forward only a current scoped review need without creating an action or confirming the Pou', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository, canonicalSnapshot }: any) => {

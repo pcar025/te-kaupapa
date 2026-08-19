@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, or, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import type { AuthenticatedUser } from '../domain/auth.js'
@@ -26,8 +26,20 @@ export interface PouReviewDraftView {
   }
   assessmentCompleted: boolean
   hasReviewableCandidate: boolean
+  /** Bounded, human-review state only; no provider content or evidence is exposed. */
+  resolvedSafetyReview: {
+    confirmedCount: number
+    dismissedCount: number
+    insufficientInformationAcknowledgedCount: number
+  }
 }
 export type WhakapapaReviewDraftView = PouReviewDraftView
+
+const emptyResolvedSafetyReview = {
+  confirmedCount: 0,
+  dismissedCount: 0,
+  insufficientInformationAcknowledgedCount: 0,
+} as const
 
 function readContent(row: { overallSummary: string | null; strengthsSummary: string | null; areasForAttentionSummary: string | null; evidenceTurnIds: unknown }): WhakapapaReviewDraftContent {
   return whakapapaReviewDraftContentSchema.parse({
@@ -103,23 +115,115 @@ export class PostgresConversationReviewDraftRepository {
   }
 
   async findForKaimahi(actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId = 'whakapapa'): Promise<PouReviewDraftView> {
-    const runs = await this.db.select({ run: schema.conversationSafetyAssessmentRuns, transcript: schema.conversationTranscripts })
+    const runs = await this.db.select({ run: schema.conversationSafetyAssessmentRuns })
       .from(schema.conversationSafetyAssessmentRuns)
       .innerJoin(schema.workflowSessions, and(eq(schema.workflowSessions.id, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowSessions.organisationId, schema.conversationSafetyAssessmentRuns.organisationId)))
-      .leftJoin(schema.conversationTranscripts, eq(schema.conversationTranscripts.workflowConversationId, schema.conversationSafetyAssessmentRuns.workflowConversationId))
       .where(and(eq(schema.conversationSafetyAssessmentRuns.organisationId, actor.organisation.id), eq(schema.workflowSessions.kaimahiUserId, actor.id), eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, pouId), sql`${schema.conversationSafetyAssessmentRuns.status} <> 'superseded'`))
       .orderBy(desc(schema.conversationSafetyAssessmentRuns.createdAt)).limit(1)
-    const run = runs[0]?.run
-    if (!run) return { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false }
-    const candidateCount = await this.db.execute(sql`select count(*)::int as count from conversation_provider_rule_assessment where assessment_run_id = ${run.id} and outcome in ('possible_concern', 'insufficient_information')`)
+    let run = runs[0]?.run
+    let historicCompatibility = false
+    if (!run) {
+      // Earlier candidate-confirmation code superseded its own current run.
+      // Preserve that immutable audit state, but allow its generated narrative
+      // review to be read only when it is still the latest completed
+      // conversation, is the only generated review for this Pou, and no
+      // canonical Pou review has replaced it. Ambiguous ordering fails closed.
+      const historicRuns = await this.db.select({ run: schema.conversationSafetyAssessmentRuns })
+        .from(schema.conversationSafetyAssessmentRuns)
+        .innerJoin(schema.workflowSessions, and(eq(schema.workflowSessions.id, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowSessions.organisationId, schema.conversationSafetyAssessmentRuns.organisationId)))
+        .innerJoin(schema.workflowConversations, eq(schema.workflowConversations.id, schema.conversationSafetyAssessmentRuns.workflowConversationId))
+        .innerJoin(schema.workflowPouCheckpoints, and(eq(schema.workflowPouCheckpoints.workflowSessionId, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowPouCheckpoints.organisationId, schema.conversationSafetyAssessmentRuns.organisationId), eq(schema.workflowPouCheckpoints.pouId, schema.conversationSafetyAssessmentRuns.pouId)))
+        .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
+        .where(and(
+          eq(schema.conversationSafetyAssessmentRuns.organisationId, actor.organisation.id),
+          eq(schema.workflowSessions.kaimahiUserId, actor.id),
+          eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId),
+          eq(schema.conversationSafetyAssessmentRuns.pouId, pouId),
+          eq(schema.conversationSafetyAssessmentRuns.status, 'superseded'),
+          eq(schema.workflowConversations.status, 'ended'),
+          sql`${schema.workflowPouCheckpoints.progress} <> 'confirmed'`,
+          eq(schema.conversationReviewDrafts.status, 'generated'),
+          sql`exists (
+            select 1 from provider_assessment_review resolved_review
+            where resolved_review.assessment_run_id = ${schema.conversationSafetyAssessmentRuns.id}
+          )`,
+          sql`not exists (
+            select 1
+            from conversation_provider_rule_assessment unresolved_assessment
+            where unresolved_assessment.assessment_run_id = ${schema.conversationSafetyAssessmentRuns.id}
+              and unresolved_assessment.outcome in ('possible_concern', 'insufficient_information')
+              and not exists (
+                select 1 from provider_assessment_review unresolved_review
+                where unresolved_review.provider_rule_assessment_id = unresolved_assessment.id
+              )
+          )`,
+          sql`not exists (
+            select 1 from workflow_pou_review canonical_review
+            where canonical_review.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+              and canonical_review.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+              and canonical_review.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+          )`,
+          sql`not exists (
+            select 1 from workflow_conversation later_conversation
+            where later_conversation.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+              and later_conversation.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+              and later_conversation.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+              and later_conversation.status = 'ended'
+              and (
+                later_conversation.ended_at > ${schema.workflowConversations.endedAt}
+                or (
+                  later_conversation.ended_at = ${schema.workflowConversations.endedAt}
+                  and later_conversation.id <> ${schema.workflowConversations.id}
+                )
+              )
+          )`,
+          sql`not exists (
+            select 1
+            from conversation_review_draft later_draft
+            join conversation_safety_assessment_run later_run on later_run.id = later_draft.assessment_run_id
+            where later_run.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+              and later_run.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+              and later_run.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+              and later_draft.status = 'generated'
+              and later_run.id <> ${schema.conversationSafetyAssessmentRuns.id}
+          )`,
+        ))
+        .orderBy(desc(schema.conversationSafetyAssessmentRuns.createdAt)).limit(1)
+      run = historicRuns[0]?.run
+      historicCompatibility = Boolean(run)
+    }
+    if (!run) return { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false, resolvedSafetyReview: emptyResolvedSafetyReview }
+    const candidateCount = await this.db.execute(sql`
+      select count(*)::int as count
+      from conversation_provider_rule_assessment assessment
+      where assessment.assessment_run_id = ${run.id}
+        and assessment.outcome in ('possible_concern', 'insufficient_information')
+        and not exists (
+          select 1 from provider_assessment_review review
+          where review.provider_rule_assessment_id = assessment.id
+        )
+    `)
     const hasReviewableCandidate = Number(candidateCount.rows[0]?.count ?? 0) > 0
+    const resolvedReviews = await this.db.execute(sql`
+      select
+        count(*) filter (where review.status = 'confirmed')::int as confirmed_count,
+        count(*) filter (where review.status = 'dismissed')::int as dismissed_count,
+        count(*) filter (where review.status = 'insufficient_information_acknowledged')::int as insufficient_information_acknowledged_count
+      from provider_assessment_review review
+      where review.assessment_run_id = ${run.id}
+    `)
+    const resolvedSafetyReview = {
+      confirmedCount: Number(resolvedReviews.rows[0]?.confirmed_count ?? 0),
+      dismissedCount: Number(resolvedReviews.rows[0]?.dismissed_count ?? 0),
+      insufficientInformationAcknowledgedCount: Number(resolvedReviews.rows[0]?.insufficient_information_acknowledged_count ?? 0),
+    }
     const draftRows = await this.db.select({ draft: schema.conversationReviewDrafts, revision: schema.conversationReviewDraftRevisions })
       .from(schema.conversationReviewDrafts)
       .leftJoin(schema.conversationReviewDraftRevisions, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
       .where(eq(schema.conversationReviewDrafts.assessmentRunId, run.id)).orderBy(desc(schema.conversationReviewDraftRevisions.revision)).limit(1)
     const row = draftRows[0]
-    if (!row?.draft) return { status: 'analysing', draft: null, assessmentCompleted: run.status === 'received', hasReviewableCandidate }
-    if (row.draft.status === 'failed') return { status: 'failed', draft: null, assessmentCompleted: run.status === 'received', hasReviewableCandidate }
+    if (!row?.draft) return { status: 'analysing', draft: null, assessmentCompleted: run.status === 'received', hasReviewableCandidate, resolvedSafetyReview }
+    if (row.draft.status === 'failed') return { status: 'failed', draft: null, assessmentCompleted: run.status === 'received', hasReviewableCandidate, resolvedSafetyReview }
     if (!row.revision || !row.draft.generatedAt) throw new ReviewDraftUnavailableError('Generated review draft is incomplete.')
     const content = readContent(row.revision)
     const criterionRows = await this.db.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, row.revision.id))
@@ -130,7 +234,7 @@ export class PostgresConversationReviewDraftRepository {
     if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned Pou review projection.')
     const projection = pin.projection as PouReviewProjection
     const criteriaByCode = new Map(projection.criteria.map((criterion) => [criterion.criterionCode, criterion]))
-    return { status: 'ready', assessmentCompleted: run.status === 'received', hasReviewableCandidate, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, criterionAssessments: criterionRows.map((assessment) => {
+    return { status: 'ready', assessmentCompleted: run.status === 'received' || historicCompatibility, hasReviewableCandidate, resolvedSafetyReview, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, criterionAssessments: criterionRows.map((assessment) => {
       const criterion = criteriaByCode.get(assessment.criterionCode)
       if (!criterion) throw new ReviewDraftUnavailableError('The review draft contains an unknown pinned criterion.')
       return { criterionCode: assessment.criterionCode, label: criterion.label, strengthsOrProtective: criterion.strengthsOrProtective, areasForAttention: criterion.areasForAttention, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] }
@@ -185,17 +289,28 @@ export class PostgresConversationReviewDraftRepository {
   }
 
   async confirmCanonical(tx: SafetyTransaction, input: { actor: AuthenticatedUser; workflowSessionId: string; pouId: WorkflowPouId; reviewDraftRevisionId: string; timestamp: Date }): Promise<void> {
-    const rows = await tx.select({ draft: schema.conversationReviewDrafts, revision: schema.conversationReviewDraftRevisions })
-      .from(schema.conversationReviewDraftRevisions).innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id)).innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
-      .where(and(eq(schema.conversationReviewDraftRevisions.id, input.reviewDraftRevisionId), eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id), eq(schema.conversationReviewDrafts.workflowSessionId, input.workflowSessionId), eq(schema.conversationReviewDrafts.pouId, input.pouId), eq(schema.conversationReviewDrafts.status, 'generated'), sql`${schema.conversationSafetyAssessmentRuns.status} <> 'superseded'`)).limit(1)
-    const row = rows[0]
-    if (!row) throw new ReviewDraftUnavailableError('The final review draft is unavailable.')
-    const content = readContent(row.revision)
     const existing = await tx.select().from(schema.workflowPouReviews).where(and(eq(schema.workflowPouReviews.workflowSessionId, input.workflowSessionId), eq(schema.workflowPouReviews.pouId, input.pouId))).limit(1)
     if (existing[0]) {
       if (existing[0].reviewDraftRevisionId === input.reviewDraftRevisionId) return
       throw new ReviewDraftUnavailableError('The Pou review has already been confirmed.')
     }
+    const rows = await tx.select({ draft: schema.conversationReviewDrafts, revision: schema.conversationReviewDraftRevisions })
+      .from(schema.conversationReviewDraftRevisions)
+      .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
+      .innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
+      .innerJoin(schema.workflowConversations, eq(schema.workflowConversations.id, schema.conversationSafetyAssessmentRuns.workflowConversationId))
+      .innerJoin(schema.workflowPouCheckpoints, and(eq(schema.workflowPouCheckpoints.workflowSessionId, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowPouCheckpoints.organisationId, schema.conversationSafetyAssessmentRuns.organisationId), eq(schema.workflowPouCheckpoints.pouId, schema.conversationSafetyAssessmentRuns.pouId)))
+      .where(and(
+        eq(schema.conversationReviewDraftRevisions.id, input.reviewDraftRevisionId),
+        eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id),
+        eq(schema.conversationReviewDrafts.workflowSessionId, input.workflowSessionId),
+        eq(schema.conversationReviewDrafts.pouId, input.pouId),
+        eq(schema.conversationReviewDrafts.status, 'generated'),
+        this.confirmableRunPredicate(),
+      )).limit(1)
+    const row = rows[0]
+    if (!row) throw new ReviewDraftUnavailableError('The final review draft is unavailable.')
+    const content = readContent(row.revision)
     await tx.insert(schema.workflowPouReviews).values({ workflowSessionId: input.workflowSessionId, organisationId: input.actor.organisation.id, pouId: input.pouId, reviewDraftRevisionId: row.revision.id, overallSummary: content.overallSummary, strengthsSummary: content.strengthsSummary, areasForAttentionSummary: content.areasForAttentionSummary, confirmedByUserId: input.actor.id, confirmedAt: input.timestamp })
   }
 
@@ -204,7 +319,9 @@ export class PostgresConversationReviewDraftRepository {
     const drafts = await tx.select({ draft: schema.conversationReviewDrafts })
       .from(schema.conversationReviewDrafts)
       .innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
-      .where(and(eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id), eq(schema.conversationReviewDrafts.workflowSessionId, input.workflowSessionId), eq(schema.conversationReviewDrafts.pouId, input.pouId), eq(schema.conversationReviewDrafts.status, 'generated'), sql`${schema.conversationSafetyAssessmentRuns.status} <> 'superseded'`))
+      .innerJoin(schema.workflowConversations, eq(schema.workflowConversations.id, schema.conversationSafetyAssessmentRuns.workflowConversationId))
+      .innerJoin(schema.workflowPouCheckpoints, and(eq(schema.workflowPouCheckpoints.workflowSessionId, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowPouCheckpoints.organisationId, schema.conversationSafetyAssessmentRuns.organisationId), eq(schema.workflowPouCheckpoints.pouId, schema.conversationSafetyAssessmentRuns.pouId)))
+      .where(and(eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id), eq(schema.conversationReviewDrafts.workflowSessionId, input.workflowSessionId), eq(schema.conversationReviewDrafts.pouId, input.pouId), eq(schema.conversationReviewDrafts.status, 'generated'), this.confirmableRunPredicate()))
       .limit(1)
     const draft = drafts[0]?.draft
     if (!draft) return
@@ -270,5 +387,67 @@ export class PostgresConversationReviewDraftRepository {
     const draft = rows[0]?.draft
     if (!draft) throw new ReviewDraftUnavailableError('The review draft is unavailable.')
     return draft
+  }
+
+  /**
+   * Current received runs are confirmable normally. A narrowly bounded legacy
+   * exception supports historical runs that were superseded by confirming one
+   * of their own candidates before that bug was corrected. This never changes
+   * the recorded run status and cannot bypass checkpoint, lineage, or
+   * canonical-review precedence.
+   */
+  private confirmableRunPredicate() {
+    return or(
+      sql`${schema.conversationSafetyAssessmentRuns.status} <> 'superseded'`,
+      and(
+        eq(schema.conversationSafetyAssessmentRuns.status, 'superseded'),
+        eq(schema.workflowConversations.status, 'ended'),
+        sql`${schema.workflowPouCheckpoints.progress} <> 'confirmed'`,
+        sql`exists (
+          select 1 from provider_assessment_review resolved_review
+          where resolved_review.assessment_run_id = ${schema.conversationSafetyAssessmentRuns.id}
+        )`,
+        sql`not exists (
+          select 1
+          from conversation_provider_rule_assessment unresolved_assessment
+          where unresolved_assessment.assessment_run_id = ${schema.conversationSafetyAssessmentRuns.id}
+            and unresolved_assessment.outcome in ('possible_concern', 'insufficient_information')
+            and not exists (
+              select 1 from provider_assessment_review unresolved_review
+              where unresolved_review.provider_rule_assessment_id = unresolved_assessment.id
+            )
+        )`,
+        sql`not exists (
+          select 1 from workflow_pou_review canonical_review
+          where canonical_review.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+            and canonical_review.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+            and canonical_review.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+        )`,
+        sql`not exists (
+          select 1 from workflow_conversation later_conversation
+          where later_conversation.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+            and later_conversation.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+            and later_conversation.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+            and later_conversation.status = 'ended'
+            and (
+              later_conversation.ended_at > ${schema.workflowConversations.endedAt}
+              or (
+                later_conversation.ended_at = ${schema.workflowConversations.endedAt}
+                and later_conversation.id <> ${schema.workflowConversations.id}
+              )
+            )
+        )`,
+        sql`not exists (
+          select 1
+          from conversation_review_draft later_draft
+          join conversation_safety_assessment_run later_run on later_run.id = later_draft.assessment_run_id
+          where later_run.workflow_session_id = ${schema.conversationSafetyAssessmentRuns.workflowSessionId}
+            and later_run.organisation_id = ${schema.conversationSafetyAssessmentRuns.organisationId}
+            and later_run.pou_id = ${schema.conversationSafetyAssessmentRuns.pouId}
+            and later_draft.status = 'generated'
+            and later_run.id <> ${schema.conversationSafetyAssessmentRuns.id}
+        )`,
+      ),
+    )
   }
 }

@@ -13,6 +13,7 @@ import { OpenAIConversationReviewDraftProvider } from './review-drafts/provider.
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { PostgresOrganisationPouSpecificationRepository } from './pou-specifications/repository.js'
 import { PostgresOrganisationPouSpecificationAuthoringService } from './pou-specifications/authoring.js'
+import { PostgresSafetyPolicyAuthoringService } from './safety-assessments/authoring.js'
 import { PostgresWorkflowSynthesisRepository } from './workflow-synthesis/repository.js'
 import { OpenAIWorkflowSynthesisProvider } from './workflow-synthesis/provider.js'
 
@@ -49,6 +50,7 @@ const app = await createApplication({
   workflowSynthesisProvider: config.openaiAssessment ? new OpenAIWorkflowSynthesisProvider(config.openaiAssessment) : undefined,
   transcriptRepository,
   pouSpecificationAuthoringService: new PostgresOrganisationPouSpecificationAuthoringService(database.db),
+  safetyPolicyAuthoringService: new PostgresSafetyPolicyAuthoringService(database.db),
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,
 })
 

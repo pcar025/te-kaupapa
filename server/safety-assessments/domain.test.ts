@@ -67,8 +67,18 @@ describe('versioned safety specification projection', () => {
     const projection = providerProjection(approvedFixture(), { projectionCode: 'fictional', projectionVersion: '1' })
     const assessments = projection.rules.map((rule) => rule.ruleCode === 'WHAKAPAPA_CULTURAL_DISTRESS_003'
       ? { ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: 'not_applicable' as const, candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: 'no_explicit_cultural_identity_distress', evidenceTurnIds: [] }
-      : { ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: 'no_candidate_concern' as const, candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [] })
+      : { ruleCode: rule.ruleCode, ruleVersion: rule.ruleVersion, outcome: 'no_candidate_concern' as const, candidateConcernLevel: null, matchedProtectiveIndicatorCodes: [rule.protectiveIndicators[0]!.code], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [randomUUID()] })
     expect(validateProviderAssessmentSet(projection, assessments)).toHaveLength(3)
     expect(() => validateProviderAssessmentSet(projection, assessments.map((assessment) => assessment.ruleCode === 'WHAKAPAPA_CULTURAL_DISTRESS_003' ? { ...assessment, candidateConcernLevel: 'low' } : assessment))).toThrow('Provider concern levels')
+  })
+
+  it('rejects evidence-free no-candidate results so not discussed is never treated as not present', () => {
+    const projection = providerProjection(approvedFixture(), { projectionCode: 'fictional', projectionVersion: '1' })
+    const rule = projection.rules[0]!
+    expect(() => validateProviderAssessmentSet(projection, projection.rules.map((candidate) => ({
+      ruleCode: candidate.ruleCode, ruleVersion: candidate.ruleVersion, outcome: 'no_candidate_concern' as const, candidateConcernLevel: null,
+      matchedProtectiveIndicatorCodes: [], matchedConcernIndicatorCodes: [], missingInformationCodes: [], uncertaintyReasonCodes: [], applicabilityReasonCode: null, evidenceTurnIds: [],
+    })))).toThrow('adequate-exploration')
+    expect(rule.protectiveIndicators).not.toHaveLength(0)
   })
 })

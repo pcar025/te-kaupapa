@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "dev:server": "tsx watch server/index.ts",
+    "check:local-live-runtime": "tsx server/scripts/check-local-live-runtime.ts",
     "build": "vite build",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --environment jsdom --maxWorkers=1",

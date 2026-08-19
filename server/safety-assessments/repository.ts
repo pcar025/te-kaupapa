@@ -37,6 +37,8 @@ export interface ConversationAssessmentRunWriter {
 export class SafetyAssessmentValidationError extends Error {}
 export class ProviderDeliveryConflictError extends Error {}
 export class AssessmentCandidateUnavailableError extends Error {}
+/** A Pou cannot be confirmed while an explicit human safety decision is pending. */
+export class UnresolvedSafetyCandidateError extends Error {}
 
 function parseProjection(value: unknown): ProviderAssessmentProjection {
   const projection = value as ProviderAssessmentProjection
@@ -147,8 +149,6 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     if (pinnedSpecification && guidanceProjection && reviewProjection) {
       const expectedGuidance = conversationGuidanceProjection(pinnedSpecification, { projectionCode: guidanceProjection.projectionCode, projectionVersion: guidanceProjection.projectionVersion })
       const expectedReview = pouReviewProjection(pinnedSpecification, { projectionCode: reviewProjection.projectionCode, projectionVersion: reviewProjection.projectionVersion })
-      const linkedRules = pinnedSpecification.safetyRuleReferences.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
-      const assessmentRules = specification.rules.map((rule) => `${rule.ruleCode}@${rule.ruleVersion}`).sort()
       const currentProjectionDerivationMatches = contentHash(expectedGuidance) === row.pouPin!.conversationGuidanceProjectionHash
         && contentHash(expectedReview) === row.pouPin!.pouReviewProjectionHash
       const historicWhakapapaV01Matches = isExactHistoricWhakapapaV01ProjectionPair({
@@ -157,7 +157,14 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
         guidance: guidanceProjection,
         review: reviewProjection,
       })
-      if (contentHash(pinnedSpecification) !== row.pouPin!.specificationHash || guidanceProjection.specificationHash !== row.pouPin!.specificationHash || reviewProjection.specificationHash !== row.pouPin!.specificationHash || contentHash(guidanceProjection) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(reviewProjection) !== row.pouPin!.pouReviewProjectionHash || (!currentProjectionDerivationMatches && !historicWhakapapaV01Matches) || linkedRules.join('|') !== assessmentRules.join('|')) {
+      // The organisation Pou review/guidance version and the formal safety
+      // policy are independently immutable artifacts.  Their exact durable
+      // relationship was verified through the active scoped link when the
+      // conversation was prepared; the run snapshots the linked safety
+      // policy/projection itself.  Historical ordinary-specification rule
+      // references must therefore never be used to invalidate a separately
+      // activated formal safety policy during post-call processing.
+      if (contentHash(pinnedSpecification) !== row.pouPin!.specificationHash || guidanceProjection.specificationHash !== row.pouPin!.specificationHash || reviewProjection.specificationHash !== row.pouPin!.specificationHash || contentHash(guidanceProjection) !== row.pouPin!.conversationGuidanceProjectionHash || contentHash(reviewProjection) !== row.pouPin!.pouReviewProjectionHash || (!currentProjectionDerivationMatches && !historicWhakapapaV01Matches)) {
         throw new SafetyAssessmentValidationError('Pinned conversation, review, and safety projection provenance is invalid.')
       }
     } else if (row.pouPin || guidanceProjection || reviewProjection) {
@@ -345,10 +352,44 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
 
   async acknowledge(actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, status: 'dismissed' | 'insufficient_information_acknowledged'): Promise<void> {
     await this.db.transaction(async (tx) => {
+      // Match the workflow-command lock order.  The review insert has a
+      // workflow FK, so locking the candidate first could otherwise deadlock
+      // against a concurrent Pou confirmation that already owns this row.
+      await this.lockOwnedWorkflowSession(tx, actor, workflowSessionId)
       const candidate = await this.lockCandidate(tx, actor, workflowSessionId, assessmentId)
       if ((status === 'dismissed' && candidate.assessment.outcome !== 'possible_concern') || (status === 'insufficient_information_acknowledged' && candidate.assessment.outcome !== 'insufficient_information')) throw new AssessmentCandidateUnavailableError('The assessment cannot receive that review outcome.')
       await tx.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessmentId, assessmentRunId: candidate.run.id, workflowSessionId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status, reviewedAt: this.now() })
     })
+  }
+
+  /**
+   * Enforce the continuation boundary inside the workflow command transaction.
+   * It uses the same durable eligibility predicate as candidate review, but
+   * locks the rows that a concurrent acknowledgement or confirmation needs.
+   */
+  async assertNoUnresolvedForPouConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, pouId: WorkflowPouId): Promise<void> {
+    const result = await tx.execute(sql`
+      select a.id
+      from conversation_provider_rule_assessment a
+      join conversation_safety_assessment_run r on r.id = a.assessment_run_id
+      join workflow_session workflow on workflow.id = r.workflow_session_id and workflow.organisation_id = r.organisation_id
+      join workflow_pou_checkpoint checkpoint on checkpoint.workflow_session_id = r.workflow_session_id and checkpoint.organisation_id = r.organisation_id and checkpoint.pou_id = r.pou_id
+      where r.workflow_session_id = ${workflowSessionId}
+        and r.organisation_id = ${actor.organisation.id}
+        and r.pou_id = ${pouId}
+        and workflow.kaimahi_user_id = ${actor.id}
+        and r.status = 'received'
+        and a.outcome in ('possible_concern', 'insufficient_information')
+        and checkpoint.progress <> 'confirmed'
+        and not exists (
+          select 1 from provider_assessment_review review
+          where review.provider_rule_assessment_id = a.id
+        )
+      for update of a, r, checkpoint
+    `)
+    if (result.rows.length > 0) {
+      throw new UnresolvedSafetyCandidateError('Resolve every formal safety review before confirming this Pou.')
+    }
   }
 
   async prepareConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, pouId: WorkflowPouId, broadClass: SafetyBroadClass, level: SafetyObservationConcernLevel): Promise<void> {
@@ -362,7 +403,15 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
   async finalizeConfirmation(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string, observationId: string): Promise<void> {
     const candidate = await this.lockCandidate(tx, actor, workflowSessionId, assessmentId)
     await tx.insert(schema.providerAssessmentReviews).values({ providerRuleAssessmentId: assessmentId, assessmentRunId: candidate.run.id, workflowSessionId, organisationId: actor.organisation.id, reviewedByUserId: actor.id, status: 'confirmed', classificationSource: 'human_selected', canonicalObservationId: observationId, reviewedAt: this.now() })
-    await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId), eq(schema.conversationSafetyAssessmentRuns.pouId, candidate.run.pouId), sql`${schema.conversationSafetyAssessmentRuns.status} in ('pending', 'received')`))
+    // A run can contain several independently reviewable rule assessments.
+    // Confirming one creates its canonical observation, but must not hide the
+    // remaining candidates before their own explicit human resolution.
+    await tx.update(schema.conversationSafetyAssessmentRuns).set({ status: 'superseded', supersededAt: this.now() }).where(and(
+      eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, workflowSessionId),
+      eq(schema.conversationSafetyAssessmentRuns.pouId, candidate.run.pouId),
+      ne(schema.conversationSafetyAssessmentRuns.id, candidate.run.id),
+      sql`${schema.conversationSafetyAssessmentRuns.status} in ('pending', 'received')`,
+    ))
   }
 
   private async lockCandidate(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string, assessmentId: string) {
@@ -382,5 +431,19 @@ export class PostgresSafetyAssessmentRepository implements ConversationAssessmen
     const runs = await tx.select().from(schema.conversationSafetyAssessmentRuns).where(eq(schema.conversationSafetyAssessmentRuns.id, assessments[0]!.assessmentRunId)).limit(1)
     if (!assessments[0] || !runs[0]) throw new AssessmentCandidateUnavailableError('The assessment is incomplete.')
     return { assessment: assessments[0], run: runs[0] }
+  }
+
+  private async lockOwnedWorkflowSession(tx: SafetyTransaction, actor: AuthenticatedUser, workflowSessionId: string): Promise<void> {
+    const result = await tx.execute(sql`
+      select id
+      from workflow_session
+      where id = ${workflowSessionId}
+        and organisation_id = ${actor.organisation.id}
+        and kaimahi_user_id = ${actor.id}
+      for update
+    `)
+    if (result.rows.length === 0) {
+      throw new AssessmentCandidateUnavailableError('The workflow is not available for safety review.')
+    }
   }
 }
