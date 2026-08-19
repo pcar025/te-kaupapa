@@ -1727,19 +1727,21 @@ function PouConversationStage({
   data,
   onChange,
   onNext,
+  onReflectionEnded,
   pouIdx,
   workflowId,
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
   onNext: () => void
+  onReflectionEnded: () => void
   pouIdx: number
   workflowId: string
 }) {
   return (
     <VoiceChunkBoundary onProceedToReview={onNext}>
       <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
-        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onProceedToReview={onNext} />
+        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onProceedToReview={onNext} onReflectionEnded={onReflectionEnded} />
       </Suspense>
     </VoiceChunkBoundary>
   )
@@ -1794,12 +1796,18 @@ export function PouNarrativeReview({
   onDraftState,
   carriedSources = new Set(),
   onMarkCarryForward = () => undefined,
+  presentation = 'review',
+  onReviewReady,
+  onManualReview,
 }: {
   workflowId: string
   pouId: (typeof TE_WAHAROA_POU)[number]['id']
   onDraftState: (state: { reviewDraftRevisionId?: string; hasUnsavedChanges: boolean; loaded: boolean }) => void
   carriedSources?: Set<string>
   onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
+  presentation?: 'review' | 'processing'
+  onReviewReady?: () => void
+  onManualReview?: () => void
 }) {
   const REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS = 4_000
   const MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS = 15
@@ -1812,6 +1820,7 @@ export function PouNarrativeReview({
   const [automaticPollCount, setAutomaticPollCount] = useState(0)
   const activeReviewRequest = useRef<number | null>(null)
   const reviewRequestGeneration = useRef(0)
+  const readyTransitionRevision = useRef<string | null>(null)
   const load = (preserveLocalDraftOnFailure = false, resetAutomaticPolling = false) => {
     if (resetAutomaticPolling) setAutomaticPollCount(0)
     if (activeReviewRequest.current !== null) return
@@ -1827,7 +1836,7 @@ export function PouNarrativeReview({
       setSaveError(null)
       onDraftState({ reviewDraftRevisionId: next.draft?.revisionId, hasUnsavedChanges: false, loaded: true })
       setAutomaticPollCount((current) => next.status === 'analysing' ? (resetAutomaticPolling ? 1 : current + 1) : 0)
-      if (next.draft) void markPouReviewDraftReviewed(workflowId, pouId, next.draft.id).catch(() => undefined)
+      if (next.draft && presentation !== 'processing') void markPouReviewDraftReviewed(workflowId, pouId, next.draft.id).catch(() => undefined)
     }).catch(() => {
       if (activeReviewRequest.current !== requestGeneration) return
       activeReviewRequest.current = null
@@ -1854,6 +1863,12 @@ export function PouNarrativeReview({
     const timer = window.setTimeout(load, REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS)
     return () => window.clearTimeout(timer)
   }, [review, automaticPollCount, workflowId, pouId])
+  useEffect(() => {
+    const revisionId = presentation === 'processing' && review?.status === 'ready' ? draft?.revisionId : undefined
+    if (!revisionId || readyTransitionRevision.current === revisionId) return
+    readyTransitionRevision.current = revisionId
+    onReviewReady?.()
+  }, [draft?.revisionId, onReviewReady, presentation, review?.status])
   const update = (field: 'overallSummary' | 'strengthsSummary' | 'areasForAttentionSummary', value: string) => {
     if (!draft) return
     const next = { ...draft, [field]: value.trim() ? value : null }
@@ -1865,6 +1880,13 @@ export function PouNarrativeReview({
     void editPouReviewDraft(workflowId, pouId, { reviewDraftId: draft.id, expectedRevision: draft.revision, overallSummary: draft.overallSummary, strengthsSummary: draft.strengthsSummary, areasForAttentionSummary: draft.areasForAttentionSummary, evidenceTurnIds: draft.evidenceTurnIds })
       .then((saved) => { setDraft(saved); setDirty(false); setSaveError(null); onDraftState({ reviewDraftRevisionId: saved.revisionId, hasUnsavedChanges: false, loaded: true }) })
       .catch((error) => setSaveError(error instanceof WorkflowApiError && error.code === 'stale_review_draft' ? 'ambiguous' : 'failed')).finally(() => setSaving(false))
+  }
+  if (presentation === 'processing') {
+    if (loadError) return <PostReflectionProcessingScreen state="lookup-failed" onCheckAgain={() => load(false, true)} />
+    if (!review || review.status === 'analysing') return <PostReflectionProcessingScreen state={automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? 'waiting' : 'processing'} onCheckAgain={automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? () => load(false, true) : undefined} />
+    if (review.status === 'ready' && draft) return <PostReflectionProcessingScreen state="opening" />
+    if (review.status === 'failed') return <PostReflectionProcessingScreen state="failed" onContinueManual={onManualReview} />
+    return <PostReflectionProcessingScreen state="manual" onContinueManual={onManualReview} />
   }
   if (loadError) return <div style={{ borderLeft: '3px solid var(--color-border-strong)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-xs italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>The reflection review could not be loaded. Manual Pou review remains available.</p><button type="button" onClick={() => load(false, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button></div>
   if (!review || review.status === 'analysing') return <div aria-live="polite" style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Analysing your reflection…</p><p className="text-xs mt-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>{automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS ? 'Processing is still underway. Check again when you are ready.' : 'Your Pou review remains yours to complete.'}</p>{automaticPollCount >= MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS && <button type="button" onClick={() => load(false, true)} className="text-xs mt-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button>}</div>
@@ -1882,6 +1904,82 @@ export function PouNarrativeReview({
     {dirty && <button type="button" onClick={save} disabled={saving} className="w-full px-4 py-3 text-sm disabled:opacity-50" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>{saving ? 'Saving review…' : 'Save review changes'}</button>}
     {review.assessmentCompleted && !review.hasReviewableCandidate && <div style={{ borderLeft: '3px solid var(--color-growth)', backgroundColor: 'var(--color-surface)', padding: '0.875rem 1rem' }}><p className="text-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Reflection analysed</p><p className="text-xs mt-1 italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>No additional safety concern was suggested from this reflection. You still complete the Pou review.</p></div>}
   </div>
+}
+
+function PostReflectionProcessingScreen({
+  state,
+  onCheckAgain,
+  onContinueManual,
+}: {
+  state: 'processing' | 'waiting' | 'opening' | 'lookup-failed' | 'failed' | 'manual'
+  onCheckAgain?: () => void
+  onContinueManual?: () => void
+}) {
+  const waiting = state === 'processing' || state === 'waiting' || state === 'opening'
+  const heading = state === 'waiting'
+    ? 'Still bringing your reflection together…'
+    : state === 'opening'
+      ? 'Opening your Pou review…'
+      : 'Bringing together your reflection…'
+  const detail = state === 'waiting'
+    ? 'We’re still preparing your Pou review.'
+    : 'We’re reviewing what you’ve shared and preparing your Pou review.'
+
+  return (
+    <div className="flex flex-col items-center justify-center text-center px-6" style={{ minHeight: '72vh', fontFamily: 'var(--font-body)' }} aria-live="polite">
+      {waiting && <>
+        <div className="flex items-end gap-1.5 mb-10" style={{ height: 54 }} role="img" aria-label="Preparing your Pou review">
+          {[30, 46, 24, 52, 38, 28, 44].map((height, index) => (
+            <div
+              key={height}
+              className="reflection-processing-pou"
+              style={{ width: 7, height, backgroundColor: 'var(--color-ridge)', animationDelay: `${index * 0.24}s` }}
+            />
+          ))}
+        </div>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{heading}</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{detail}</p>
+        {state !== 'opening' && <p className="text-xs mt-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>This can take around 30 seconds.</p>}
+        {onCheckAgain && <button type="button" onClick={onCheckAgain} className="text-xs mt-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Check again</button>}
+      </>}
+      {state === 'lookup-failed' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>We couldn’t check whether your review is ready.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Your reflection remains available. Check again when you are ready.</p>
+        {onCheckAgain && <button type="button" onClick={onCheckAgain} className="mt-6 px-4 py-3 text-sm" style={{ borderLeft: '3px solid var(--color-ridge)', backgroundColor: 'var(--color-surface)', color: 'var(--color-ridge)', fontFamily: 'var(--font-mono)' }}>Check again</button>}
+      </>}
+      {state === 'failed' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>We couldn’t finish preparing your review.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Your reflection has been saved. You can continue with your own Pou review.</p>
+        {onContinueManual && <button type="button" onClick={onContinueManual} className="mt-6 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Continue with Pou review</button>}
+      </>}
+      {state === 'manual' && <>
+        <p className="text-xl italic mb-3" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Your Pou review is ready for you.</p>
+        <p className="text-sm italic leading-relaxed max-w-sm" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>No reflection draft is available for this Pou.</p>
+        {onContinueManual && <button type="button" onClick={onContinueManual} className="mt-6 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Continue with Pou review</button>}
+      </>}
+    </div>
+  )
+}
+
+export function PouReviewProcessingStage({
+  workflowId,
+  pouId,
+  onReady,
+  onManualReview,
+}: {
+  workflowId: string
+  pouId: (typeof TE_WAHAROA_POU)[number]['id']
+  onReady: () => void
+  onManualReview: () => void
+}) {
+  return <PouNarrativeReview
+    workflowId={workflowId}
+    pouId={pouId}
+    presentation="processing"
+    onDraftState={() => undefined}
+    onReviewReady={onReady}
+    onManualReview={onManualReview}
+  />
 }
 
 function StructuredCriterionReview({
@@ -6234,6 +6332,7 @@ export function SessionShell({
     if (stage === 'setup') { return }
     if (stage === 'pou-overview') { setCurrentPouIdx(0); setStage('pou-convo'); return }
     if (stage === 'pou-convo') { setStage('pou-review'); return }
+    if (stage === 'pou-processing') { return }
     if (stage === 'pou-review') {
       if (currentPouIdx < 6) {
         setCurrentPouIdx((i) => i + 1)
@@ -6251,6 +6350,7 @@ export function SessionShell({
     if (stage === 'pou-overview') { setStage('setup'); return }
     if (stage === 'pou-convo' && currentPouIdx === 0) { setStage('pou-overview'); return }
     if (stage === 'pou-convo') { setCurrentPouIdx((i) => i - 1); setStage('pou-review'); return }
+    if (stage === 'pou-processing') { setStage('pou-convo'); return }
     if (stage === 'pou-review') { setStage('pou-convo'); return }
     if (stage === 'pou-summary') { setCurrentPouIdx(6); setStage('pou-review'); return }
     const linear: SessionStageKey[] = ['risks', 'referrals', 'synthesis', 'record']
@@ -6290,8 +6390,9 @@ export function SessionShell({
         {stage === 'setup'        && <SetupStage data={data} onChange={patch} onConfirm={confirmSetup} displayName={displayName} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
         {stage === 'pou-overview' && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} pouIdx={currentPouIdx} workflowId={workflow.id} />}
+        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
+        {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

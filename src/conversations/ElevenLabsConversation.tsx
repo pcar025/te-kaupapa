@@ -55,11 +55,13 @@ function VoiceController({
   workflowId,
   pouId,
   onProceedToReview,
+  onReflectionEnded,
   registerProviderCallbacks,
 }: {
   workflowId: string
   pouId: WorkflowPouId
   onProceedToReview: () => void
+  onReflectionEnded: () => void
   registerProviderCallbacks: (callbacks: ProviderCallbacks) => void
 }) {
   const { startSession, endSession } = useConversationControls()
@@ -112,6 +114,7 @@ function VoiceController({
 
     try {
       await endConversation(currentConversationId, reason)
+      if ((reason === 'user_ended' || reason === 'connection_lost') && isMounted.current) onReflectionEnded()
     } catch {
       // The bounded, idempotent reconciliation did not complete. The local
       // terminal state is still true, and a later explicit attempt is safe.
@@ -132,6 +135,10 @@ function VoiceController({
     setUiStateSafely('checking_previous')
     void getCurrentPouConversation(workflowId, pouId).then((current) => {
       if (cancelled) return
+      if (current && current.status === 'ended') {
+        onReflectionEnded()
+        return
+      }
       if (current && ['preparing', 'authorized', 'active'].includes(current.status)) {
         conversationId.current = current.id
         providerConversationId.current = current.providerConversationId
@@ -144,7 +151,7 @@ function VoiceController({
       if (!cancelled) setUiStateSafely('error')
     })
     return () => { cancelled = true }
-  }, [setUiStateSafely, workflowId, pouId])
+  }, [onReflectionEnded, setUiStateSafely, workflowId, pouId])
 
   useEffect(() => {
     if (ending.current) return
@@ -349,7 +356,7 @@ function VoiceController({
   )
 }
 
-export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa', onProceedToReview }: { workflowId: string; pouId?: WorkflowPouId; onProceedToReview: () => void }) {
+export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa', onProceedToReview, onReflectionEnded = onProceedToReview }: { workflowId: string; pouId?: WorkflowPouId; onProceedToReview: () => void; onReflectionEnded?: () => void }) {
   const callbacks = useRef<ProviderCallbacks>({})
   return (
     <ConversationProvider
@@ -358,7 +365,7 @@ export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa'
       onError={() => callbacks.current.onError?.()}
       onMessage={({ message, role }) => callbacks.current.onMessage?.(message, role)}
     >
-      <VoiceController workflowId={workflowId} pouId={pouId} onProceedToReview={onProceedToReview} registerProviderCallbacks={(next) => { callbacks.current = next }} />
+      <VoiceController workflowId={workflowId} pouId={pouId} onProceedToReview={onProceedToReview} onReflectionEnded={onReflectionEnded} registerProviderCallbacks={(next) => { callbacks.current = next }} />
     </ConversationProvider>
   )
 }

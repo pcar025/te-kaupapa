@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { candidateConfirmationCommand, PouAssessmentCandidates, PouNarrativeReview, SinglePouReviewStage, WhakapapaNarrativeReview } from './KaimahiSession'
+import { candidateConfirmationCommand, PouAssessmentCandidates, PouNarrativeReview, PouReviewProcessingStage, SinglePouReviewStage, WhakapapaNarrativeReview } from './KaimahiSession'
 import { TE_WAHAROA_POU } from '../pou'
 
 const workflowId = '11111111-1111-4111-8111-111111111111'
@@ -9,6 +9,56 @@ const workflowId = '11111111-1111-4111-8111-111111111111'
 afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
 describe('WhakapapaNarrativeReview', () => {
+  it('keeps the completed review separate from the processing screen and transitions automatically when it is ready', async () => {
+    vi.useFakeTimers()
+    const readyDraft = {
+      id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1,
+      overallSummary: 'Identity context was explored.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-17T00:00:00.000Z',
+    }
+    const onReady = vi.fn()
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft: readyDraft } }), { status: 200 })))
+
+    render(<PouReviewProcessingStage workflowId={workflowId} pouId="whakapapa" onReady={onReady} onManualReview={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    expect(screen.getByText('Bringing together your reflection…')).toBeTruthy()
+    expect(screen.getByText(/preparing your Pou review/i)).toBeTruthy()
+    expect(screen.getByText('This can take around 30 seconds.')).toBeTruthy()
+    expect(screen.getByRole('img', { name: /preparing your Pou review/i })).toBeTruthy()
+    expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
+    expect(screen.queryByRole('button', { name: /confirm/i })).toBeNull()
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    expect(onReady).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
+  })
+
+  it('takes the fast path when the authoritative review is already ready', async () => {
+    const readyDraft = {
+      id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1,
+      overallSummary: 'Identity context was explored.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-08-17T00:00:00.000Z',
+    }
+    const onReady = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft: readyDraft } }), { status: 200 })))
+
+    render(<PouReviewProcessingStage workflowId={workflowId} pouId="whakapapa" onReady={onReady} onManualReview={() => undefined} />)
+    await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1))
+    expect(screen.getByText('Opening your Pou review…')).toBeTruthy()
+  })
+
+  it('keeps a review-generation failure on the processing screen and offers only the truthful manual fallback', async () => {
+    const onManualReview = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ review: { status: 'failed', draft: null, assessmentCompleted: true, hasReviewableCandidate: false } }), { status: 200 })))
+
+    render(<PouReviewProcessingStage workflowId={workflowId} pouId="whakapapa" onReady={() => undefined} onManualReview={onManualReview} />)
+    expect(await screen.findByText('We couldn’t finish preparing your review.')).toBeTruthy()
+    expect(screen.getByText('Your reflection has been saved. You can continue with your own Pou review.')).toBeTruthy()
+    expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /continue with Pou review/i }))
+    expect(onManualReview).toHaveBeenCalledTimes(1)
+  })
+
   it('shows analysing without inventing a safety outcome while a transcript is being processed', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 })))
     render(<WhakapapaNarrativeReview workflowId={workflowId} onDraftState={() => undefined} />)

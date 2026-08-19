@@ -75,7 +75,7 @@ describe('ElevenLabsConversation', () => {
     await waitFor(() => expect(fetchMock.mock.calls[2]?.[0]).toBe(`/api/conversations/${conversationId}/client-connected`))
   })
 
-  it('cleans up a deliberately ended session and offers the existing manual review transition', async () => {
+  it('cleans up a deliberately ended session and transitions to post-reflection processing without another click', async () => {
     const stop = vi.fn()
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [{ stop }] })) } })
     const proceed = vi.fn()
@@ -95,9 +95,18 @@ describe('ElevenLabsConversation', () => {
     fireEvent.click(screen.getByRole('button', { name: /end session/i }))
     await waitFor(() => expect(sdk.endSession).toHaveBeenCalled())
     await waitFor(() => expect(fetchMock.mock.calls[3]?.[0]).toBe(`/api/conversations/${conversationId}/end`))
-    fireEvent.click(screen.getByRole('button', { name: /te waharoa pou review/i }))
     expect(proceed).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns to post-reflection processing after refresh when the authoritative conversation is already ended', async () => {
+    const proceed = vi.fn()
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ conversation: metadata('ended') }), { status: 200 })))
+
+    render(<ElevenLabsConversation workflowId={workflowId} onProceedToReview={() => undefined} onReflectionEnded={proceed} />)
+
+    await waitFor(() => expect(proceed).toHaveBeenCalledTimes(1))
+    expect(sdk.startSession).not.toHaveBeenCalled()
   })
 
   it('keeps provider captions bounded in ephemeral component state', async () => {
