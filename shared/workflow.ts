@@ -1,8 +1,8 @@
 export const WORKFLOW_POU_IDS = [
+  'kaitiakitanga',
+  'tikanga',
   'whakapapa',
   'manaakitanga',
-  'tikanga',
-  'kaitiakitanga',
   'puukenga',
   'haepapa',
   'oranga',

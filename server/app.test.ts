@@ -31,7 +31,7 @@ import {
   WorkflowReadinessError,
   WorkflowTransitionError,
 } from './workflows/domain.js'
-import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
+import { WORKFLOW_POU_IDS, WORKFLOW_POU_NAMES, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
 import type { CompletedWorkflowListItem, WorkflowListItem } from './workflows/repository.js'
 import type { ConversationRecord } from './conversations/repository.js'
 import { UnresolvedSafetyCandidateError } from './safety-assessments/repository.js'
@@ -418,10 +418,10 @@ class FakeConversationService implements ConversationApplicationService {
     this.conversation = {
       id: '8e1fde30-c4b6-492a-8862-32200b2661a9', organisationId: actor.organisation.id, workflowSessionId, pouId, startedByUserId: actor.id,
       provider: 'elevenlabs', providerConversationId: 'provider-conversation-id', providerAgentReference: 'server-selected-agent', providerBranchReference: 'server-selected-branch', providerEnvironment: 'staging',
-      conversationSpecificationCode: 'whakapapa-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
+      conversationSpecificationCode: pouId === 'whakapapa' ? 'whakapapa-reflection' : 'te-waharoa-pou-reflection', conversationSpecificationVersion: 1, status: 'authorized', startIdempotencyKey: idempotencyKey, requestFingerprint: 'test',
       authorizedAt: new Date('2026-08-11T00:00:00.000Z'), connectedAt: null, endedAt: null, terminationReason: null, createdAt: new Date('2026-08-11T00:00:00.000Z'), updatedAt: new Date('2026-08-11T00:00:00.000Z'),
     }
-    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } }
+    return { kind: 'authorized' as const, conversation: this.conversation, conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: WORKFLOW_POU_NAMES[pouId], pou_opening: '', pou_guidance: 'Synthetic approved guidance' } }
   }
 
   async acknowledgeClientConnected(_actor: AuthenticatedUser, conversationId: string, providerConversationId: string) {
@@ -1008,7 +1008,7 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
-  it('authorizes a Whakapapa voice attempt behind Kaimahi, owner, and trusted-origin boundaries without changing workflow state', async () => {
+  it('authorizes the first Kaitiakitanga voice attempt behind Kaimahi, owner, and trusted-origin boundaries without changing workflow state', async () => {
     const repository = new MemoryRepository()
     const workflows = new MemoryWorkflowRepository()
     const conversations = new FakeConversationService()
@@ -1024,7 +1024,7 @@ describe('authenticated application shell API', () => {
     })
     const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
     const cookie = 'test_session=conversation-session'
-    const url = `/api/workflows/${created.workflow.id}/pou/whakapapa/conversations`
+    const url = `/api/workflows/${created.workflow.id}/pou/kaitiakitanga/conversations`
 
     expect((await app.inject({ method: 'POST', url, headers: { origin: 'http://web.test' }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(401)
     expect((await app.inject({ method: 'POST', url, headers: { cookie }, payload: { idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' } })).statusCode).toBe(403)
@@ -1039,11 +1039,11 @@ describe('authenticated application shell API', () => {
     expect(started.statusCode).toBe(201)
     expect(started.headers['cache-control']).toBe('no-store')
     expect(started.json()).toMatchObject({
-      conversation: { pouId: 'whakapapa', status: 'authorized', providerConversationId: 'provider-conversation-id' },
-      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Whakapapa', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } },
+      conversation: { pouId: 'kaitiakitanga', status: 'authorized', providerConversationId: 'provider-conversation-id' },
+      authorization: { transport: 'webrtc', conversationToken: 'temporary-conversation-token', dynamicVariables: { pou_name: 'Kaitiakitanga & Risk Management', pou_opening: '', pou_guidance: 'Synthetic approved guidance' } },
     })
     expect(JSON.stringify(started.json())).not.toContain('server-selected-agent')
-    expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'whakapapa', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])
+    expect(conversations.starts).toEqual([{ workflowSessionId: created.workflow.id, pouId: 'kaitiakitanga', idempotencyKey: 'aa60db66-3417-4a34-9b05-86fd9c5dd5ef' }])
 
     const conversationId = started.json<{ conversation: { id: string } }>().conversation.id
     const connected = await app.inject({
@@ -1051,7 +1051,7 @@ describe('authenticated application shell API', () => {
     })
     expect(connected.json()).toMatchObject({ conversation: { status: 'active' } })
     expect(connected.headers['cache-control']).toBe('no-store')
-    const current = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/pou/whakapapa/conversation`, headers: { cookie } })
+    const current = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/pou/kaitiakitanga/conversation`, headers: { cookie } })
     expect(current.json()).toMatchObject({ conversation: { status: 'active' } })
     expect(current.headers['cache-control']).toBe('no-store')
     expect(JSON.stringify(current.json())).not.toContain('temporary-conversation-token')
@@ -1060,7 +1060,7 @@ describe('authenticated application shell API', () => {
     })
     expect(ended.json()).toMatchObject({ conversation: { status: 'ended', terminationReason: 'user_ended' } })
     expect(ended.headers['cache-control']).toBe('no-store')
-    expect(await workflows.findById(activeKaimahi, created.workflow.id)).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2 })
+    expect(await workflows.findById(activeKaimahi, created.workflow.id)).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'kaitiakitanga', version: 2 })
     await app.close()
   })
 

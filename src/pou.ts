@@ -1,5 +1,19 @@
 export const TE_WAHAROA_POU = [
   {
+    id: 'kaitiakitanga',
+    reo: 'Kaitiakitanga',
+    en: 'Risk Management',
+    full: 'Kaitiakitanga & Risk Management',
+    domain: 'Risk assessment, safety planning, escalations, cultural safety',
+  },
+  {
+    id: 'tikanga',
+    reo: 'Tikanga',
+    en: 'Ethical Practice',
+    full: 'Tikanga & Ethical Practice',
+    domain: 'Consent, confidentiality, ethical decision-making, tikanga',
+  },
+  {
     id: 'whakapapa',
     reo: 'Whakapapa',
     en: 'Identity Safety',
@@ -12,20 +26,6 @@ export const TE_WAHAROA_POU = [
     en: 'Duty of Care',
     full: 'Manaakitanga & Duty of Care',
     domain: 'Respectful communication, responsiveness to distress, escalation',
-  },
-  {
-    id: 'tikanga',
-    reo: 'Tikanga',
-    en: 'Ethical Practice',
-    full: 'Tikanga & Ethical Practice',
-    domain: 'Consent, confidentiality, ethical decision-making, tikanga',
-  },
-  {
-    id: 'kaitiakitanga',
-    reo: 'Kaitiakitanga',
-    en: 'Risk Management',
-    full: 'Kaitiakitanga & Risk Management',
-    domain: 'Risk assessment, safety planning, escalations, cultural safety',
   },
   {
     id: 'puukenga',

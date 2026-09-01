@@ -646,8 +646,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         } else if (input.command.type === 'carry-forward-marked') {
           if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
           const isCurrentPou = workflow.currentPouId === input.command.pouId && (
-            (input.command.pouId === WORKFLOW_POU_IDS[0] && workflow.currentStage === 'pou-overview') ||
-            workflow.currentStage === 'pou-convo'
+            workflow.currentStage === 'pou-overview' || workflow.currentStage === 'pou-convo'
           )
           if (!isCurrentPou) throw new WorkflowTransitionError('Carry-forward items can be marked only during the current Pou review.')
           const [checkpoint] = await tx.select().from(schema.workflowPouCheckpoints).where(and(
@@ -721,14 +720,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           interactionType = 'setup_confirmed'
         } else if (input.command.type === 'pou-review-confirmed') {
           if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
-          const [checkpoint] = await tx
+          const confirmedPouId = input.command.pouId
+          const checkpoints = await tx
             .select()
             .from(schema.workflowPouCheckpoints)
-            .where(and(
-              eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
-              eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
-          ))
-          .limit(1)
+            .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
+            .orderBy(schema.workflowPouCheckpoints.ordinal)
+          const checkpoint = checkpoints.find((candidate) => candidate.pouId === confirmedPouId)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
           if (this.safetyAssessments) {
             await this.safetyAssessments.assertNoUnresolvedForPouConfirmation(
@@ -748,7 +746,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           const next = checkpointAfterPouReview({
             stage: workflow.currentStage as WorkflowStage,
             currentPouId: workflow.currentPouId as WorkflowPouId | null,
-          }, input.command.pouId, checkpoint.progress === 'confirmed')
+          }, input.command.pouId, checkpoint.progress === 'confirmed', checkpoints.map((candidate) => candidate.pouId as WorkflowPouId))
           await tx.update(schema.workflowPouCheckpoints).set({
             progress: 'confirmed',
             userSelectedConcern: null,

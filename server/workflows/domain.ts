@@ -38,8 +38,9 @@ export function checkpointAfterPouReview(
   checkpoint: WorkflowCheckpoint,
   pouId: WorkflowPouId,
   alreadyConfirmed: boolean,
+  pouSequence: readonly WorkflowPouId[] = WORKFLOW_POU_IDS,
 ): WorkflowCheckpoint {
-  const pouIndex = WORKFLOW_POU_IDS.indexOf(pouId)
+  const pouIndex = pouSequence.indexOf(pouId)
   if (pouIndex === -1) throw new WorkflowTransitionError('The Pou is not recognised.')
 
   if (alreadyConfirmed) return checkpoint
@@ -49,7 +50,7 @@ export function checkpointAfterPouReview(
     throw new WorkflowTransitionError()
   }
 
-  const nextPouId = WORKFLOW_POU_IDS[pouIndex + 1]
+  const nextPouId = pouSequence[pouIndex + 1]
   return nextPouId
     ? { stage: 'pou-convo', currentPouId: nextPouId }
     : { stage: 'pou-summary', currentPouId: null }

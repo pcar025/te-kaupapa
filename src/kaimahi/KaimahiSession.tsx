@@ -11,6 +11,7 @@ import type {
   SafetyObservationConcernLevel,
   WorkflowActionInput,
   WorkflowCarryForwardSource,
+  WorkflowPouId,
   WorkflowReferralInput,
   WorkflowStage,
 } from '../../shared/workflow'
@@ -777,7 +778,7 @@ function SetupStage({
 
 const POU_EXTENDED = [
   {
-    ...TE_WAHAROA_POU[0],
+    ...TE_WAHAROA_POU[2],
     discussed: 'Whakapapa information was documented appropriately. Cultural identity was discussed and whānau strengths were identified alongside distress. Protective cultural factors were named and held.',
     notCovered: 'Intergenerational context and extended whānau voice were not fully explored in this session.',
     protective: ['Whakapapa information documented appropriately', 'Whānau voice captured in notes', 'Cultural identity discussed'],
@@ -791,7 +792,7 @@ const POU_EXTENDED = [
     safetyFlags: ['Notes focused only on deficits', 'Minimal cultural information recorded', 'Whānau strengths absent'],
   },
   {
-    ...TE_WAHAROA_POU[1],
+    ...TE_WAHAROA_POU[3],
     discussed: 'Respectful communication was evident throughout. Whānau feedback on feeling heard was noted. Follow-up was completed appropriately and responsiveness to distress was documented.',
     notCovered: 'Boundary maintenance and emotional shifts in the room were not fully explored.',
     protective: ['Respectful communication evident', 'Whānau felt heard and safe', 'Follow-up completed appropriately'],
@@ -805,7 +806,7 @@ const POU_EXTENDED = [
     safetyFlags: ['Missed follow-ups', 'Abrupt or clinical-only language', 'Whānau disengagement after sessions'],
   },
   {
-    ...TE_WAHAROA_POU[2],
+    ...TE_WAHAROA_POU[1],
     discussed: 'Consent was completed properly. Confidentiality was explained and upheld. Ethical decision-making was documented with clear rationale. Tikanga considerations were included in planning.',
     notCovered: 'Appropriate consultation was not fully explored — some ethical tensions remain unaddressed.',
     protective: ['Consent completed properly', 'Confidentiality explained and upheld', 'Clear rationale documented'],
@@ -819,7 +820,7 @@ const POU_EXTENDED = [
     safetyFlags: ['Missing consent documentation', 'Practitioner acting outside scope', 'Lack of consultation during risk situations'],
   },
   {
-    ...TE_WAHAROA_POU[3],
+    ...TE_WAHAROA_POU[0],
     discussed: 'Risk assessment was completed. Safety plan was documented and updated. Escalations and referrals were recorded. Environmental and cultural safety were considered.',
     notCovered: 'Invisible risks and cultural safety interventions were not fully explored.',
     protective: ['Risk assessment completed', 'Safety plan documented or updated', 'Escalations and referrals recorded'],
@@ -874,7 +875,7 @@ const POU_EXTENDED = [
     ],
     safetyFlags: ['No strengths documented', 'Whānau becoming increasingly isolated', 'Goals not reviewed or updated'],
   },
-]
+].sort((left, right) => TE_WAHAROA_POU.findIndex((pou) => pou.id === left.id) - TE_WAHAROA_POU.findIndex((pou) => pou.id === right.id))
 
 // ─────────────────────────────────────────────────────────────────────────────
 // POU OVERVIEW — Safety Pou Journey entry
@@ -884,10 +885,15 @@ const POU_EXTENDED = [
 function PouOverviewStage({
   data,
   onNext,
+  journeyPouIds,
 }: {
   data: ActiveSessionData
   onNext: () => void
+  journeyPouIds: readonly WorkflowPouId[]
 }) {
+  const journeyPou = journeyPouIds
+    .map((pouId) => POU_EXTENDED.find((pou) => pou.id === pouId))
+    .filter((pou): pou is typeof POU_EXTENDED[number] => Boolean(pou))
   return (
     <div className="flex flex-col" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-8 pb-6">
@@ -914,13 +920,13 @@ function PouOverviewStage({
 
       {/* Six pou — architectural vertical list */}
       <div className="flex w-full mb-1" style={{ gap: 1 }}>
-        {POU_EXTENDED.map((_, i) => (
+        {journeyPou.map((_, i) => (
           <div key={i} className="flex-1" style={{ height: 5, backgroundColor: 'var(--color-ridge)', opacity: 0.12 + i * 0.14 }} />
         ))}
       </div>
 
       <div className="px-5 pt-3 pb-4 space-y-px">
-        {POU_EXTENDED.map((ext, i) => {
+        {journeyPou.map((ext, i) => {
           return (
             <div
               key={i}
@@ -982,7 +988,7 @@ function PouOverviewStage({
               Tīmata — begin with Pou 1 of 7
             </p>
             <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'rgba(255,255,255,0.5)', letterSpacing: '0.06em' }}>
-              {POU_EXTENDED[0].full.toUpperCase()} →
+              {journeyPou[0]?.full.toUpperCase()} →
             </p>
           </div>
         </button>
@@ -1785,6 +1791,7 @@ function PouConversationStage({
   onNext,
   onReflectionEnded,
   pouIdx,
+  journeyIdx,
   workflowId,
 }: {
   data: ActiveSessionData
@@ -1792,12 +1799,13 @@ function PouConversationStage({
   onNext: () => void
   onReflectionEnded: () => void
   pouIdx: number
+  journeyIdx: number
   workflowId: string
 }) {
   return (
-    <VoiceChunkBoundary onProceedToReview={onNext}>
+    <VoiceChunkBoundary onProceedToReview={onNext} pouNumber={journeyIdx + 1} pouName={TE_WAHAROA_POU[pouIdx]!.reo}>
       <Suspense fallback={<VoiceChunkLoading onProceedToReview={onNext} />}>
-        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onProceedToReview={onNext} onReflectionEnded={onReflectionEnded} />
+        <ElevenLabsConversation workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} pouNumber={journeyIdx + 1} onProceedToReview={onNext} onReflectionEnded={onReflectionEnded} />
       </Suspense>
     </VoiceChunkBoundary>
   )
@@ -2161,6 +2169,7 @@ export function WhakapapaNarrativeReview(props: {
 
 export function SinglePouReviewStage({
   pouIdx,
+  journeyPouIds,
   checkpoint,
   onConfirm,
   workflowId,
@@ -2173,6 +2182,7 @@ export function SinglePouReviewStage({
   onReload,
 }: {
   pouIdx: number
+  journeyPouIds?: readonly WorkflowPouId[]
   checkpoint?: WorkflowCheckpoint
   onConfirm: (review: {
     note?: string
@@ -2188,6 +2198,9 @@ export function SinglePouReviewStage({
   onReload: () => void
 }) {
   const ext = POU_EXTENDED[pouIdx]
+  const journey = journeyPouIds ?? TE_WAHAROA_POU.map((pou) => pou.id)
+  const journeyIdx = Math.max(0, journey.indexOf(ext?.id ?? 'kaitiakitanga'))
+  const nextPou = journey[journeyIdx + 1] ? POU_EXTENDED.find((pou) => pou.id === journey[journeyIdx + 1]) : undefined
   const [recordSafety, setRecordSafety] = useState(false)
   const [safetyClass, setSafetyClass] = useState<SafetyBroadClass | null>(null)
   const [safetyNote, setSafetyNote] = useState('')
@@ -2231,7 +2244,7 @@ export function SinglePouReviewStage({
                 width: 2,
                 height: i <= pouIdx ? 28 : 14,
                 backgroundColor: 'var(--color-ridge)',
-                opacity: i <= pouIdx ? 0.7 : 0.15,
+                opacity: i <= journeyIdx ? 0.7 : 0.15,
               }}
             />
           ))}
@@ -2240,7 +2253,7 @@ export function SinglePouReviewStage({
           {persistenceState === 'retrying' ? 'Retrying…' : 'Saving…'}
         </p>
         <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>
-          {pouIdx < 6 ? POU_EXTENDED[pouIdx + 1]?.full : 'Final Pou Summary'}
+          {nextPou?.full ?? 'Final Pou Summary'}
         </p>
       </div>
     )
@@ -2251,7 +2264,7 @@ export function SinglePouReviewStage({
       {/* Pou header */}
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
         <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>
-          Arotake — Pou {pouIdx + 1} o 7
+          Arotake — Pou {journeyIdx + 1} o 7
         </p>
         <h2 className="mb-1 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', fontWeight: 500, color: 'var(--color-ink)' }}>
           {ext.full}
@@ -2301,7 +2314,7 @@ export function SinglePouReviewStage({
           style={{ backgroundColor: 'var(--color-ridge)', padding: '1.125rem 1.25rem' }}
         >
           <p className="text-sm font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'white', letterSpacing: '0.06em' }}>
-            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : hasReviewableCandidate ? 'Resolve formal safety review before confirming' : pouIdx < 6 ? `Whakaū — Confirm & continue to Pou ${pouIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
+            {hasUnsavedReviewDraftChanges ? 'Save review changes before confirming' : !reviewDraftLoaded ? 'Loading reflection review…' : hasReviewableCandidate ? 'Resolve formal safety review before confirming' : nextPou ? `Whakaū — Confirm & continue to Pou ${journeyIdx + 2}` : 'Whakaū — Confirm & review all seven Pou'}
           </p>
         </button>
         <PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} />
@@ -6149,6 +6162,17 @@ function workflowToSessionData(workflow: Workflow): ActiveSessionData {
   }
 }
 
+function journeyPouIdsForWorkflow(workflow: Workflow): WorkflowPouId[] {
+  const persisted = [...workflow.checkpoints]
+    .sort((left, right) => left.ordinal - right.ordinal)
+    .map((checkpoint) => checkpoint.pouId)
+  return persisted.length > 0 ? persisted : TE_WAHAROA_POU.map((pou) => pou.id)
+}
+
+function pouIndexForId(pouId: WorkflowPouId | null | undefined): number {
+  return Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === pouId))
+}
+
 export function SessionShell({
   onDone,
   displayName,
@@ -6160,7 +6184,8 @@ export function SessionShell({
   workflow: Workflow
   onWorkflowChange: (workflow: Workflow) => void
 }) {
-  const initialPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
+  const journeyPouIds = journeyPouIdsForWorkflow(workflow)
+  const initialPouIdx = pouIndexForId(workflow.currentPouId)
   const [stage, setStage] = useState<SessionStageKey>(sessionStageForWorkflow(workflow.currentStage))
   const [currentPouIdx, setCurrentPouIdx] = useState(initialPouIdx)
   const [data, setData] = useState<ActiveSessionData>(() => workflowToSessionData(workflow))
@@ -6169,11 +6194,13 @@ export function SessionShell({
   const retrySubmission = useRef<(() => Promise<void>) | null>(null)
   const pendingSafetyRetry = useRef<(() => Promise<void>) | null>(null)
   const preserveNextWorkflowStage = useRef(false)
+  const currentPouId = TE_WAHAROA_POU[currentPouIdx]?.id
+  const currentJourneyIdx = Math.max(0, journeyPouIds.indexOf(currentPouId ?? journeyPouIds[0]!))
 
   const patch = (update: Partial<ActiveSessionData>) => setData((p) => ({ ...p, ...update }))
 
   useEffect(() => {
-    const nextPouIdx = Math.max(0, TE_WAHAROA_POU.findIndex((pou) => pou.id === workflow.currentPouId))
+    const nextPouIdx = pouIndexForId(workflow.currentPouId)
     const preserveLocalStage = preserveNextWorkflowStage.current
     const hasCurrentPouCarryForward = workflow.currentPouId !== null && (workflow.carryForwards ?? []).some((item) => item.pouId === workflow.currentPouId)
     preserveNextWorkflowStage.current = false
@@ -6491,12 +6518,13 @@ export function SessionShell({
   const advance = () => {
     setPersistenceState('idle')
     if (stage === 'setup') { return }
-    if (stage === 'pou-overview') { setCurrentPouIdx(0); setStage('pou-convo'); return }
+    if (stage === 'pou-overview') { setCurrentPouIdx(pouIndexForId(workflow.currentPouId ?? journeyPouIds[0])); setStage('pou-convo'); return }
     if (stage === 'pou-convo') { setStage('pou-review'); return }
     if (stage === 'pou-processing') { return }
     if (stage === 'pou-review') {
-      if (currentPouIdx < 6) {
-        setCurrentPouIdx((i) => i + 1)
+      const nextPouId = journeyPouIds[currentJourneyIdx + 1]
+      if (nextPouId) {
+        setCurrentPouIdx(pouIndexForId(nextPouId))
         setStage('pou-convo')
       } else {
         setStage('pou-summary')
@@ -6509,11 +6537,11 @@ export function SessionShell({
   const back = () => {
     if (stage === 'setup') { onDone(); return }
     if (stage === 'pou-overview') { setStage('setup'); return }
-    if (stage === 'pou-convo' && currentPouIdx === 0) { setStage('pou-overview'); return }
-    if (stage === 'pou-convo') { setCurrentPouIdx((i) => i - 1); setStage('pou-review'); return }
+    if (stage === 'pou-convo' && currentJourneyIdx === 0) { setStage('pou-overview'); return }
+    if (stage === 'pou-convo') { setCurrentPouIdx(pouIndexForId(journeyPouIds[currentJourneyIdx - 1])); setStage('pou-review'); return }
     if (stage === 'pou-processing') { setStage('pou-convo'); return }
     if (stage === 'pou-review') { setStage('pou-convo'); return }
-    if (stage === 'pou-summary') { setCurrentPouIdx(6); setStage('pou-review'); return }
+    if (stage === 'pou-summary') { setCurrentPouIdx(pouIndexForId(journeyPouIds.at(-1))); setStage('pou-review'); return }
     const linear: SessionStageKey[] = ['risks', 'referrals', 'synthesis', 'record']
     const li = linear.indexOf(stage)
     if (li === 0) { setStage('pou-summary'); return }
@@ -6543,18 +6571,18 @@ export function SessionShell({
         sessionRef={data.ref}
         whanauCode={data.whanauCode}
         onBack={back}
-        pouIdx={currentPouIdx}
+        pouIdx={currentJourneyIdx}
         pouReo={pouReo}
       />
       <div className="flex-1 overflow-y-auto">
         <PendingSafetySaveNotice pending={pendingSafetySave} state={persistenceState} onRetry={retryPendingSafetySave} onReview={reviewPendingSafetySave} />
         {stage === 'setup'        && <SetupStage data={data} onChange={patch} onConfirm={confirmSetup} displayName={displayName} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} />}
+        {stage === 'pou-overview' && <PouOverviewStage data={data} onNext={advance} journeyPouIds={journeyPouIds} />}
         {stage === 'pou-overview' && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
-        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} workflowId={workflow.id} />}
+        {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} journeyIdx={currentJourneyIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
         {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

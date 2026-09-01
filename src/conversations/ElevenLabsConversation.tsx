@@ -54,12 +54,14 @@ function releaseTracks(stream: MediaStream | null): void {
 function VoiceController({
   workflowId,
   pouId,
+  pouNumber,
   onProceedToReview,
   onReflectionEnded,
   registerProviderCallbacks,
 }: {
   workflowId: string
   pouId: WorkflowPouId
+  pouNumber?: number
   onProceedToReview: () => void
   onReflectionEnded: () => void
   registerProviderCallbacks: (callbacks: ProviderCallbacks) => void
@@ -300,7 +302,7 @@ function VoiceController({
   return (
     <div className="flex flex-col" style={{ minHeight: '82vh', fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-9 pb-7">
-        <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou {TE_WAHAROA_POU.findIndex((pou) => pou.id === pouId) + 1} o 7 — Kōrero</p>
+        <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou {pouNumber ?? TE_WAHAROA_POU.findIndex((pou) => pou.id === pouId) + 1} o 7 — Kōrero</p>
         <h2 className="mb-3 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 500, color: 'var(--color-ink)' }}>{TE_WAHAROA_POU.find((pou) => pou.id === pouId)?.reo}</h2>
         <p className="text-sm italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>A focused voice reflection for this Pou. The existing Pou review remains the place to record what you choose to confirm.</p>
       </div>
@@ -356,7 +358,7 @@ function VoiceController({
   )
 }
 
-export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa', onProceedToReview, onReflectionEnded = onProceedToReview }: { workflowId: string; pouId?: WorkflowPouId; onProceedToReview: () => void; onReflectionEnded?: () => void }) {
+export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa', pouNumber, onProceedToReview, onReflectionEnded = onProceedToReview }: { workflowId: string; pouId?: WorkflowPouId; pouNumber?: number; onProceedToReview: () => void; onReflectionEnded?: () => void }) {
   const callbacks = useRef<ProviderCallbacks>({})
   return (
     <ConversationProvider
@@ -365,7 +367,7 @@ export default function ElevenLabsConversation({ workflowId, pouId = 'whakapapa'
       onError={() => callbacks.current.onError?.()}
       onMessage={({ message, role }) => callbacks.current.onMessage?.(message, role)}
     >
-      <VoiceController workflowId={workflowId} pouId={pouId} onProceedToReview={onProceedToReview} onReflectionEnded={onReflectionEnded} registerProviderCallbacks={(next) => { callbacks.current = next }} />
+      <VoiceController workflowId={workflowId} pouId={pouId} pouNumber={pouNumber} onProceedToReview={onProceedToReview} onReflectionEnded={onReflectionEnded} registerProviderCallbacks={(next) => { callbacks.current = next }} />
     </ConversationProvider>
   )
 }

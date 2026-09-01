@@ -32,7 +32,7 @@ export interface ConversationWorkflowState {
   status: 'draft' | 'in_progress' | 'completed' | 'abandoned'
   currentStage: WorkflowStage
   currentPouId: WorkflowPouId | null
-  checkpoints: Array<{ pouId: WorkflowPouId; progress: 'not_started' | 'confirmed' }>
+  checkpoints: Array<{ pouId: WorkflowPouId; ordinal: number; progress: 'not_started' | 'confirmed' }>
 }
 
 export class ConversationEligibilityError extends Error {
@@ -43,14 +43,19 @@ export class ConversationEligibilityError extends Error {
 }
 
 /**
- * The first Pou is authoritative at `pou-overview`; every following Pou is
- * authoritative at `pou-convo` after the previous explicit confirmation.
+ * The workflow's persisted first Pou is authoritative at `pou-overview`; every
+ * following Pou is authoritative at `pou-convo` after the previous explicit
+ * confirmation. Ordinal is retained with each workflow so historic journeys
+ * continue in their original semantic order after a future journey reorder.
  * Conversation-start eligibility must use the same stage boundary as normal
  * Pou confirmation, rather than retaining the Phase 5A Whakapapa-only stage.
  */
 export function assertConversationEligibility(workflow: ConversationWorkflowState, pouId: WorkflowPouId): void {
   if (!['draft', 'in_progress'].includes(workflow.status)) throw new ConversationEligibilityError()
-  const expectedStage: WorkflowStage = pouId === 'whakapapa' ? 'pou-overview' : 'pou-convo'
+  const firstCheckpoint = workflow.checkpoints.reduce<{ pouId: WorkflowPouId; ordinal: number } | null>((first, checkpoint) => (
+    first === null || checkpoint.ordinal < first.ordinal ? checkpoint : first
+  ), null)
+  const expectedStage: WorkflowStage = pouId === firstCheckpoint?.pouId ? 'pou-overview' : 'pou-convo'
   if (workflow.currentStage !== expectedStage || workflow.currentPouId !== pouId) {
     throw new ConversationEligibilityError()
   }

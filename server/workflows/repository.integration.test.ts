@@ -106,7 +106,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
         },
       })
-      expect(setup).toMatchObject({ replayed: false, workflow: { version: 2, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
+      expect(setup).toMatchObject({ replayed: false, workflow: { version: 2, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'kaitiakitanga' } })
       expect(setup.workflow.setup?.whanauReference).toBe('TW-04')
       expect(setup.workflow.readiness).toEqual({ verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true })
 
@@ -124,7 +124,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
         },
       })
-      expect(revisedSetup).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
+      expect(revisedSetup).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-overview', currentPouId: 'kaitiakitanga' } })
 
       await expect(repository.submitCommand({
         actor,
@@ -133,7 +133,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           type: 'pou-review-confirmed',
           idempotencyKey: randomUUID(),
           expectedVersion: 1,
-          pouId: 'whakapapa',
+          pouId: 'kaitiakitanga',
           note: 'A confirmed human observation.',
         },
       })).rejects.toThrow(StaleWorkflowError)
@@ -146,11 +146,11 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
           expectedVersion: 3,
-          pouId: 'whakapapa',
+          pouId: 'kaitiakitanga',
           note: 'A confirmed human observation.',
         },
       })
-      expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'manaakitanga' } })
+      expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'tikanga' } })
       expect(pou.workflow.checkpoints[0]).toMatchObject({
         progress: 'confirmed',
         // Ordinary narrative confirmation no longer carries concern or
@@ -174,10 +174,10 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       expect(independent.workflow.checkpoints.every((checkpoint) => checkpoint.progress === 'not_started')).toBe(true)
       const preserved = await repository.findById(actor, workflowId)
       expect(preserved).toMatchObject({
-        id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4,
+        id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'tikanga', version: 4,
         readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
       })
-      expect(preserved?.checkpoints.find((checkpoint) => checkpoint.pouId === 'whakapapa')).toMatchObject({ progress: 'confirmed' })
+      expect(preserved?.checkpoints.find((checkpoint) => checkpoint.pouId === 'kaitiakitanga')).toMatchObject({ progress: 'confirmed' })
       expect((await repository.listResumable(actor)).map((workflow) => workflow.id)).toEqual(expect.arrayContaining([workflowId, independentWorkflowId]))
 
       const foreignActor: AuthenticatedUser = {
@@ -198,7 +198,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
           expectedVersion: 3,
-          pouId: 'whakapapa',
+          pouId: 'kaitiakitanga',
           note: 'A confirmed human observation.',
         },
       })
@@ -210,7 +210,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
           expectedVersion: 4,
-          pouId: 'whakapapa',
+          pouId: 'kaitiakitanga',
           note: 'Changed request using the same key.',
         },
       })).rejects.toThrow(IdempotencyKeyReuseError)
@@ -261,6 +261,67 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
     })
   })
 
+  it('continues an in-progress historic workflow using its persisted Pou ordinals', async () => {
+    const organisationId = randomUUID()
+    const userId = randomUUID()
+    const workflowId = randomUUID()
+    const actor: AuthenticatedUser = {
+      id: userId,
+      displayName: 'Historic journey Kaimahi',
+      status: 'active',
+      organisation: { id: organisationId, slug: `historic-${organisationId}`, name: 'Historic journey organisation' },
+      roles: ['KAIMAHI'],
+    }
+    const historicPouOrder = ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const
+    const timestamp = new Date('2026-08-10T00:00:00.000Z')
+
+    await withMigratedTestDatabase(async (connection) => {
+      await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
+      await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
+      await connection.db.insert(workflowSessions).values({
+        id: workflowId, organisationId, kaimahiUserId: userId, reference: 'TK-HISTORIC',
+        status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3,
+        setupConfirmedAt: timestamp, createdAt: timestamp, updatedAt: timestamp,
+      })
+      await connection.db.insert(workflowPouCheckpoints).values(historicPouOrder.map((pouId, index) => ({
+        workflowSessionId: workflowId,
+        organisationId,
+        pouId,
+        ordinal: index + 1,
+        progress: index === 0 ? 'confirmed' as const : 'not_started' as const,
+        confirmedByUserId: index === 0 ? userId : null,
+        confirmedAt: index === 0 ? timestamp : null,
+        updatedAt: timestamp,
+      })))
+
+      const repository = new PostgresWorkflowRepository(connection.db, () => timestamp)
+      expect(await repository.findById(actor, workflowId)).toMatchObject({
+        currentStage: 'pou-convo', currentPouId: 'manaakitanga',
+        checkpoints: expect.arrayContaining([
+          expect.objectContaining({ pouId: 'whakapapa', ordinal: 1, progress: 'confirmed' }),
+          expect.objectContaining({ pouId: 'manaakitanga', ordinal: 2, progress: 'not_started' }),
+        ]),
+      })
+
+      const advanced = await repository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'manaakitanga' },
+      })
+      expect(advanced.workflow).toMatchObject({ currentStage: 'pou-convo', currentPouId: 'tikanga', version: 4 })
+      expect(advanced.workflow.checkpoints).toEqual(expect.arrayContaining([
+        expect.objectContaining({ pouId: 'whakapapa', ordinal: 1, progress: 'confirmed' }),
+        expect.objectContaining({ pouId: 'manaakitanga', ordinal: 2, progress: 'confirmed' }),
+      ]))
+    }, async (connection) => {
+      await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
+      await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
+      await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))
+      await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
+      await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
+    })
+  })
+
   it('persists the complete manual downstream plan, preserves withdrawals, and freezes it on completion', async () => {
     const organisationId = randomUUID()
     const userId = randomUUID()
@@ -293,7 +354,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       })
       version = setup.workflow.version
       let workflow = setup.workflow
-      for (const pouId of ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
+      for (const pouId of ['kaitiakitanga', 'tikanga', 'whakapapa', 'manaakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
         const result = await repository.submitCommand({
           actor,
           workflowSessionId: workflowId,
@@ -702,7 +763,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       })
       const pou = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'whakapapa' },
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'kaitiakitanga' },
       })
       expect(pou.workflow.safety).toMatchObject({ observations: [], requiredConsequences: [], indicators: { activeObservationCount: 0, supervisorReviewRequired: false } })
       expect(await connection.db.select().from(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, workflowId))).toHaveLength(0)

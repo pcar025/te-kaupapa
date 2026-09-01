@@ -13,7 +13,7 @@ export function VoiceChunkLoading({ onProceedToReview }: { onProceedToReview: ()
   )
 }
 
-export class VoiceChunkBoundary extends Component<{ children: ReactNode; onProceedToReview: () => void }, { failed: boolean }> {
+export class VoiceChunkBoundary extends Component<{ children: ReactNode; onProceedToReview: () => void; pouNumber?: number; pouName?: string }, { failed: boolean }> {
   state = { failed: false }
 
   static getDerivedStateFromError(): { failed: true } {
@@ -30,8 +30,8 @@ export class VoiceChunkBoundary extends Component<{ children: ReactNode; onProce
     return (
       <div className="flex flex-col" style={{ minHeight: '82vh', fontFamily: 'var(--font-body)' }} role="alert">
         <div className="px-6 pt-9 pb-7">
-          <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou 1 o 7 — Kōrero</p>
-          <h2 className="mb-3 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 500, color: 'var(--color-ink)' }}>Whakapapa</h2>
+          <p className="text-xs tracking-widest uppercase mb-5" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Pou {this.props.pouNumber ?? 1} o 7 — Kōrero</p>
+          <h2 className="mb-3 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.5rem', fontWeight: 500, color: 'var(--color-ink)' }}>{this.props.pouName ?? 'Whakapapa'}</h2>
           <p className="text-sm italic leading-relaxed" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Voice reflection could not be loaded. No conversation was started.</p>
         </div>
         <div className="mx-6" style={{ height: 1, backgroundColor: 'var(--color-border)' }} />

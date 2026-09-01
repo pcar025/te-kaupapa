@@ -32,12 +32,12 @@ describe('workflow checkpoints', () => {
 
   it('starts as a draft setup checkpoint and enters the first Pou after setup', () => {
     expect(initialWorkflowCheckpoint()).toEqual({ stage: 'setup', currentPouId: null })
-    expect(checkpointAfterSetup()).toEqual({ stage: 'pou-overview', currentPouId: 'whakapapa' })
+    expect(checkpointAfterSetup()).toEqual({ stage: 'pou-overview', currentPouId: 'kaitiakitanga' })
   })
 
   it('advances through all seven Pou and stops at the approved pou-summary boundary', () => {
     let checkpoint = checkpointAfterSetup()
-    const pou = ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const
+    const pou = ['kaitiakitanga', 'tikanga', 'whakapapa', 'manaakitanga', 'puukenga', 'haepapa', 'oranga'] as const
 
     for (const pouId of pou) checkpoint = checkpointAfterPouReview(checkpoint, pouId, false)
 
@@ -45,13 +45,18 @@ describe('workflow checkpoints', () => {
   })
 
   it('allows a prior acknowledged Pou to be revised without moving the resume checkpoint', () => {
-    const checkpoint = { stage: 'pou-convo' as const, currentPouId: 'manaakitanga' as const }
+    const checkpoint = { stage: 'pou-convo' as const, currentPouId: 'tikanga' as const }
     expect(checkpointAfterPouReview(checkpoint, 'whakapapa', true)).toEqual(checkpoint)
   })
 
   it('rejects skipped or out-of-order Pou confirmation', () => {
-    expect(() => checkpointAfterPouReview(checkpointAfterSetup(), 'manaakitanga', false)).toThrow(WorkflowTransitionError)
-    expect(() => checkpointAfterPouReview(initialWorkflowCheckpoint(), 'whakapapa', false)).toThrow(WorkflowTransitionError)
+    expect(() => checkpointAfterPouReview(checkpointAfterSetup(), 'tikanga', false)).toThrow(WorkflowTransitionError)
+    expect(() => checkpointAfterPouReview(initialWorkflowCheckpoint(), 'kaitiakitanga', false)).toThrow(WorkflowTransitionError)
+  })
+
+  it('continues a historic workflow through its persisted semantic order', () => {
+    const historic = ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'] as const
+    expect(checkpointAfterPouReview({ stage: 'pou-convo', currentPouId: 'manaakitanga' }, 'manaakitanga', false, historic)).toEqual({ stage: 'pou-convo', currentPouId: 'tikanga' })
   })
 
   it('advances through the approved downstream review and completion checkpoints', () => {

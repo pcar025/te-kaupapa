@@ -131,7 +131,6 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       expect(safetyPin.projection.rules).toEqual([])
       await expect(new PostgresOrganisationPouSpecificationRepository(connection.db).resolveActivePin(actor.organisation.id, 'manaakitanga', safetyPin)).resolves.toMatchObject({ specification: { pouId: 'manaakitanga' } })
 
-      await connection.db.insert(schema.workflowPouCheckpoints).values({ workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'manaakitanga', ordinal: 2 })
       const conversationId = randomUUID()
       const providerConversationId = `provider-${randomUUID()}`
       await connection.db.insert(schema.workflowConversations).values({
