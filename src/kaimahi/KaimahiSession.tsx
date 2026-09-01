@@ -234,7 +234,7 @@ function SetupStage({
 }: {
   data: ActiveSessionData
   onChange: (p: Partial<ActiveSessionData>) => void
-  onConfirm: (immediateConcern: Exclude<ImmediateConcern, null>, safetyDraft?: SafetyDraft) => void
+  onConfirm: (immediateConcern: Exclude<ImmediateConcern, null>, readiness: Workflow['readiness'], safetyDraft?: SafetyDraft) => void
   displayName: string
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
@@ -244,11 +244,25 @@ function SetupStage({
   const [recordSafety, setRecordSafety] = useState(false)
   const [safetyClass, setSafetyClass] = useState<SafetyBroadClass | null>(null)
   const [safetyNote, setSafetyNote] = useState(data.notes)
+  const [readiness, setReadiness] = useState<Workflow['readiness']>({
+    verbalConsentConfirmed: false,
+    writtenConsentConfirmed: false,
+    initialRiskAssessmentCompleted: false,
+  })
+
+  const readinessRequirements: Array<{ key: keyof Workflow['readiness']; label: string }> = [
+    { key: 'verbalConsentConfirmed', label: 'Verbal consent has been obtained.' },
+    { key: 'writtenConsentConfirmed', label: 'Written consent has been obtained and filed.' },
+    { key: 'initialRiskAssessmentCompleted', label: 'The initial risk assessment has been completed.' },
+  ]
+  const incompleteReadiness = readinessRequirements.filter(({ key }) => !readiness[key])
+  const readinessComplete = incompleteReadiness.length === 0
 
   const canEnter =
     data.whanauCode.trim().length >= 2 &&
     data.sessionFocus.trim().length >= 3 &&
     immediateConcern !== null &&
+    readinessComplete &&
     (!recordSafety || safetyClass !== null)
 
   const types: { id: EngagementType; label: string; reo: string; sub: string }[] = [
@@ -333,6 +347,46 @@ function SetupStage({
 
       {/* ── The held spaces — each field is a room in the entrance ── */}
       <div className="px-5 pt-6 pb-4 space-y-6">
+
+        <section aria-labelledby="readiness-heading">
+          <div className="mb-3">
+            <SectionLabel>Before you begin</SectionLabel>
+            <h3 id="readiness-heading" className="mt-2 text-base leading-snug" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>
+              Confirm the required practice steps
+            </h3>
+            <p className="text-xs italic leading-relaxed mt-1.5" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>
+              Te Kaupapa records your confirmation. It does not verify these steps.
+            </p>
+          </div>
+          <div className="space-y-px">
+            {readinessRequirements.map(({ key, label }) => {
+              const confirmed = readiness[key]
+              return (
+                <label
+                  key={key}
+                  className="flex items-start gap-3 px-4 py-3.5 min-h-[64px] cursor-pointer"
+                  style={{ backgroundColor: confirmed ? 'var(--color-growth-light)' : 'var(--color-surface)', borderLeft: `3px solid ${confirmed ? 'var(--color-growth)' : 'var(--color-border)'}` }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={confirmed}
+                    onChange={(event) => setReadiness((current) => ({ ...current, [key]: event.target.checked }))}
+                    className="sr-only"
+                  />
+                  <span aria-hidden="true" className="flex-shrink-0 flex items-center justify-center mt-0.5" style={{ width: 18, height: 18, border: `2px solid ${confirmed ? 'var(--color-growth)' : 'var(--color-border-strong)'}`, backgroundColor: confirmed ? 'var(--color-growth)' : 'transparent' }}>
+                    {confirmed && <span style={{ width: 6, height: 6, backgroundColor: 'white' }} />}
+                  </span>
+                  <span className="text-sm leading-snug" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{label}</span>
+                </label>
+              )
+            })}
+          </div>
+          {!readinessComplete && (
+            <p className="text-xs italic leading-relaxed mt-3" aria-live="polite" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-muted)' }}>
+              Complete these requirements before continuing: {incompleteReadiness.map(({ label }) => label.replace('.', '')).join('; ')}.
+            </p>
+          )}
+        </section>
 
         {/* Session reference — auto-generated, anchors the session */}
         <div
@@ -662,7 +716,7 @@ function SetupStage({
       {/* ── Enter — the crossing ── */}
       <div className="px-5 pt-4 pb-8">
         <button
-          onClick={() => immediateConcern && onConfirm(immediateConcern, recordSafety && safetyClass ? {
+          onClick={() => immediateConcern && onConfirm(immediateConcern, readiness, recordSafety && safetyClass ? {
             assessmentContext: 'setup',
             broadClass: safetyClass,
             concernLevel: immediateConcern === 'urgent' ? 'urgent' : 'unsure',
@@ -6339,7 +6393,7 @@ export function SessionShell({
     void attempt()
   }
 
-  const confirmSetup = (immediateConcern: Exclude<ImmediateConcern, null>, safetyDraft?: SafetyDraft) => {
+  const confirmSetup = (immediateConcern: Exclude<ImmediateConcern, null>, readiness: Workflow['readiness'], safetyDraft?: SafetyDraft) => {
     const command = {
       type: 'setup-confirmed' as const,
       idempotencyKey: crypto.randomUUID(),
@@ -6349,6 +6403,7 @@ export function SessionShell({
       sessionFocus: data.sessionFocus,
       additionalNotes: data.notes || undefined,
       immediateConcern,
+      readiness,
     }
     const attempt = async (retrying = false) => {
       setPersistenceState(retrying ? 'retrying' : 'saving')

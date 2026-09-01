@@ -28,7 +28,7 @@ import {
   StaleWorkflowError,
   StaleSafetyObservationError,
 } from './repository.js'
-import { WorkflowTransitionError } from './domain.js'
+import { WorkflowReadinessError, WorkflowTransitionError } from './domain.js'
 import { SAFETY_RULE_CODE, SAFETY_RULE_VERSION } from '../safety/domain.js'
 
 const INTERACTION_GATE_LOCK_ID = 724188219
@@ -74,10 +74,22 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       const created = await repository.createDraft({ actor, idempotencyKey: createKey })
       workflowId = created.workflow.id
       expect(created).toMatchObject({ replayed: false, workflow: { reference: 'TK-7K4M2P9Q', status: 'draft', version: 1 } })
+      expect(created.workflow.readiness).toEqual({ verbalConsentConfirmed: false, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: false })
       expect(created.workflow.checkpoints).toHaveLength(7)
 
       const replayedCreate = await repository.createDraft({ actor, idempotencyKey: createKey })
       expect(replayedCreate).toMatchObject({ replayed: true, interactionId: created.interactionId, workflow: { id: workflowId, version: 1 } })
+
+      await expect(repository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1,
+          whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none',
+          readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: true },
+        },
+      })).rejects.toThrow(WorkflowReadinessError)
+      expect(await repository.findById(actor, workflowId)).toMatchObject({ status: 'draft', currentStage: 'setup', version: 1, readiness: { verbalConsentConfirmed: false, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: false } })
 
       const setup = await repository.submitCommand({
         actor,
@@ -91,10 +103,12 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           sessionFocus: 'Whānau support discussion',
           additionalNotes: 'A short acknowledged note.',
           immediateConcern: 'none',
+          readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
         },
       })
       expect(setup).toMatchObject({ replayed: false, workflow: { version: 2, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
       expect(setup.workflow.setup?.whanauReference).toBe('TW-04')
+      expect(setup.workflow.readiness).toEqual({ verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true })
 
       const revisedSetup = await repository.submitCommand({
         actor,
@@ -107,6 +121,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           engagementType: 'home-visit',
           sessionFocus: 'Updated whānau support discussion',
           immediateConcern: 'none',
+          readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
         },
       })
       expect(revisedSetup).toMatchObject({ replayed: false, workflow: { version: 3, currentStage: 'pou-overview', currentPouId: 'whakapapa' } })
@@ -158,7 +173,10 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       expect(independent.workflow.checkpoints).toHaveLength(7)
       expect(independent.workflow.checkpoints.every((checkpoint) => checkpoint.progress === 'not_started')).toBe(true)
       const preserved = await repository.findById(actor, workflowId)
-      expect(preserved).toMatchObject({ id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4 })
+      expect(preserved).toMatchObject({
+        id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 4,
+        readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
+      })
       expect(preserved?.checkpoints.find((checkpoint) => checkpoint.pouId === 'whakapapa')).toMatchObject({ progress: 'confirmed' })
       expect((await repository.listResumable(actor)).map((workflow) => workflow.id)).toEqual(expect.arrayContaining([workflowId, independentWorkflowId]))
 
@@ -211,6 +229,38 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
     })
   })
 
+  it('keeps a completed workflow created before this gate readable without inferring readiness confirmations', async () => {
+    const organisationId = randomUUID()
+    const userId = randomUUID()
+    const workflowId = randomUUID()
+    const actor: AuthenticatedUser = {
+      id: userId,
+      displayName: 'Legacy workflow Kaimahi',
+      status: 'active',
+      organisation: { id: organisationId, slug: `legacy-${organisationId}`, name: 'Legacy workflow organisation' },
+      roles: ['KAIMAHI'],
+    }
+    await withMigratedTestDatabase(async (connection) => {
+      const timestamp = new Date('2026-08-10T00:00:00.000Z')
+      await connection.db.insert(organisations).values({ id: organisationId, slug: actor.organisation.slug, name: actor.organisation.name })
+      await connection.db.insert(appUsers).values({ id: userId, organisationId, email: `${userId}@example.invalid`, displayName: actor.displayName })
+      await connection.db.insert(workflowSessions).values({
+        id: workflowId, organisationId, kaimahiUserId: userId, reference: 'TK-LEGACY',
+        status: 'completed', currentStage: 'complete', version: 9,
+        setupConfirmedAt: timestamp, completedAt: timestamp, completedByUserId: userId,
+        createdAt: timestamp, updatedAt: timestamp,
+      })
+
+      const workflow = await new PostgresWorkflowRepository(connection.db).findById(actor, workflowId)
+      expect(workflow).toMatchObject({ id: workflowId, status: 'completed', currentStage: 'complete', version: 9 })
+      expect(workflow?.readiness).toEqual({ verbalConsentConfirmed: false, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: false })
+    }, async (connection) => {
+      await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))
+      await connection.db.delete(appUsers).where(eq(appUsers.id, userId))
+      await connection.db.delete(organisations).where(eq(organisations.id, organisationId))
+    })
+  })
+
   it('persists the complete manual downstream plan, preserves withdrawals, and freezes it on completion', async () => {
     const organisationId = randomUUID()
     const userId = randomUUID()
@@ -238,7 +288,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         workflowSessionId: workflowId,
         command: {
           type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: version,
-          whanauReference: 'TW-41', engagementType: 'hui', sessionFocus: 'Kaimahi-confirmed workflow completion', immediateConcern: 'none',
+          whanauReference: 'TW-41', engagementType: 'hui', sessionFocus: 'Kaimahi-confirmed workflow completion', immediateConcern: 'none', readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
         },
       })
       version = setup.workflow.version
@@ -648,7 +698,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
 
       const setup = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1, whanauReference: 'Legacy-1', engagementType: 'hui', sessionFocus: 'Legacy fields remain non-authoritative.', immediateConcern: 'urgent' },
+        command: { type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1, whanauReference: 'Legacy-1', engagementType: 'hui', sessionFocus: 'Legacy fields remain non-authoritative.', immediateConcern: 'urgent', readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true } },
       })
       const pou = await repository.submitCommand({
         actor, workflowSessionId: workflowId,

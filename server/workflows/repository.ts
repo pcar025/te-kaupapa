@@ -14,6 +14,7 @@ import {
   type WorkflowInteractionType,
   type WorkflowPouConcern,
   type WorkflowPouId,
+  type WorkflowReadiness,
   type WorkflowReferralInput,
   type WorkflowReferralStatus,
   type SafetyBroadClass,
@@ -33,6 +34,7 @@ import {
   checkpointAfterReferralPlan,
   checkpointAfterSetup,
   checkpointAfterStructuredReview,
+  assertPreReflectionReadiness,
   WorkflowTransitionError,
 } from './domain.js'
 import {
@@ -218,6 +220,7 @@ export interface WorkflowView {
     additionalNotes: string | null
     immediateConcern: WorkflowImmediateConcern
   } | null
+  readiness: WorkflowReadiness
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
@@ -695,6 +698,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           const isInitialSetup = workflow.status === 'draft' && workflow.currentStage === 'setup'
           const isSetupRevision = workflow.status === 'in_progress' && workflow.currentStage === 'pou-overview'
           if (!isInitialSetup && !isSetupRevision) throw new WorkflowTransitionError()
+          assertPreReflectionReadiness(input.command.readiness)
           const checkpoint = isInitialSetup
             ? checkpointAfterSetup()
             : { stage: workflow.currentStage, currentPouId: workflow.currentPouId }
@@ -704,6 +708,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             sessionFocus: input.command.sessionFocus,
             additionalNotes: input.command.additionalNotes || null,
             immediateConcern: input.command.immediateConcern,
+            verbalConsentConfirmed: input.command.readiness.verbalConsentConfirmed,
+            writtenConsentConfirmed: input.command.readiness.writtenConsentConfirmed,
+            initialRiskAssessmentCompleted: input.command.readiness.initialRiskAssessmentCompleted,
             status: 'in_progress',
             currentStage: checkpoint.stage,
             currentPouId: checkpoint.currentPouId,
@@ -1348,6 +1355,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       currentPouId: workflow.currentPouId as WorkflowPouId | null,
       version: workflow.version,
       setup,
+      readiness: {
+        verbalConsentConfirmed: workflow.verbalConsentConfirmed,
+        writtenConsentConfirmed: workflow.writtenConsentConfirmed,
+        initialRiskAssessmentCompleted: workflow.initialRiskAssessmentCompleted,
+      },
       checkpoints: checkpointViews,
       actions: actionViews,
       referrals: referralViews,

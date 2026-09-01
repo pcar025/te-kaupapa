@@ -2,6 +2,7 @@ import {
   WORKFLOW_POU_IDS,
   type WorkflowCheckpoint,
   type WorkflowPouId,
+  type WorkflowReadiness,
   type WorkflowStage,
 } from '../../shared/workflow.js'
 
@@ -9,6 +10,19 @@ export class WorkflowTransitionError extends Error {
   constructor(message = 'The workflow is not at the required checkpoint.') {
     super(message)
     this.name = 'WorkflowTransitionError'
+  }
+}
+
+export class WorkflowReadinessError extends WorkflowTransitionError {
+  constructor() {
+    super('All pre-reflection requirements must be confirmed before the reflection journey can begin.')
+    this.name = 'WorkflowReadinessError'
+  }
+}
+
+export function assertPreReflectionReadiness(readiness: WorkflowReadiness): void {
+  if (!readiness.verbalConsentConfirmed || !readiness.writtenConsentConfirmed || !readiness.initialRiskAssessmentCompleted) {
+    throw new WorkflowReadinessError()
   }
 }
 

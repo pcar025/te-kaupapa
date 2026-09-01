@@ -39,7 +39,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow synthesis integratio
       let reference = 0
       const workflows = new PostgresWorkflowRepository(connection.db, () => now, () => `TK-SYNTH${++reference}`, undefined, undefined, syntheses)
       const created = await workflows.createDraft({ actor, idempotencyKey: randomUUID() })
-      let workflow = (await workflows.submitCommand({ actor, workflowSessionId: created.workflow.id, command: { type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1, whanauReference: 'SYNTHETIC', engagementType: 'hui', sessionFocus: 'Synthetic synthesis proof', immediateConcern: 'none' } })).workflow
+      let workflow = (await workflows.submitCommand({ actor, workflowSessionId: created.workflow.id, command: { type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1, whanauReference: 'SYNTHETIC', engagementType: 'hui', sessionFocus: 'Synthetic synthesis proof', immediateConcern: 'none', readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true } } })).workflow
       for (const checkpoint of workflow.checkpoints) workflow = (await workflows.submitCommand({ actor, workflowSessionId: workflow.id, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: workflow.version, pouId: checkpoint.pouId } })).workflow
       expect(workflow.currentStage).toBe('pou-summary')
       const provider: WorkflowSynthesisProvider = { generateWorkflowSynthesis: async (input) => {

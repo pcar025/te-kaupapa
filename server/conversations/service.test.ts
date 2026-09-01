@@ -30,6 +30,7 @@ const workflow: WorkflowView = {
   currentPouId: 'whakapapa',
   version: 2,
   setup: null,
+  readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
   checkpoints: [{ pouId: 'whakapapa', ordinal: 1, progress: 'not_started', userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
   actions: [],
   referrals: [],

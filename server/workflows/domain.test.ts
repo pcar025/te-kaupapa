@@ -10,11 +10,26 @@ import {
   checkpointAfterReferralPlan,
   checkpointAfterSetup,
   checkpointAfterStructuredReview,
+  assertPreReflectionReadiness,
   initialWorkflowCheckpoint,
+  WorkflowReadinessError,
   WorkflowTransitionError,
 } from './domain.js'
 
 describe('workflow checkpoints', () => {
+  it('requires all three explicit pre-reflection confirmations', () => {
+    expect(() => assertPreReflectionReadiness({
+      verbalConsentConfirmed: true,
+      writtenConsentConfirmed: false,
+      initialRiskAssessmentCompleted: true,
+    })).toThrow(WorkflowReadinessError)
+    expect(() => assertPreReflectionReadiness({
+      verbalConsentConfirmed: true,
+      writtenConsentConfirmed: true,
+      initialRiskAssessmentCompleted: true,
+    })).not.toThrow()
+  })
+
   it('starts as a draft setup checkpoint and enters the first Pou after setup', () => {
     expect(initialWorkflowCheckpoint()).toEqual({ stage: 'setup', currentPouId: null })
     expect(checkpointAfterSetup()).toEqual({ stage: 'pou-overview', currentPouId: 'whakapapa' })

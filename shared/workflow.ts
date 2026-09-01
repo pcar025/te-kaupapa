@@ -34,6 +34,13 @@ export type WorkflowEngagementType = (typeof WORKFLOW_ENGAGEMENT_TYPES)[number]
 export const WORKFLOW_IMMEDIATE_CONCERNS = ['none', 'unsure', 'urgent'] as const
 export type WorkflowImmediateConcern = (typeof WORKFLOW_IMMEDIATE_CONCERNS)[number]
 
+/** Explicit Kaimahi confirmations for this workflow's pre-reflection gate. */
+export interface WorkflowReadiness {
+  verbalConsentConfirmed: boolean
+  writtenConsentConfirmed: boolean
+  initialRiskAssessmentCompleted: boolean
+}
+
 export const WORKFLOW_POU_CONCERNS = ['low', 'watch', 'action', 'urgent'] as const
 export type WorkflowPouConcern = (typeof WORKFLOW_POU_CONCERNS)[number]
 
@@ -150,6 +157,7 @@ export type WorkflowCommand =
       sessionFocus: string
       additionalNotes?: string
       immediateConcern: WorkflowImmediateConcern
+      readiness: WorkflowReadiness
     }
   | {
       type: 'pou-review-confirmed'

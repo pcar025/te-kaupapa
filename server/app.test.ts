@@ -28,6 +28,7 @@ import {
   checkpointAfterReferralPlan,
   checkpointAfterSetup,
   checkpointAfterStructuredReview,
+  WorkflowReadinessError,
   WorkflowTransitionError,
 } from './workflows/domain.js'
 import { WORKFLOW_POU_IDS, type WorkflowCommand, type WorkflowPouId } from '../shared/workflow.js'
@@ -37,6 +38,12 @@ import { UnresolvedSafetyCandidateError } from './safety-assessments/repository.
 import type { ConversationApplicationService } from './conversations/service.js'
 import { SafetyAssessmentValidationError } from './safety-assessments/repository.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
+
+const completeReadiness = {
+  verbalConsentConfirmed: true,
+  writtenConsentConfirmed: true,
+  initialRiskAssessmentCompleted: true,
+}
 
 const activeKaimahi: AuthenticatedUser = {
   id: '0a7e65f8-3f45-4a2b-b837-7891aeff2ec4',
@@ -114,6 +121,11 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       currentPouId: null,
       version: 1,
       setup: null,
+      readiness: {
+        verbalConsentConfirmed: false,
+        writtenConsentConfirmed: false,
+        initialRiskAssessmentCompleted: false,
+      },
       checkpoints: WORKFLOW_POU_IDS.map((pouId, ordinal) => ({
         pouId,
         ordinal: ordinal + 1,
@@ -247,6 +259,9 @@ class MemoryWorkflowRepository implements WorkflowRepository {
       })
       this.recalculateSafety(workflow)
     } else if (input.command.type === 'setup-confirmed') {
+      if (!input.command.readiness.verbalConsentConfirmed || !input.command.readiness.writtenConsentConfirmed || !input.command.readiness.initialRiskAssessmentCompleted) {
+        throw new WorkflowReadinessError()
+      }
       const next = checkpointAfterSetup()
       workflow.status = 'in_progress'
       workflow.currentStage = next.stage
@@ -258,6 +273,7 @@ class MemoryWorkflowRepository implements WorkflowRepository {
         additionalNotes: input.command.additionalNotes || null,
         immediateConcern: input.command.immediateConcern,
       }
+      workflow.readiness = input.command.readiness
     } else if (input.command.type === 'pou-review-confirmed') {
       const command = input.command
       const checkpoint = workflow.checkpoints.find((item) => item.pouId === command.pouId)
@@ -863,6 +879,24 @@ describe('authenticated application shell API', () => {
     })).statusCode).toBe(200)
     expect((await app.inject({ method: 'GET', url: '/api/workflows', headers: { cookie: sessionCookie } })).json()).toMatchObject({ workflows: [{ status: 'draft' }] })
 
+    const incompleteReadiness = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'setup-confirmed',
+        idempotencyKey: 'e2a70e3e-fd1d-4a7c-bfb1-16306ecbcecd',
+        expectedVersion: 1,
+        whanauReference: 'TW-04',
+        engagementType: 'home-visit',
+        sessionFocus: 'Whānau support discussion',
+        immediateConcern: 'none',
+        readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: true },
+      },
+    })
+    expect(incompleteReadiness.statusCode).toBe(409)
+    expect(incompleteReadiness.json()).toEqual({ error: 'workflow_readiness_incomplete' })
+
     const setup = await app.inject({
       method: 'POST',
       url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
@@ -875,6 +909,7 @@ describe('authenticated application shell API', () => {
         engagementType: 'home-visit',
         sessionFocus: 'Whānau support discussion',
         immediateConcern: 'none',
+        readiness: completeReadiness,
       },
     })
     expect(setup.statusCode).toBe(200)
@@ -985,7 +1020,7 @@ describe('authenticated application shell API', () => {
     await workflows.submitCommand({
       actor: activeKaimahi,
       workflowSessionId: created.workflow.id,
-      command: { type: 'setup-confirmed', idempotencyKey: 'db82d548-b703-4e0e-a5f7-f2d99c69c84a', expectedVersion: 1, whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+      command: { type: 'setup-confirmed', idempotencyKey: 'db82d548-b703-4e0e-a5f7-f2d99c69c84a', expectedVersion: 1, whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none', readiness: completeReadiness },
     })
     const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
     const cookie = 'test_session=conversation-session'
@@ -1042,7 +1077,7 @@ describe('authenticated application shell API', () => {
     await workflows.submitCommand({
       actor: activeKaimahi,
       workflowSessionId: created.workflow.id,
-      command: { type: 'setup-confirmed', idempotencyKey: 'ab5e4581-508c-45a3-8dac-4d5dd72c0a5e', expectedVersion: 1, whanauReference: 'TW-05', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+      command: { type: 'setup-confirmed', idempotencyKey: 'ab5e4581-508c-45a3-8dac-4d5dd72c0a5e', expectedVersion: 1, whanauReference: 'TW-05', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none', readiness: completeReadiness },
     })
     const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
 
@@ -1072,7 +1107,7 @@ describe('authenticated application shell API', () => {
     await workflows.submitCommand({
       actor: activeKaimahi,
       workflowSessionId: created.workflow.id,
-      command: { type: 'setup-confirmed', idempotencyKey: '9c8bbd3d-6de8-4ca5-8970-ee7c144c38fa', expectedVersion: 1, whanauReference: 'TW-06', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none' },
+      command: { type: 'setup-confirmed', idempotencyKey: '9c8bbd3d-6de8-4ca5-8970-ee7c144c38fa', expectedVersion: 1, whanauReference: 'TW-06', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', immediateConcern: 'none', readiness: completeReadiness },
     })
     const app = await createApplication({ config: config(), repository, workflowRepository: workflows, conversationService: conversations, oidcProvider: new FakeOidcProvider() })
 
