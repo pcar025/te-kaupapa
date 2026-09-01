@@ -866,6 +866,7 @@ describe('approved application smoke paths', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
     await screen.findByText('SESSION IN PROGRESS')
+    expect(screen.getByText('Begin fresh, then enter Kaitiakitanga →')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: /Start a new reflection/i }))
 
     expect(await screen.findByRole('heading', { name: /Pause at the entrance/i })).toBeTruthy()
