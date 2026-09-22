@@ -8,7 +8,7 @@ import { withMigratedTestDatabase } from '../db/test-harness.js'
 import { approvedWhakapapaPilotV01, contentHash, providerProjection } from '../safety-assessments/domain.js'
 import { SafetyProvisioningService } from '../safety-assessments/provisioning.js'
 import { PostgresSafetyAssessmentRepository } from '../safety-assessments/repository.js'
-import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from './domain.js'
+import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, conversationRuntimeDynamicVariables, pouReviewProjection } from './domain.js'
 import { OrganisationPouSpecificationProvisioningService } from './provisioning.js'
 import { PostgresOrganisationPouSpecificationRepository } from './repository.js'
 import { organisationPouSpecificationFromRegistry } from './registry.js'
@@ -47,13 +47,6 @@ describe('Organisation Pou specification operator provisioning', () => {
         guidanceProjection: { projectionCode: 'incomplete-guidance', projectionVersion: '0.2' },
         reviewProjection: { projectionCode: 'incomplete-review', projectionVersion: '0.2' },
       })).rejects.toThrow('SME-authored opening reflection question')
-      await expect(new OrganisationPouSpecificationProvisioningService(connection.db, () => now).provisionAndActivate({
-        organisationId,
-        operatorUserId: operatorId,
-        specification: { ...organisationSpecification, sourceDocumentHash: 'f'.repeat(64) },
-        guidanceProjection: { projectionCode: 'mismatched-guidance', projectionVersion: '1' },
-        reviewProjection: { projectionCode: 'mismatched-review', projectionVersion: '1' },
-      })).rejects.toThrow('active safety projection')
       const provisioned = await new OrganisationPouSpecificationProvisioningService(connection.db, () => now).provisionAndActivate({
         organisationId,
         operatorUserId: operatorId,
@@ -156,7 +149,7 @@ describe('Organisation Pou specification operator provisioning', () => {
     })
   })
 
-  it('keeps two approved draft-derived Pou aggregates isolated by Pou and organisation without workflow mutation', async () => {
+  it('activates distinct-source Kaitiakitanga ordinary guidance with its existing zero-rule safety pin without workflow mutation', async () => {
     await withMigratedTestDatabase(async (connection) => {
       const organisationId = randomUUID()
       const foreignOrganisationId = randomUUID()
@@ -172,7 +165,7 @@ describe('Organisation Pou specification operator provisioning', () => {
       const provisionSafety = new SafetyProvisioningService(connection.db, () => now)
       const provisionPou = new OrganisationPouSpecificationProvisioningService(connection.db, () => now)
       const approval = { approvedForPilotBy: operatorId, approvedForPilotAt: now.toISOString() }
-      const selected = PHASE_5D_DRAFT_POU_SPECIFICATIONS.filter((specification) => specification.pouId === 'manaakitanga' || specification.pouId === 'tikanga')
+      const selected = PHASE_5D_DRAFT_POU_SPECIFICATIONS.filter((specification) => specification.pouId === 'manaakitanga' || specification.pouId === 'tikanga' || specification.pouId === 'kaitiakitanga')
 
       for (const draft of selected) {
         const safety = safetySpecificationFromRegistry(`${draft.specificationCode}_SAFETY`, draft.specificationVersion, approval)
@@ -181,7 +174,30 @@ describe('Organisation Pou specification operator provisioning', () => {
           projection: { projectionCode: `${draft.pouId}-safety`, projectionVersion: '1' },
           conversationProvider: { provider: 'elevenlabs', agentReference: 'agent-fixture', branchReference: 'branch-fixture', environment: 'test' },
         })
-        const specification = organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval)
+        const specification = draft.pouId === 'kaitiakitanga'
+          ? {
+              ...organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval),
+              specificationVersion: '0.2',
+              openingReflectionQuestion: 'Thinking about the person’s current situation, what risks, pressures or vulnerabilities did you notice, what strengths or supports may help protect them, and what still needs to be understood?',
+              openingReflectionQuestionProvenance: 'sme_authored' as const,
+              sourceDocumentCode: 'kaitiakitanga-phq9-pilot-addendum',
+              sourceReference: 'src/imports/pasted_text/kaitiakitanga-phq9-pilot-addendum-2026-09-22.md',
+              sourceDocumentHash: 'a'.repeat(64),
+              conversationExplorationAreas: [
+                ...organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval).conversationExplorationAreas,
+                {
+                  code: 'phq9_indication',
+                  label: 'Kaimahi judgement of PHQ-9 indication',
+                  intent: 'Ask whether the Kaimahi judged PHQ-9 indicated after current risk, protective factors, and response have been explored.',
+                  explorationMode: 'conditional' as const,
+                  conditionalTrigger: 'Ask only after current risk, protective factors, and response have been explored.',
+                  followUpGuidance: ['Do not administer PHQ-9 or infer indication from the conversation.'],
+                  evidenceScope: 'current_conversation' as const,
+                  sourceItemReferences: ['kaitiakitanga-phq9-pilot-addendum-2026-09-22'],
+                },
+              ],
+            }
+          : organisationPouSpecificationFromRegistry(draft.specificationCode, draft.specificationVersion, approval)
         await provisionPou.provisionAndActivate({
           organisationId, operatorUserId: operatorId, specification,
           guidanceProjection: { projectionCode: `${draft.pouId}-guidance`, projectionVersion: '1' },
@@ -191,13 +207,19 @@ describe('Organisation Pou specification operator provisioning', () => {
 
       const manaSafety = await safetyRepository.resolveActivePin(organisationId, 'manaakitanga', { provider: 'elevenlabs', agentReference: 'agent-fixture', branchReference: 'branch-fixture', environment: 'test' })
       const tikangaSafety = await safetyRepository.resolveActivePin(organisationId, 'tikanga', { provider: 'elevenlabs', agentReference: 'agent-fixture', branchReference: 'branch-fixture', environment: 'test' })
+      const kaitiSafety = await safetyRepository.resolveActivePin(organisationId, 'kaitiakitanga', { provider: 'elevenlabs', agentReference: 'agent-fixture', branchReference: 'branch-fixture', environment: 'test' })
       expect(manaSafety?.projection.rules).toEqual([])
       expect(tikangaSafety?.projection.rules).toEqual([])
-      if (!manaSafety || !tikangaSafety) throw new Error('Expected both active draft-derived safety pins.')
+      if (!manaSafety || !tikangaSafety || !kaitiSafety) throw new Error('Expected active draft-derived safety pins.')
       const mana = await pouRepository.resolveActivePin(organisationId, 'manaakitanga', manaSafety)
       const tikanga = await pouRepository.resolveActivePin(organisationId, 'tikanga', tikangaSafety)
+      const kaiti = await pouRepository.resolveActivePin(organisationId, 'kaitiakitanga', kaitiSafety)
       expect(mana.conversationGuidanceProjection.pouId).toBe('manaakitanga')
       expect(tikanga.conversationGuidanceProjection.pouId).toBe('tikanga')
+      expect(kaiti.specification.sourceDocumentHash).toBe('a'.repeat(64))
+      expect(kaitiSafety.specification.sourceDocumentHash).not.toBe(kaiti.specification.sourceDocumentHash)
+      expect(kaitiSafety.projection.rules).toEqual([])
+      expect(conversationRuntimeDynamicVariables(kaiti.conversationGuidanceProjection, 'kaitiakitanga').pou_guidance).toContain('Kaimahi judgement of PHQ-9 indication')
       expect(mana.pouReviewProjection.criteria.map((criterion) => criterion.criterionCode)).not.toEqual(tikanga.pouReviewProjection.criteria.map((criterion) => criterion.criterionCode))
       await expect(pouRepository.resolveActivePin(organisationId, 'tikanga', manaSafety)).rejects.toThrow('not linked')
       await expect(safetyRepository.resolveActivePin(foreignOrganisationId, 'manaakitanga', { provider: 'elevenlabs', agentReference: 'agent-fixture', branchReference: 'branch-fixture', environment: 'test' })).resolves.toBeNull()

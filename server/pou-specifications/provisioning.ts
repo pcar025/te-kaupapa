@@ -39,13 +39,6 @@ export interface OrganisationPouSpecificationProvisioningResult {
   activationId: string
 }
 
-function sameSourceProvenance(specification: OrganisationPouSpecificationVersion, safety: SafetySpecificationVersion): boolean {
-  return specification.sourceDocumentCode === safety.sourceDocumentCode
-    && specification.sourceDocumentStatus === safety.sourceDocumentStatus
-    && specification.sourceReference === safety.sourceReference
-    && specification.sourceDocumentHash === safety.sourceDocumentHash
-}
-
 /**
  * Operator-only local-pilot activation.  It has no HTTP route and creates a
  * new immutable aggregate pinned to the current approved safety activation.
@@ -104,9 +97,8 @@ export class OrganisationPouSpecificationProvisioningService {
         || contentHash(safetySpecification) !== safetyRow.specification_hash
         || contentHash(safetyProjection) !== safetyRow.projection_hash
         || safetyProjection.specificationHash !== safetyRow.specification_hash
-        || !sameSourceProvenance(specification, safetySpecification)
       ) {
-        throw new OrganisationPouSpecificationProvisioningError('The active safety projection is not an approved exact match for the organisation Pou specification linkage.')
+        throw new OrganisationPouSpecificationProvisioningError('The active safety projection is not approved for this organisation and Pou linkage.')
       }
 
       const [storedSpecification] = await tx.insert(schema.organisationPouSpecificationVersions).values({
