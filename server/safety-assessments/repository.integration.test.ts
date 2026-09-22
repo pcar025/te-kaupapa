@@ -180,6 +180,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL Phase 5B assessment boundary 
       expect(replacement.specificationId).toBe(initial.specificationId)
       const active = await repository.resolveActivePin(actor.organisation.id, 'whakapapa', { provider: 'elevenlabs', agentReference: 'agent-test', branchReference: 'branch-test', environment: 'test' })
       expect(active).toMatchObject({ specificationId: initial.specificationId, projectionId: replacement.projectionId, specificationHash: contentHash(activeSpecification) })
+      await expect(new PostgresOrganisationPouSpecificationRepository(connection.db).resolveActivePin(actor.organisation.id, 'whakapapa', active!)).resolves.toMatchObject({ specificationHash: expect.any(String) })
       const activations: Array<{ projectionId: string; deactivatedAt: Date | null }> = await connection.db.select({ projectionId: schema.safetySpecificationActivations.projectionId, deactivatedAt: schema.safetySpecificationActivations.deactivatedAt })
         .from(schema.safetySpecificationActivations)
         .where(eq(schema.safetySpecificationActivations.organisationId, actor.organisation.id))
