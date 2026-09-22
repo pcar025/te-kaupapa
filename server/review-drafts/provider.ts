@@ -3,7 +3,7 @@ import { z } from 'zod'
 import { contentHash } from '../safety-assessments/domain.js'
 import type { PouReviewProjection } from '../pou-specifications/domain.js'
 import { assessmentTranscriptInput, type TranscriptTurn } from '../transcripts/domain.js'
-import { validatePhq9ReviewEvidence, validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, type Phq9ReviewEvidence, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
+import { unknownPhq9ReviewEvidence, validatePhq9ReviewEvidence, validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, type Phq9ReviewEvidence, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
 
 export interface ConversationReviewDraftInput {
   transcriptTurns: TranscriptTurn[]
@@ -23,7 +23,27 @@ export interface ConversationReviewDraftResult {
 export interface ConversationReviewDraftProvider {
   generatePouReviewDraft(input: ConversationReviewDraftInput): Promise<ConversationReviewDraftResult>
 }
-export class ConversationReviewDraftProviderError extends Error {}
+export type ConversationReviewDraftFailureCategory =
+  | 'provider_unavailable'
+  | 'provider_rejected'
+  | 'no_structured_output'
+  | 'malformed_output'
+  | 'bounded_contract'
+  | 'evidence_validation'
+  | 'phq9_evidence_validation'
+  | 'invalid_output'
+
+export class ConversationReviewDraftProviderError extends Error {
+  constructor(message: string, readonly category: ConversationReviewDraftFailureCategory = 'invalid_output') {
+    super(message)
+    this.name = 'ConversationReviewDraftProviderError'
+  }
+}
+
+/** Deliberately bounded for persistence; never return provider or transcript content. */
+export function reviewDraftFailureCategory(error: unknown): ConversationReviewDraftFailureCategory {
+  return error instanceof ConversationReviewDraftProviderError ? error.category : 'invalid_output'
+}
 
 const REVIEW_PROMPT_TEMPLATE_VERSION = '3'
 
@@ -73,24 +93,30 @@ export class OpenAIConversationReviewDraftProvider implements ConversationReview
         method: 'POST', headers: { authorization: `Bearer ${this.configuration.apiKey}`, 'content-type': 'application/json' },
         body: JSON.stringify({ model: this.configuration.model, store: false, background: false, input: [{ role: 'system', content: prompt(input.reviewProjection) }, { role: 'user', content: assessmentTranscriptInput(input.transcriptTurns) }], text: { format: { type: 'json_schema', name: 'te_kaupapa_pou_review_draft', strict: true, schema: outputSchema(input.transcriptTurns, input.reviewProjection) } } }),
       })
-    } catch { throw new ConversationReviewDraftProviderError('Review draft provider request failed.') }
-    if (!response.ok) throw new ConversationReviewDraftProviderError(`Review draft provider rejected the request: HTTP ${response.status}.`)
+    } catch { throw new ConversationReviewDraftProviderError('Review draft provider request failed.', 'provider_unavailable') }
+    if (!response.ok) throw new ConversationReviewDraftProviderError(`Review draft provider rejected the request: HTTP ${response.status}.`, 'provider_rejected')
     const body = await response.json() as { output_text?: unknown; output?: Array<{ content?: Array<{ type?: unknown; text?: unknown }> }> }
     const text = typeof body.output_text === 'string' ? body.output_text : body.output?.flatMap((item) => item.content ?? []).find((item) => item.type === 'output_text' && typeof item.text === 'string')?.text
-    if (typeof text !== 'string') throw new ConversationReviewDraftProviderError('Review draft provider returned no structured output.')
+    if (typeof text !== 'string') throw new ConversationReviewDraftProviderError('Review draft provider returned no structured output.', 'no_structured_output')
     let parsed: unknown
-    try { parsed = JSON.parse(text) } catch { throw new ConversationReviewDraftProviderError('Review draft provider output was not JSON.') }
+    try { parsed = JSON.parse(text) } catch { throw new ConversationReviewDraftProviderError('Review draft provider output was not JSON.', 'malformed_output') }
     const output = z.object({ overallSummary: z.string().nullable(), strengthsSummary: z.string().nullable(), areasForAttentionSummary: z.string().nullable(), evidenceTurnIds: z.array(z.string().uuid()), criterionAssessments: z.array(z.unknown()), phq9Evidence: z.unknown().optional() }).strict().safeParse(parsed)
-    if (!output.success) throw new ConversationReviewDraftProviderError('Review draft provider output did not match the bounded contract.')
+    if (!output.success) throw new ConversationReviewDraftProviderError('Review draft provider output did not match the bounded contract.', 'bounded_contract')
     const draft = whakapapaReviewDraftContentSchema.safeParse({ overallSummary: output.data.overallSummary, strengthsSummary: output.data.strengthsSummary, areasForAttentionSummary: output.data.areasForAttentionSummary, evidenceTurnIds: output.data.evidenceTurnIds })
-    if (!draft.success) throw new ConversationReviewDraftProviderError('Review draft provider output did not match the bounded contract.')
+    if (!draft.success) throw new ConversationReviewDraftProviderError('Review draft provider output did not match the bounded contract.', 'bounded_contract')
     const turnIds = new Set(input.transcriptTurns.map((turn) => turn.id))
-    if (draft.data.evidenceTurnIds.some((id) => !turnIds.has(id))) throw new ConversationReviewDraftProviderError('Review draft provider referenced a turn outside the transcript.')
+    if (draft.data.evidenceTurnIds.some((id) => !turnIds.has(id))) throw new ConversationReviewDraftProviderError('Review draft provider referenced a turn outside the transcript.', 'evidence_validation')
     let criterionAssessments: ReviewCriterionAssessment[]
-    try { criterionAssessments = validateReviewCriterionAssessments(input.reviewProjection, output.data.criterionAssessments as ReviewCriterionAssessment[], turnIds) } catch { throw new ConversationReviewDraftProviderError('Review draft provider evidence did not match the pinned criterion contract.') }
+    try { criterionAssessments = validateReviewCriterionAssessments(input.reviewProjection, output.data.criterionAssessments as ReviewCriterionAssessment[], turnIds) } catch { throw new ConversationReviewDraftProviderError('Review draft provider evidence did not match the pinned criterion contract.', 'evidence_validation') }
     let phq9Evidence: Phq9ReviewEvidence | undefined
     if (input.reviewProjection.pouId === 'kaitiakitanga') {
-      try { phq9Evidence = validatePhq9ReviewEvidence(output.data.phq9Evidence, turnIds) } catch { throw new ConversationReviewDraftProviderError('Review draft PHQ-9 evidence did not match the bounded transcript contract.') }
+      // A missing noncanonical candidate must not discard an otherwise valid
+      // review. The provider schema still requires this field; this fail-safe
+      // handles an absent field without accepting any invalid supplied value.
+      if (output.data.phq9Evidence === undefined) phq9Evidence = unknownPhq9ReviewEvidence()
+      else {
+        try { phq9Evidence = validatePhq9ReviewEvidence(output.data.phq9Evidence, turnIds) } catch { throw new ConversationReviewDraftProviderError('Review draft PHQ-9 evidence did not match the bounded transcript contract.', 'phq9_evidence_validation') }
+      }
     }
     return { draft: draft.data, criterionAssessments, phq9Evidence, provider: 'openai', model: this.configuration.model, configurationHash: contentHash({ provider: 'openai', model: this.configuration.model, promptTemplateVersion: REVIEW_PROMPT_TEMPLATE_VERSION, prompt: prompt(input.reviewProjection), structuredOutputSchema: outputSchema(input.transcriptTurns, input.reviewProjection), schemaVersion: '3' }), schemaVersion: '3', generatedAt: this.now() }
   }

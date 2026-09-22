@@ -9,6 +9,7 @@ import type { PostgresSafetyAssessmentRepository } from './repository.js'
 import type { ConversationAssessmentProvider } from './assessment-provider.js'
 import { ElevenLabsWebhookSignatureError } from './webhook.js'
 import { approvedWhakapapaOrganisationPouV01, conversationGuidanceProjection, pouReviewProjection } from '../pou-specifications/domain.js'
+import { ConversationReviewDraftProviderError } from '../review-drafts/provider.js'
 
 const now = new Date('2026-08-12T00:00:00.000Z')
 const secret = 'test-webhook-secret-with-sufficient-length'
@@ -170,6 +171,33 @@ describe('post-call HTTP raw-body boundary', () => {
       expect(generatePouReviewDraft).toHaveBeenCalledOnce()
       expect(ingest).toHaveBeenCalledWith(expect.objectContaining({ assessments: [] }))
       expect(recordGenerated).toHaveBeenCalledOnce()
+    } finally { await app.close() }
+  })
+
+  it('persists only a bounded narrative-provider failure category when review generation rejects', async () => {
+    const ingest = vi.fn(async () => ({ replayed: false, superseded: false }))
+    const specification = approvedWhakapapaOrganisationPouV01({ approvedForPilotBy: '11111111-1111-4111-8111-111111111111', approvedForPilotAt: now.toISOString() })
+    const guidanceProjection = conversationGuidanceProjection(specification, { projectionCode: 'test-guidance', projectionVersion: '1' })
+    const reviewProjection = pouReviewProjection(specification, { projectionCode: 'test-review', projectionVersion: '1' })
+    const recordFailed = vi.fn(async () => {})
+    const repository = {
+      resolveActivePinForConversation: async () => ({ runId: 'run', workflowConversationId: '44444444-4444-4444-8444-444444444444', organisationId: '55555555-5555-4555-8555-555555555555', workflowSessionId: '66666666-6666-4666-8666-666666666666', pouId: 'whakapapa', projection: { rules: [] }, guidanceProjection, reviewProjection, superseded: false, requiresAssessment: true }),
+      reserveDelivery: async () => ({ replayed: false, conflict: false, reserved: true, inFlight: false, superseded: false }),
+      releaseReservedDelivery: async () => {}, ingest,
+    } as unknown as PostgresSafetyAssessmentRepository
+    const app = await createApplication({
+      config, repository: auth, safetyAssessmentRepository: repository,
+      transcriptRepository: { retainForConversation: vi.fn(async (input: { turns: any[] }) => ({ transcriptId: '33333333-3333-4333-8333-333333333333', turns: input.turns })) } as any,
+      conversationReviewDraftProvider: { generatePouReviewDraft: async () => { throw new ConversationReviewDraftProviderError('safe bounded detail', 'provider_rejected') } } as any,
+      reviewDraftRepository: { recordFailed } as any,
+      now: () => now,
+    })
+    const raw = body()
+    try {
+      expect((await app.inject({ method: 'POST', url: '/api/integrations/elevenlabs/post-call', headers: { 'content-type': 'application/json', 'elevenlabs-signature': signature(raw) }, payload: raw })).statusCode).toBe(202)
+      expect(recordFailed).toHaveBeenCalledWith(expect.objectContaining({ category: 'provider_rejected' }))
+      expect(JSON.stringify(recordFailed.mock.calls)).not.toContain('HTTP_TRANSCRIPT_SENTINEL')
+      expect(JSON.stringify(recordFailed.mock.calls)).not.toContain('safe bounded detail')
     } finally { await app.close() }
   })
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { OpenAIConversationReviewDraftProvider } from './provider.js'
+import { OpenAIConversationReviewDraftProvider, reviewDraftFailureCategory } from './provider.js'
 import { approvedOrganisationPouSpecification, approvedWhakapapaOrganisationPouV01, pouReviewProjection } from '../pou-specifications/domain.js'
 import { PHASE_5D_DRAFT_POU_SPECIFICATIONS } from '../pou-specifications/phase5d-specifications.js'
 
@@ -46,5 +46,19 @@ describe('OpenAIConversationReviewDraftProvider', () => {
     const invalid = { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 28, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }
     const provider = new OpenAIConversationReviewDraftProvider({ apiKey: 'key', model: 'model' }, async () => new Response(JSON.stringify({ output_text: JSON.stringify({ overallSummary: 'Bounded review.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [turns[0]!.id], criterionAssessments: kaitiAssessments, phq9Evidence: invalid }) }), { status: 200 }))
     await expect(provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection })).rejects.toThrow('PHQ-9 evidence')
+  })
+
+  it('keeps an otherwise valid Kaitiakitanga review when the noncanonical PHQ-9 candidate is absent', async () => {
+    const provider = new OpenAIConversationReviewDraftProvider({ apiKey: 'key', model: 'model' }, async () => new Response(JSON.stringify({ output_text: JSON.stringify({ overallSummary: 'Bounded review.', strengthsSummary: 'A protective factor was named.', areasForAttentionSummary: 'Further context is needed.', evidenceTurnIds: [turns[0]!.id], criterionAssessments: kaitiAssessments }) }), { status: 200 }))
+    await expect(provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection })).resolves.toMatchObject({
+      draft: { overallSummary: 'Bounded review.', strengthsSummary: 'A protective factor was named.', areasForAttentionSummary: 'Further context is needed.' },
+      phq9Evidence: unknownPhq9,
+    })
+  })
+
+  it('keeps a bounded provider rejection category without retaining provider output', async () => {
+    const provider = new OpenAIConversationReviewDraftProvider({ apiKey: 'key', model: 'model' }, async () => new Response(null, { status: 429 }))
+    await expect(provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection })).rejects.toMatchObject({ category: 'provider_rejected' })
+    await provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection }).catch((error) => expect(reviewDraftFailureCategory(error)).toBe('provider_rejected'))
   })
 })

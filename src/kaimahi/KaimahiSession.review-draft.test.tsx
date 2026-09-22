@@ -426,6 +426,42 @@ describe('WhakapapaNarrativeReview', () => {
     expect((screen.getByRole('button', { name: 'Confirm PHQ-9 details' }) as HTMLButtonElement).disabled).toBe(true)
   })
 
+  it('adds PHQ-9 to, rather than replacing, the complete generated Kaitiakitanga review', async () => {
+    const draft = {
+      id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1,
+      overallSummary: 'An overall reflection was generated.', strengthsSummary: 'Protective factors were generated.', areasForAttentionSummary: 'An area for attention was generated.', evidenceTurnIds: [], generatedAt: '2026-09-22T00:00:00.000Z',
+      criterionAssessments: [
+        { criterionCode: 'KAIT_01', label: 'Established criterion', status: 'evidenced', evidenceTurnIds: [], missingInformationCodes: [], strengthsOrProtective: false, areasForAttention: false },
+        { criterionCode: 'KAIT_02', label: 'Protective criterion', status: 'evidenced', evidenceTurnIds: [], missingInformationCodes: [], strengthsOrProtective: true, areasForAttention: false },
+        { criterionCode: 'KAIT_03', label: 'Further exploration criterion', status: 'not_explored', evidenceTurnIds: [], missingInformationCodes: ['KAIT_03_MISSING'], strengthsOrProtective: false, areasForAttention: true },
+      ],
+      phq9Evidence: { indication: 'insufficient_information', indicationEvidenceTurnIds: [], completion: 'insufficient_information', completionEvidenceTurnIds: [], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] },
+    }
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft } }), { status: 200 })))
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={null} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(await screen.findByText('WHAT WAS ESTABLISHED')).toBeTruthy()
+    expect(screen.getAllByText('STRENGTHS / PROTECTIVE FACTORS').length).toBeGreaterThan(0)
+    expect(screen.getByText('STILL TO EXPLORE / INFORMATION NEEDED')).toBeTruthy()
+    expect(screen.getAllByText('AREAS FOR ATTENTION').length).toBeGreaterThan(0)
+    expect(screen.getByDisplayValue('An overall reflection was generated.')).toBeTruthy()
+    expect(screen.getByDisplayValue('Protective factors were generated.')).toBeTruthy()
+    expect(screen.getByDisplayValue('An area for attention was generated.')).toBeTruthy()
+    expect(screen.getByLabelText('PHQ-9 confirmation')).toBeTruthy()
+    expect(screen.queryByText(/Manual Kaitiakitanga review/i)).toBeNull()
+  })
+
+  it('keeps PHQ-9 manually confirmable after a truthful Kaitiakitanga review-generation failure', async () => {
+    const onConfirmKaitiakitangaPhq9 = vi.fn()
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ review: { status: 'failed', draft: null, assessmentCompleted: true, hasReviewableCandidate: false } }), { status: 200 })))
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={null} onConfirmKaitiakitangaPhq9={onConfirmKaitiakitangaPhq9} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(await screen.findByText(/could not be prepared/i)).toBeTruthy()
+    expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'No' })[1]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm PHQ-9 details' }))
+    expect(onConfirmKaitiakitangaPhq9).toHaveBeenCalledWith({ phq9Indicated: true, phq9Completed: false })
+  })
+
   it('states the authoritative >=12 result without claiming a notification was sent', async () => {
     const fetchMock = vi.fn(async () => new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
     vi.stubGlobal('fetch', fetchMock)

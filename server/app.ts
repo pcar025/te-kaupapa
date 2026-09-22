@@ -49,7 +49,7 @@ import { ConversationAssessmentProviderError, type ConversationAssessmentProvide
 import { ElevenLabsGuidanceProvenanceMismatchError, ElevenLabsHmacWebhookVerifier, ElevenLabsWebhookEnvelopeError, ElevenLabsWebhookSignatureError, ElevenLabsWebhookUnsupportedEventError, elevenLabsSignatureHeader, parseElevenLabsPostCallTranscript, type ElevenLabsWebhookVerifier } from './safety-assessments/webhook.js'
 import { normaliseSignedTranscript } from './transcripts/domain.js'
 import { PostgresTranscriptRepository } from './transcripts/repository.js'
-import type { ConversationReviewDraftProvider } from './review-drafts/provider.js'
+import { reviewDraftFailureCategory, type ConversationReviewDraftFailureCategory, type ConversationReviewDraftProvider } from './review-drafts/provider.js'
 import { PostgresConversationReviewDraftRepository } from './review-drafts/repository.js'
 import { ReviewDraftUnavailableError, StaleReviewDraftError } from './review-drafts/domain.js'
 import { PostgresWorkflowSynthesisRepository, WorkflowSynthesisInProgressError } from './workflow-synthesis/repository.js'
@@ -1074,7 +1074,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             // Narrative synthesis has its own bounded, noncanonical contract.
             // Its failure cannot discard a valid Phase 5B assessment result.
             let reviewResult: Awaited<ReturnType<ConversationReviewDraftProvider['generatePouReviewDraft']>> | undefined
-            let reviewFailure: 'provider_unavailable' | 'invalid_output' | undefined
+            let reviewFailure: ConversationReviewDraftFailureCategory | undefined
             if (!conversationReviewDraftProvider) reviewFailure = 'provider_unavailable'
             else if (!pin.reviewProjection) reviewFailure = 'invalid_output'
             else {
@@ -1085,7 +1085,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
                 reviewResult = await conversationReviewDraftProvider.generatePouReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection })
                 logPouReviewTiming(request.log, reviewStartedAt, now(), 'narrative_review_completed', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length })
               }
-              catch { reviewFailure = 'invalid_output' }
+              catch (error) { reviewFailure = reviewDraftFailureCategory(error) }
             }
             // A source-derived Pou with no approved bounded safety rule must
             // still produce its review draft. It must not require a safety

@@ -7,7 +7,7 @@ import * as schema from '../db/schema.js'
 import type { SafetyTransaction } from '../safety-assessments/repository.js'
 import { phq9ReviewEvidenceSchema, unknownPhq9ReviewEvidence, validatePhq9ReviewEvidence, validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, ReviewDraftUnavailableError, StaleReviewDraftError, type Phq9ReviewEvidence, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
 import type { PouReviewProjection } from '../pou-specifications/domain.js'
-import type { ConversationReviewDraftResult } from './provider.js'
+import type { ConversationReviewDraftFailureCategory, ConversationReviewDraftResult } from './provider.js'
 
 type ReviewDatabase = NodePgDatabase<typeof schema>
 
@@ -112,7 +112,7 @@ export class PostgresConversationReviewDraftRepository {
     })
   }
 
-  async recordFailed(input: { assessmentRunId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId; category: 'provider_unavailable' | 'invalid_output' }): Promise<void> {
+  async recordFailed(input: { assessmentRunId: string; workflowConversationId: string; organisationId: string; workflowSessionId: string; pouId: WorkflowPouId; category: ConversationReviewDraftFailureCategory }): Promise<void> {
     await this.db.transaction(async (tx) => {
       const runs = await tx.select().from(schema.conversationSafetyAssessmentRuns).where(and(eq(schema.conversationSafetyAssessmentRuns.id, input.assessmentRunId), eq(schema.conversationSafetyAssessmentRuns.organisationId, input.organisationId), eq(schema.conversationSafetyAssessmentRuns.workflowSessionId, input.workflowSessionId))).limit(1)
       const run = runs[0]
