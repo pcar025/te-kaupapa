@@ -1932,8 +1932,10 @@ export function PouNarrativeReview({
   onReviewReady?: () => void
   onManualReview?: () => void
 }) {
-  const REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS = 4_000
-  const MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS = 15
+  const REVIEW_DRAFT_POLL_INTERVAL_MILLISECONDS = presentation === 'processing' ? 1_000 : 4_000
+  // Keep the existing roughly one-minute automatic recovery window while the
+  // dedicated processing screen polls more frequently.
+  const MAXIMUM_AUTOMATIC_REVIEW_DRAFT_POLLS = presentation === 'processing' ? 60 : 15
   const [review, setReview] = useState<PouReviewDraftState | null>(null)
   const [draft, setDraft] = useState<PouReviewDraft | null>(null)
   const [loadError, setLoadError] = useState(false)
