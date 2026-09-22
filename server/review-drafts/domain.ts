@@ -59,7 +59,10 @@ export const phq9ReviewEvidenceSchema = z.object({
   const requiresEvidence = (status: string) => status !== 'insufficient_information'
   if (requiresEvidence(value.indication) !== (value.indicationEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['indicationEvidenceTurnIds'], message: 'An explicit PHQ-9 indication requires transcript evidence; insufficient information does not.' })
   if (requiresEvidence(value.completion) !== (value.completionEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['completionEvidenceTurnIds'], message: 'An explicit PHQ-9 completion state requires transcript evidence; insufficient information does not.' })
-  if (value.indication === 'not_indicated' && value.completion !== 'insufficient_information') context.addIssue({ code: 'custom', path: ['completion'], message: 'PHQ-9 completion is unknown when PHQ-9 was explicitly not indicated.' })
+  // Providers commonly report "not completed" when a PHQ-9 was explicitly
+  // not indicated. That is redundant rather than contradictory evidence; it
+  // is normalized to not-applicable/unknown after provenance validation.
+  if (value.indication === 'not_indicated' && value.completion !== 'insufficient_information' && value.completion !== 'not_completed') context.addIssue({ code: 'custom', path: ['completion'], message: 'A PHQ-9 not indicated for this engagement cannot be reported as completed.' })
   if (value.completion === 'completed' && value.indication !== 'indicated') context.addIssue({ code: 'custom', path: ['completion'], message: 'Completed PHQ-9 evidence requires explicit indication evidence.' })
   const hasScore = value.reportedTotalScore !== null
   if (hasScore !== (value.reportedTotalScoreEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['reportedTotalScoreEvidenceTurnIds'], message: 'A reported PHQ-9 total requires transcript evidence, and absent score has no evidence turns.' })
@@ -77,6 +80,12 @@ export function validatePhq9ReviewEvidence(value: unknown, permittedEvidenceTurn
   const evidence = phq9ReviewEvidenceSchema.parse(value)
   const ids = [...evidence.indicationEvidenceTurnIds, ...evidence.completionEvidenceTurnIds, ...evidence.reportedTotalScoreEvidenceTurnIds]
   if (ids.some((id) => !permittedEvidenceTurnIds.has(id))) throw new ReviewDraftValidationError('PHQ-9 evidence references a turn outside the retained conversation transcript.')
+  // Completion is not an independent fact once PHQ-9 was explicitly not
+  // indicated. Preserve its validated indication provenance, but persist the
+  // canonical noncanonical representation of that not-applicable state.
+  if (evidence.indication === 'not_indicated' && evidence.completion === 'not_completed') {
+    return { ...evidence, completion: 'insufficient_information', completionEvidenceTurnIds: [] }
+  }
   return evidence
 }
 

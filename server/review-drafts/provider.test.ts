@@ -31,15 +31,18 @@ describe('OpenAIConversationReviewDraftProvider', () => {
   })
 
   it.each([
-    ['not indicated', { indication: 'not_indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'insufficient_information', completionEvidenceTurnIds: [], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }],
-    ['completed score 11', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 11, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }],
-    ['completed score 12', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }],
-  ])('accepts explicit noncanonical PHQ-9 evidence for %s only when grounded', async (_label, phq9Evidence) => {
+    ['not indicated without an applicable completion state', { indication: 'not_indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'not_completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }, { indication: 'not_indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'insufficient_information', completionEvidenceTurnIds: [], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }],
+    ['indicated with completion unknown', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'insufficient_information', completionEvidenceTurnIds: [], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }, { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'insufficient_information', completionEvidenceTurnIds: [], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }],
+    ['indicated but not completed', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'not_completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }, { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'not_completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }],
+    ['completed with score not established', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }, { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [] }],
+    ['completed score 11', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 11, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }, { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 11, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }],
+    ['completed score 12', { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }, { indication: 'indicated', indicationEvidenceTurnIds: [turns[0]!.id], completion: 'completed', completionEvidenceTurnIds: [turns[0]!.id], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: [turns[0]!.id] }],
+  ])('accepts explicit noncanonical PHQ-9 evidence for %s only when grounded', async (_label, phq9Evidence, expected) => {
     const provider = new OpenAIConversationReviewDraftProvider({ apiKey: 'key', model: 'model' }, async (_url, init) => {
       expect(JSON.stringify(init)).toContain('phq9Evidence')
       return new Response(JSON.stringify({ output_text: JSON.stringify({ overallSummary: 'Bounded review.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [turns[0]!.id], criterionAssessments: kaitiAssessments, phq9Evidence }) }), { status: 200 })
     })
-    await expect(provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection })).resolves.toMatchObject({ phq9Evidence })
+    await expect(provider.generatePouReviewDraft({ transcriptTurns: turns, reviewProjection: kaitiProjection })).resolves.toMatchObject({ phq9Evidence: expected })
   })
 
   it('rejects an out-of-range or ungrounded PHQ-9 suggestion', async () => {
