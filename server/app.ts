@@ -637,6 +637,14 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }).strict(),
   ])
   const workflowCommandSchema = z.discriminatedUnion('type', [
+    z.object({
+      type: z.literal('kaitiakitanga-phq9-confirmed'),
+      idempotencyKey: z.string().uuid(),
+      expectedVersion: z.number().int().positive(),
+      phq9Indicated: z.boolean(),
+      phq9Completed: z.boolean(),
+      confirmedTotalScore: z.number().int().min(0).max(27).optional(),
+    }).strict(),
     setupCommandSchema,
     pouReviewCommandSchema,
     downstreamCommandSchema.extend({ type: z.literal('pou-summary-confirmed') }),

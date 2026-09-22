@@ -221,6 +221,15 @@ export interface WorkflowView {
     immediateConcern: WorkflowImmediateConcern
   } | null
   readiness: WorkflowReadiness
+  kaitiakitangaPhq9?: {
+    indicated: boolean
+    completed: boolean
+    confirmedTotalScore: number | null
+    supervisorEscalationRequired: boolean
+    ruleCode: string
+    ruleVersion: number
+    confirmedAt: Date
+  } | null
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
@@ -505,7 +514,38 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         let interactionPouId: WorkflowPouId | undefined
         let recordedInteractionId: string | undefined
 
-        if (input.command.type === 'safety-observation-confirmed') {
+        if (input.command.type === 'kaitiakitanga-phq9-confirmed') {
+          if (workflow.status !== 'in_progress' || !['pou-overview', 'pou-convo'].includes(workflow.currentStage) || workflow.currentPouId !== 'kaitiakitanga') {
+            throw new WorkflowTransitionError('PHQ-9 confirmation is available only during Kaitiakitanga.')
+          }
+          const score = input.command.confirmedTotalScore
+          if ((!input.command.phq9Completed && score !== undefined) || (input.command.phq9Completed && (!Number.isInteger(score) || score! < 0 || score! > 27))) {
+            throw new WorkflowValidationError('A completed PHQ-9 requires an integer total score from 0 to 27, and no score is permitted otherwise.')
+          }
+          if (!input.command.phq9Indicated && input.command.phq9Completed) {
+            throw new WorkflowValidationError('A completed PHQ-9 must be recorded as indicated.')
+          }
+          const [existing] = await tx.select({ workflowSessionId: schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId })
+            .from(schema.workflowKaitiakitangaPhq9Confirmations)
+            .where(eq(schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflow.id)).limit(1)
+          if (existing) throw new WorkflowValidationError('The Kaitiakitanga PHQ-9 has already been confirmed.')
+          const supervisorEscalationRequired = input.command.phq9Completed && score! >= 12
+          interactionType = 'kaitiakitanga_phq9_confirmed'
+          interactionPouId = 'kaitiakitanga'
+          recordedInteractionId = await this.recordInteraction(tx, {
+            workflowId: workflow.id, actor: input.actor, interactionType, interactionPouId,
+            idempotencyKey: input.command.idempotencyKey, fingerprint, expectedVersion: input.command.expectedVersion, resultingVersion, timestamp,
+          })
+          await tx.insert(schema.workflowKaitiakitangaPhq9Confirmations).values({
+            workflowSessionId: workflow.id, organisationId: input.actor.organisation.id, pouId: 'kaitiakitanga',
+            phq9Indicated: input.command.phq9Indicated, phq9Completed: input.command.phq9Completed,
+            confirmedTotalScore: input.command.phq9Completed ? score! : null,
+            supervisorEscalationRequired,
+            escalationRuleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', escalationRuleVersion: 1,
+            confirmedByUserId: input.actor.id, confirmedAt: timestamp, interactionId: recordedInteractionId,
+          })
+          await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
+        } else if (input.command.type === 'safety-observation-confirmed') {
           this.assertSafetyObservationSnapshot(input.command.observation)
           if (workflow.status === 'completed' || workflow.status === 'abandoned') throw new WorkflowTransitionError()
           if (input.command.candidateAssessmentId) {
@@ -1228,11 +1268,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
       .orderBy(schema.workflowPouCheckpoints.ordinal)
 
-    const [actions, referrals, carryForwards, pouReviews] = await Promise.all([
+    const [actions, referrals, carryForwards, pouReviews, phq9Rows] = await Promise.all([
       executor.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflow.id)).orderBy(schema.workflowActions.createdAt),
       executor.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflow.id)).orderBy(schema.workflowReferrals.createdAt),
       executor.select().from(schema.workflowCarryForwards).where(eq(schema.workflowCarryForwards.workflowSessionId, workflow.id)).orderBy(schema.workflowCarryForwards.createdAt),
       executor.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflow.id)),
+      executor.select().from(schema.workflowKaitiakitangaPhq9Confirmations).where(and(eq(schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflow.id), eq(schema.workflowKaitiakitangaPhq9Confirmations.organisationId, workflow.organisationId))).limit(1),
     ])
     const safety = await this.findSafetyState(workflow.id, executor)
 
@@ -1358,6 +1399,15 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         writtenConsentConfirmed: workflow.writtenConsentConfirmed,
         initialRiskAssessmentCompleted: workflow.initialRiskAssessmentCompleted,
       },
+      kaitiakitangaPhq9: phq9Rows[0] ? {
+        indicated: phq9Rows[0].phq9Indicated,
+        completed: phq9Rows[0].phq9Completed,
+        confirmedTotalScore: phq9Rows[0].confirmedTotalScore,
+        supervisorEscalationRequired: phq9Rows[0].supervisorEscalationRequired,
+        ruleCode: phq9Rows[0].escalationRuleCode,
+        ruleVersion: phq9Rows[0].escalationRuleVersion,
+        confirmedAt: phq9Rows[0].confirmedAt,
+      } : null,
       checkpoints: checkpointViews,
       actions: actionViews,
       referrals: referralViews,

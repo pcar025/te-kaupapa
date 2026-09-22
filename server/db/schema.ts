@@ -86,6 +86,7 @@ export const workflowInteractionType = pgEnum('workflow_interaction_type', [
   'safety_observation_retracted',
   'supervisor_review_requested',
   'carry_forward_marked',
+  'kaitiakitanga_phq9_confirmed',
 ])
 
 export const organisations = pgTable('organisation', {
@@ -1141,6 +1142,44 @@ export const workflowInteractions = pgTable(
     uniqueIndex('workflow_interaction_id_organisation_session_uq').on(table.id, table.organisationId, table.workflowSessionId),
     index('workflow_interaction_session_created_idx').on(table.workflowSessionId, table.createdAt),
     check('workflow_interaction_resulting_version_positive', sql`${table.resultingVersion} > 0`),
+  ],
+)
+
+/**
+ * A single explicit Kaimahi confirmation for the Kaitiakitanga PHQ-9 facts.
+ * This is deliberately separate from formal safety observations: a score does
+ * not select a concern level or suppress any independently confirmed safety
+ * state. The deterministic requirement is constrained in the database as well
+ * as derived by the server command handler. Migration 0023 additionally
+ * enforces that its interaction is the same Kaitiakitanga PHQ-9 confirmation
+ * by the recorded Kaimahi.
+ */
+export const workflowKaitiakitangaPhq9Confirmations = pgTable(
+  'workflow_kaitiakitanga_phq9_confirmation',
+  {
+    workflowSessionId: uuid('workflow_session_id').primaryKey(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull().default('kaitiakitanga'),
+    phq9Indicated: boolean('phq9_indicated').notNull(),
+    phq9Completed: boolean('phq9_completed').notNull(),
+    confirmedTotalScore: integer('confirmed_total_score'),
+    supervisorEscalationRequired: boolean('supervisor_escalation_required').notNull(),
+    escalationRuleCode: text('escalation_rule_code').notNull(),
+    escalationRuleVersion: integer('escalation_rule_version').notNull(),
+    confirmedByUserId: uuid('confirmed_by_user_id').notNull(),
+    confirmedAt: timestamp('confirmed_at', { withTimezone: true }).defaultNow().notNull(),
+    interactionId: uuid('interaction_id').notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'workflow_kaitiakitanga_phq9_checkpoint_scope_fk' }),
+    foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_kaitiakitanga_phq9_confirmed_by_scope_fk' }),
+    foreignKey({ columns: [table.interactionId, table.organisationId, table.workflowSessionId], foreignColumns: [workflowInteractions.id, workflowInteractions.organisationId, workflowInteractions.workflowSessionId], name: 'workflow_kaitiakitanga_phq9_interaction_scope_fk' }),
+    uniqueIndex('workflow_kaitiakitanga_phq9_interaction_uq').on(table.interactionId),
+    check('workflow_kaitiakitanga_phq9_pou', sql`${table.pouId} = 'kaitiakitanga'`),
+    check('workflow_kaitiakitanga_phq9_shape', sql`(${table.phq9Indicated} = false and ${table.phq9Completed} = false and ${table.confirmedTotalScore} is null) or (${table.phq9Indicated} = true and ${table.phq9Completed} = false and ${table.confirmedTotalScore} is null) or (${table.phq9Indicated} = true and ${table.phq9Completed} = true and ${table.confirmedTotalScore} between 0 and 27)`),
+    check('workflow_kaitiakitanga_phq9_escalation_derivation', sql`${table.supervisorEscalationRequired} = case when ${table.phq9Completed} and ${table.confirmedTotalScore} >= 12 then true else false end`),
+    check('workflow_kaitiakitanga_phq9_rule_code_length', sql`length(${table.escalationRuleCode}) between 1 and 200`),
+    check('workflow_kaitiakitanga_phq9_rule_version_positive', sql`${table.escalationRuleVersion} > 0`),
   ],
 )
 

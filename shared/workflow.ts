@@ -101,6 +101,7 @@ export const WORKFLOW_INTERACTION_TYPES = [
   'safety_observation_retracted',
   'supervisor_review_requested',
   'carry_forward_marked',
+  'kaitiakitanga_phq9_confirmed',
 ] as const
 export type WorkflowInteractionType = (typeof WORKFLOW_INTERACTION_TYPES)[number]
 
@@ -148,6 +149,19 @@ export interface WorkflowCarryForwardItem {
 }
 
 export type WorkflowCommand =
+  | {
+      /**
+       * Explicit Kaimahi confirmation only. The server derives the escalation
+       * requirement; this command intentionally contains no safety level or
+       * client-controlled escalation field.
+       */
+      type: 'kaitiakitanga-phq9-confirmed'
+      idempotencyKey: string
+      expectedVersion: number
+      phq9Indicated: boolean
+      phq9Completed: boolean
+      confirmedTotalScore?: number
+    }
   | {
       type: 'setup-confirmed'
       idempotencyKey: string

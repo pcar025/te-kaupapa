@@ -915,6 +915,22 @@ describe('authenticated application shell API', () => {
     expect(setup.statusCode).toBe(200)
     expect(setup.json()).toMatchObject({ workflow: { status: 'in_progress', currentStage: 'pou-overview', version: 2 } })
 
+    const rejectedClientEscalationOverride = await app.inject({
+      method: 'POST',
+      url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
+      headers: { cookie: sessionCookie, origin: 'http://web.test' },
+      payload: {
+        type: 'kaitiakitanga-phq9-confirmed',
+        idempotencyKey: 'ea97c1f2-bafb-4fae-86e5-97e1d76c6a01',
+        expectedVersion: 2,
+        phq9Indicated: true,
+        phq9Completed: true,
+        confirmedTotalScore: 12,
+        supervisorEscalationRequired: false,
+      },
+    })
+    expect(rejectedClientEscalationOverride.statusCode).toBe(400)
+
     const rejectedLegacyFields = await app.inject({
       method: 'POST',
       url: '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
