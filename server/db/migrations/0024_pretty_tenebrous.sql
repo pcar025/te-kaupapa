@@ -1,0 +1,1 @@
+ALTER TABLE "conversation_review_draft_revision" ADD COLUMN "phq9_evidence" jsonb;

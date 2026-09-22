@@ -515,7 +515,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         let recordedInteractionId: string | undefined
 
         if (input.command.type === 'kaitiakitanga-phq9-confirmed') {
-          if (workflow.status !== 'in_progress' || !['pou-overview', 'pou-convo'].includes(workflow.currentStage) || workflow.currentPouId !== 'kaitiakitanga') {
+          if (workflow.status !== 'in_progress' || !['pou-overview', 'pou-convo', 'pou-review'].includes(workflow.currentStage) || workflow.currentPouId !== 'kaitiakitanga') {
             throw new WorkflowTransitionError('PHQ-9 confirmation is available only during Kaitiakitanga.')
           }
           const score = input.command.confirmedTotalScore
@@ -768,6 +768,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             .orderBy(schema.workflowPouCheckpoints.ordinal)
           const checkpoint = checkpoints.find((candidate) => candidate.pouId === confirmedPouId)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
+          if (confirmedPouId === 'kaitiakitanga') {
+            const [phq9] = await tx.select({ workflowSessionId: schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId })
+              .from(schema.workflowKaitiakitangaPhq9Confirmations)
+              .where(and(eq(schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflow.id), eq(schema.workflowKaitiakitangaPhq9Confirmations.organisationId, input.actor.organisation.id)))
+              .limit(1)
+            if (!phq9) throw new WorkflowTransitionError('Kaitiakitanga PHQ-9 details must be explicitly confirmed before this Pou can be confirmed.')
+          }
           if (this.safetyAssessments) {
             await this.safetyAssessments.assertNoUnresolvedForPouConfirmation(
               tx,

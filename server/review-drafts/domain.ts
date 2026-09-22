@@ -37,6 +37,49 @@ export const reviewCriterionAssessmentSchema = z.object({
 
 export type ReviewCriterionAssessment = z.infer<typeof reviewCriterionAssessmentSchema>
 
+const phq9IndicationStatusSchema = z.enum(['indicated', 'not_indicated', 'insufficient_information'])
+const phq9CompletionStatusSchema = z.enum(['completed', 'not_completed', 'insufficient_information'])
+const evidenceTurnIdsSchema = z.array(z.string().uuid()).max(8).superRefine((ids, context) => {
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: 'custom', message: 'PHQ-9 evidence turns must not repeat.' })
+})
+
+/**
+ * Provider-derived PHQ-9 evidence is deliberately noncanonical. It names
+ * only what was explicitly said and points back to retained transcript turns;
+ * it cannot carry a clinical judgement, safety level, or escalation result.
+ */
+export const phq9ReviewEvidenceSchema = z.object({
+  indication: phq9IndicationStatusSchema,
+  indicationEvidenceTurnIds: evidenceTurnIdsSchema,
+  completion: phq9CompletionStatusSchema,
+  completionEvidenceTurnIds: evidenceTurnIdsSchema,
+  reportedTotalScore: z.number().int().min(0).max(27).nullable(),
+  reportedTotalScoreEvidenceTurnIds: evidenceTurnIdsSchema,
+}).strict().superRefine((value, context) => {
+  const requiresEvidence = (status: string) => status !== 'insufficient_information'
+  if (requiresEvidence(value.indication) !== (value.indicationEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['indicationEvidenceTurnIds'], message: 'An explicit PHQ-9 indication requires transcript evidence; insufficient information does not.' })
+  if (requiresEvidence(value.completion) !== (value.completionEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['completionEvidenceTurnIds'], message: 'An explicit PHQ-9 completion state requires transcript evidence; insufficient information does not.' })
+  if (value.indication === 'not_indicated' && value.completion !== 'insufficient_information') context.addIssue({ code: 'custom', path: ['completion'], message: 'PHQ-9 completion is unknown when PHQ-9 was explicitly not indicated.' })
+  if (value.completion === 'completed' && value.indication !== 'indicated') context.addIssue({ code: 'custom', path: ['completion'], message: 'Completed PHQ-9 evidence requires explicit indication evidence.' })
+  const hasScore = value.reportedTotalScore !== null
+  if (hasScore !== (value.reportedTotalScoreEvidenceTurnIds.length > 0)) context.addIssue({ code: 'custom', path: ['reportedTotalScoreEvidenceTurnIds'], message: 'A reported PHQ-9 total requires transcript evidence, and absent score has no evidence turns.' })
+  if (hasScore && value.completion !== 'completed') context.addIssue({ code: 'custom', path: ['reportedTotalScore'], message: 'A reported PHQ-9 total requires explicit completion evidence.' })
+})
+export type Phq9ReviewEvidence = z.infer<typeof phq9ReviewEvidenceSchema>
+
+export const unknownPhq9ReviewEvidence = (): Phq9ReviewEvidence => ({
+  indication: 'insufficient_information', indicationEvidenceTurnIds: [],
+  completion: 'insufficient_information', completionEvidenceTurnIds: [],
+  reportedTotalScore: null, reportedTotalScoreEvidenceTurnIds: [],
+})
+
+export function validatePhq9ReviewEvidence(value: unknown, permittedEvidenceTurnIds: ReadonlySet<string>): Phq9ReviewEvidence {
+  const evidence = phq9ReviewEvidenceSchema.parse(value)
+  const ids = [...evidence.indicationEvidenceTurnIds, ...evidence.completionEvidenceTurnIds, ...evidence.reportedTotalScoreEvidenceTurnIds]
+  if (ids.some((id) => !permittedEvidenceTurnIds.has(id))) throw new ReviewDraftValidationError('PHQ-9 evidence references a turn outside the retained conversation transcript.')
+  return evidence
+}
+
 /** Enforces absence-of-evidence semantics against the pinned review projection. */
 export function validateReviewCriterionAssessments(projection: PouReviewProjection, values: ReviewCriterionAssessment[], permittedEvidenceTurnIds?: ReadonlySet<string>): ReviewCriterionAssessment[] {
   const assessments = z.array(reviewCriterionAssessmentSchema).parse(values)

@@ -42,6 +42,15 @@ export interface Workflow {
     immediateConcern: WorkflowImmediateConcern
   } | null
   readiness: WorkflowReadiness
+  kaitiakitangaPhq9?: null | {
+    indicated: boolean
+    completed: boolean
+    confirmedTotalScore: number | null
+    supervisorEscalationRequired: boolean
+    ruleCode: string
+    ruleVersion: number
+    confirmedAt: string
+  }
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
@@ -128,6 +137,14 @@ export interface PouReviewDraft {
   strengthsSummary: string | null
   areasForAttentionSummary: string | null
   evidenceTurnIds: string[]
+  phq9Evidence?: {
+    indication: 'indicated' | 'not_indicated' | 'insufficient_information'
+    indicationEvidenceTurnIds: string[]
+    completion: 'completed' | 'not_completed' | 'insufficient_information'
+    completionEvidenceTurnIds: string[]
+    reportedTotalScore: number | null
+    reportedTotalScoreEvidenceTurnIds: string[]
+  }
   criterionAssessments?: Array<{
     criterionCode: string
     label: string

@@ -5,7 +5,7 @@ import type { AuthenticatedUser } from '../domain/auth.js'
 import type { WorkflowCarryForwardSource, WorkflowPouId } from '../../shared/workflow.js'
 import * as schema from '../db/schema.js'
 import type { SafetyTransaction } from '../safety-assessments/repository.js'
-import { validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, ReviewDraftUnavailableError, StaleReviewDraftError, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
+import { phq9ReviewEvidenceSchema, unknownPhq9ReviewEvidence, validatePhq9ReviewEvidence, validateReviewCriterionAssessments, whakapapaReviewDraftContentSchema, ReviewDraftUnavailableError, StaleReviewDraftError, type Phq9ReviewEvidence, type ReviewCriterionAssessment, type WhakapapaReviewDraftContent } from './domain.js'
 import type { PouReviewProjection } from '../pou-specifications/domain.js'
 import type { ConversationReviewDraftResult } from './provider.js'
 
@@ -21,6 +21,8 @@ export interface PouReviewDraftView {
     strengthsSummary: string | null
     areasForAttentionSummary: string | null
     evidenceTurnIds: string[]
+    /** Present only for Kaitiakitanga; candidate-only until Kaimahi confirmation. */
+    phq9Evidence?: Phq9ReviewEvidence
     criterionAssessments: Array<ReviewCriterionAssessment & { label: string; strengthsOrProtective: boolean; areasForAttention: boolean }>
     generatedAt: Date
   }
@@ -50,6 +52,10 @@ function readContent(row: { overallSummary: string | null; strengthsSummary: str
   })
 }
 
+function readPhq9Evidence(row: { phq9Evidence: unknown }): Phq9ReviewEvidence | undefined {
+  return row.phq9Evidence == null ? undefined : phq9ReviewEvidenceSchema.parse(row.phq9Evidence)
+}
+
 export class PostgresConversationReviewDraftRepository {
   constructor(private readonly db: ReviewDatabase, private readonly now: () => Date = () => new Date()) {}
 
@@ -77,6 +83,9 @@ export class PostgresConversationReviewDraftRepository {
         .where(and(eq(schema.conversationTranscripts.id, input.transcriptId), eq(schema.conversationTranscripts.workflowConversationId, input.workflowConversationId), eq(schema.conversationTranscripts.organisationId, input.organisationId), eq(schema.conversationTranscripts.workflowSessionId, input.workflowSessionId), eq(schema.conversationTranscripts.pouId, input.pouId)))
       const permitted = new Set(turns.map((turn) => turn.id))
       if (content.evidenceTurnIds.some((id) => !permitted.has(id))) throw new ReviewDraftUnavailableError('The review draft references a turn outside its retained transcript.')
+      const phq9Evidence = input.pouId === 'kaitiakitanga'
+        ? validatePhq9ReviewEvidence(input.result.phq9Evidence ?? unknownPhq9ReviewEvidence(), permitted)
+        : null
       const pins = await tx.select().from(schema.workflowConversationPouSpecificationPins).where(eq(schema.workflowConversationPouSpecificationPins.workflowConversationId, input.workflowConversationId)).limit(1)
       const pin = pins[0]
       if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned organisation Pou review projection.')
@@ -95,7 +104,7 @@ export class PostgresConversationReviewDraftRepository {
       await tx.insert(schema.conversationReviewDraftRevisions).values({
         reviewDraftId: draft.id, revision: 1, source: 'generated', overallSummary: content.overallSummary,
         strengthsSummary: content.strengthsSummary, areasForAttentionSummary: content.areasForAttentionSummary,
-        evidenceTurnIds: content.evidenceTurnIds, createdAt: input.result.generatedAt,
+        evidenceTurnIds: content.evidenceTurnIds, phq9Evidence, createdAt: input.result.generatedAt,
       }).returning()
       const revision = await tx.select().from(schema.conversationReviewDraftRevisions).where(and(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id), eq(schema.conversationReviewDraftRevisions.revision, 1))).limit(1)
       if (!revision[0]) throw new ReviewDraftUnavailableError('Review draft provenance persistence failed.')
@@ -226,6 +235,7 @@ export class PostgresConversationReviewDraftRepository {
     if (row.draft.status === 'failed') return { status: 'failed', draft: null, assessmentCompleted: run.status === 'received', hasReviewableCandidate, resolvedSafetyReview }
     if (!row.revision || !row.draft.generatedAt) throw new ReviewDraftUnavailableError('Generated review draft is incomplete.')
     const content = readContent(row.revision)
+    const phq9Evidence = pouId === 'kaitiakitanga' ? readPhq9Evidence(row.revision) : undefined
     const criterionRows = await this.db.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, row.revision.id))
     const [pin] = await this.db.select({ projection: schema.workflowConversationPouSpecificationPins.pouReviewProjectionSnapshot })
       .from(schema.workflowConversationPouSpecificationPins)
@@ -234,7 +244,7 @@ export class PostgresConversationReviewDraftRepository {
     if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned Pou review projection.')
     const projection = pin.projection as PouReviewProjection
     const criteriaByCode = new Map(projection.criteria.map((criterion) => [criterion.criterionCode, criterion]))
-    return { status: 'ready', assessmentCompleted: run.status === 'received' || historicCompatibility, hasReviewableCandidate, resolvedSafetyReview, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, criterionAssessments: criterionRows.map((assessment) => {
+    return { status: 'ready', assessmentCompleted: run.status === 'received' || historicCompatibility, hasReviewableCandidate, resolvedSafetyReview, draft: { id: row.draft.id, revisionId: row.revision.id, revision: row.revision.revision, ...content, ...(phq9Evidence ? { phq9Evidence } : {}), criterionAssessments: criterionRows.map((assessment) => {
       const criterion = criteriaByCode.get(assessment.criterionCode)
       if (!criterion) throw new ReviewDraftUnavailableError('The review draft contains an unknown pinned criterion.')
       return { criterionCode: assessment.criterionCode, label: criterion.label, strengthsOrProtective: criterion.strengthsOrProtective, areasForAttention: criterion.areasForAttention, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] }
@@ -269,7 +279,8 @@ export class PostgresConversationReviewDraftRepository {
       const latest = revisions[0]
       if (!latest) throw new ReviewDraftUnavailableError('The generated review revision is unavailable.')
       if (latest.revision !== input.expectedRevision) throw new StaleReviewDraftError(latest.revision)
-      const [revision] = await tx.insert(schema.conversationReviewDraftRevisions).values({ reviewDraftId: draft.id, revision: latest.revision + 1, source: 'edited', overallSummary: content.overallSummary, strengthsSummary: content.strengthsSummary, areasForAttentionSummary: content.areasForAttentionSummary, evidenceTurnIds: content.evidenceTurnIds, createdByUserId: actor.id, createdAt: this.now() }).returning()
+      const phq9Evidence = draft.pouId === 'kaitiakitanga' ? readPhq9Evidence(latest) : undefined
+      const [revision] = await tx.insert(schema.conversationReviewDraftRevisions).values({ reviewDraftId: draft.id, revision: latest.revision + 1, source: 'edited', overallSummary: content.overallSummary, strengthsSummary: content.strengthsSummary, areasForAttentionSummary: content.areasForAttentionSummary, evidenceTurnIds: content.evidenceTurnIds, phq9Evidence: phq9Evidence ?? null, createdByUserId: actor.id, createdAt: this.now() }).returning()
       if (!revision || !draft.generatedAt) throw new ReviewDraftUnavailableError('Review draft editing failed.')
       const priorCriteria = await tx.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, latest.id))
       if (priorCriteria.length === 0) throw new ReviewDraftUnavailableError('The review evidence is unavailable.')
@@ -280,7 +291,7 @@ export class PostgresConversationReviewDraftRepository {
         .limit(1)
       if (!pin) throw new ReviewDraftUnavailableError('The review draft has no pinned Pou review projection.')
       const criteriaByCode = new Map((pin.projection as PouReviewProjection).criteria.map((criterion) => [criterion.criterionCode, criterion]))
-      return { id: draft.id, revisionId: revision.id, revision: revision.revision, ...content, criterionAssessments: priorCriteria.map((assessment) => {
+      return { id: draft.id, revisionId: revision.id, revision: revision.revision, ...content, ...(phq9Evidence ? { phq9Evidence } : {}), criterionAssessments: priorCriteria.map((assessment) => {
         const criterion = criteriaByCode.get(assessment.criterionCode)
         if (!criterion) throw new ReviewDraftUnavailableError('The review draft contains an unknown pinned criterion.')
         return { criterionCode: assessment.criterionCode, label: criterion.label, strengthsOrProtective: criterion.strengthsOrProtective, areasForAttention: criterion.areasForAttention, status: assessment.status as ReviewCriterionAssessment['status'], evidenceTurnIds: assessment.evidenceTurnIds as string[], missingInformationCodes: assessment.missingInformationCodes as string[] }

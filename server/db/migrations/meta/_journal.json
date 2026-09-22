@@ -169,6 +169,13 @@
       "when": 1790054578430,
       "tag": "0023_lush_prism",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790067530570,
+      "tag": "0024_pretty_tenebrous",
+      "breakpoints": true
     }
   ]
 }

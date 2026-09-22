@@ -90,7 +90,10 @@ describe('Whakapapa review-draft reconciliation', () => {
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       const [draft] = await connection.db.select().from(schema.conversationReviewDrafts).where(eq(schema.conversationReviewDrafts.assessmentRunId, run.id))
       const [revision] = await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id))
-      const [assessment] = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id))
+      const [assessment] = await connection.db.select().from(schema.conversationProviderRuleAssessments).where(and(
+        eq(schema.conversationProviderRuleAssessments.assessmentRunId, run.id),
+        eq(schema.conversationProviderRuleAssessments.outcome, 'possible_concern'),
+      ))
       const observationId = randomUUID()
       const historicAt = new Date('2026-08-13T01:00:00.000Z')
       await connection.db.insert(schema.workflowSafetyObservations).values({ id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id, assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low', status: 'active', currentRevision: 1, confirmedByUserId: actor.id, confirmedAt: historicAt, updatedAt: historicAt })

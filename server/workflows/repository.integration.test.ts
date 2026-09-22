@@ -9,6 +9,7 @@ import {
   organisations,
   workflowActions,
   workflowInteractions,
+  workflowKaitiakitangaPhq9Confirmations,
   workflowPouCheckpoints,
   workflowReferrals,
   workflowSafetyConsequences,
@@ -138,6 +139,16 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         },
       })).rejects.toThrow(StaleWorkflowError)
 
+      const phq9 = await repository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'kaitiakitanga-phq9-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3,
+          phq9Indicated: false, phq9Completed: false,
+        },
+      })
+      expect(phq9.workflow).toMatchObject({ version: 4, kaitiakitangaPhq9: { indicated: false, completed: false, supervisorEscalationRequired: false } })
+
       const pouKey = randomUUID()
       const pou = await repository.submitCommand({
         actor,
@@ -145,12 +156,12 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 3,
+          expectedVersion: 4,
           pouId: 'kaitiakitanga',
           note: 'A confirmed human observation.',
         },
       })
-      expect(pou).toMatchObject({ replayed: false, workflow: { version: 4, currentStage: 'pou-convo', currentPouId: 'tikanga' } })
+      expect(pou).toMatchObject({ replayed: false, workflow: { version: 5, currentStage: 'pou-convo', currentPouId: 'tikanga' } })
       expect(pou.workflow.checkpoints[0]).toMatchObject({
         progress: 'confirmed',
         // Ordinary narrative confirmation no longer carries concern or
@@ -174,7 +185,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       expect(independent.workflow.checkpoints.every((checkpoint) => checkpoint.progress === 'not_started')).toBe(true)
       const preserved = await repository.findById(actor, workflowId)
       expect(preserved).toMatchObject({
-        id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'tikanga', version: 4,
+        id: workflowId, status: 'in_progress', currentStage: 'pou-convo', currentPouId: 'tikanga', version: 5,
         readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
       })
       expect(preserved?.checkpoints.find((checkpoint) => checkpoint.pouId === 'kaitiakitanga')).toMatchObject({ progress: 'confirmed' })
@@ -197,25 +208,26 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 3,
+          expectedVersion: 4,
           pouId: 'kaitiakitanga',
           note: 'A confirmed human observation.',
         },
       })
-      expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 4 } })
+      expect(replayedPou).toMatchObject({ replayed: true, workflow: { version: 5 } })
       await expect(repository.submitCommand({
         actor,
         workflowSessionId: workflowId,
         command: {
           type: 'pou-review-confirmed',
           idempotencyKey: pouKey,
-          expectedVersion: 4,
+          expectedVersion: 5,
           pouId: 'kaitiakitanga',
           note: 'Changed request using the same key.',
         },
       })).rejects.toThrow(IdempotencyKeyReuseError)
     }, async (connection) => {
       for (const id of [workflowId, independentWorkflowId].filter((value): value is string => Boolean(value))) {
+        await connection.db.delete(workflowKaitiakitangaPhq9Confirmations).where(eq(workflowKaitiakitangaPhq9Confirmations.workflowSessionId, id))
         await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
         await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
         await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
@@ -355,6 +367,14 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
       version = setup.workflow.version
       let workflow = setup.workflow
       for (const pouId of ['kaitiakitanga', 'tikanga', 'whakapapa', 'manaakitanga', 'puukenga', 'haepapa', 'oranga'] as const) {
+        if (pouId === 'kaitiakitanga') {
+          const phq9 = await repository.submitCommand({
+            actor, workflowSessionId: workflowId,
+            command: { type: 'kaitiakitanga-phq9-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, phq9Indicated: false, phq9Completed: false },
+          })
+          version = phq9.workflow.version
+          workflow = phq9.workflow
+        }
         const result = await repository.submitCommand({
           actor,
           workflowSessionId: workflowId,
@@ -479,6 +499,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
           await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
           await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
           await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, id))
+          await connection.db.delete(workflowKaitiakitangaPhq9Confirmations).where(eq(workflowKaitiakitangaPhq9Confirmations.workflowSessionId, id))
           await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, id))
           await connection.db.delete(workflowActions).where(eq(workflowActions.workflowSessionId, id))
           await connection.db.delete(workflowReferrals).where(eq(workflowReferrals.workflowSessionId, id))
@@ -761,9 +782,13 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         actor, workflowSessionId: workflowId,
         command: { type: 'setup-confirmed', idempotencyKey: randomUUID(), expectedVersion: 1, whanauReference: 'Legacy-1', engagementType: 'hui', sessionFocus: 'Legacy fields remain non-authoritative.', immediateConcern: 'urgent', readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true } },
       })
+      const phq9 = await repository.submitCommand({
+        actor, workflowSessionId: workflowId,
+        command: { type: 'kaitiakitanga-phq9-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, phq9Indicated: false, phq9Completed: false },
+      })
       const pou = await repository.submitCommand({
         actor, workflowSessionId: workflowId,
-        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: setup.workflow.version, pouId: 'kaitiakitanga' },
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: phq9.workflow.version, pouId: 'kaitiakitanga' },
       })
       expect(pou.workflow.safety).toMatchObject({ observations: [], requiredConsequences: [], indicators: { activeObservationCount: 0, supervisorReviewRequired: false } })
       expect(await connection.db.select().from(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, workflowId))).toHaveLength(0)
@@ -790,6 +815,7 @@ describe.skipIf(!hasTestDatabaseUrl())('PostgreSQL workflow repository integrati
         await connection.db.delete(workflowSafetyRuleEvaluations).where(eq(workflowSafetyRuleEvaluations.organisationId, organisationId))
         await connection.db.delete(workflowSafetyObservationRevisions).where(eq(workflowSafetyObservationRevisions.organisationId, organisationId))
         await connection.db.delete(workflowSafetyObservations).where(eq(workflowSafetyObservations.workflowSessionId, workflowId))
+        await connection.db.delete(workflowKaitiakitangaPhq9Confirmations).where(eq(workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflowId))
         await connection.db.delete(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
         await connection.db.delete(workflowPouCheckpoints).where(eq(workflowPouCheckpoints.workflowSessionId, workflowId))
         await connection.db.delete(workflowSessions).where(eq(workflowSessions.id, workflowId))

@@ -405,6 +405,36 @@ describe('WhakapapaNarrativeReview', () => {
     cleanup()
   })
 
+  it('keeps a Kaitiakitanga PHQ-9 suggestion noncanonical until the Kaimahi explicitly confirms it', async () => {
+    const draft = {
+      id: '22222222-2222-4222-8222-222222222222', revisionId: '33333333-3333-4333-8333-333333333333', revision: 1,
+      overallSummary: 'A reflection included an explicit PHQ-9 total.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: [], generatedAt: '2026-09-22T00:00:00.000Z',
+      phq9Evidence: { indication: 'indicated', indicationEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], completion: 'completed', completionEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'] },
+    }
+    const onConfirmKaitiakitangaPhq9 = vi.fn()
+    const fetchMock = vi.fn((path: string) => path.endsWith('/review-draft')
+      ? Promise.resolve(new Response(JSON.stringify({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft } }), { status: 200 }))
+      : Promise.resolve(new Response(null, { status: 204 })))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={null} onConfirmKaitiakitangaPhq9={onConfirmKaitiakitangaPhq9} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(await screen.findByText('Suggested from your reflection. Check and explicitly confirm these details before continuing.')).toBeTruthy()
+    await waitFor(() => expect(screen.getByDisplayValue('12')).toBeTruthy())
+    expect((screen.getByRole('button', { name: 'Confirm PHQ-9 details' }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: 'Confirm PHQ-9 details before confirming' }) as HTMLButtonElement).disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm PHQ-9 details' }))
+    expect(onConfirmKaitiakitangaPhq9).toHaveBeenCalledWith({ phq9Indicated: true, phq9Completed: true, confirmedTotalScore: 12 })
+    expect((screen.getByRole('button', { name: 'Confirm PHQ-9 details' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('states the authoritative >=12 result without claiming a notification was sent', async () => {
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={{ indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' }} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(await screen.findByText('Supervisor escalation required')).toBeTruthy()
+    expect(screen.getByText(/Notification has not yet been sent/i)).toBeTruthy()
+    expect(screen.queryByText(/person is safe/i)).toBeNull()
+  })
+
   it('passes the current Pou into an explicit candidate confirmation and never falls back to Whakapapa', async () => {
     const command = candidateConfirmationCommand(reviewableCandidate, 'watch', 'manaakitanga', 7)
     expect(command?.observation).toMatchObject({ assessmentContext: 'pou', pouId: 'manaakitanga', broadClass: 'practice_quality', concernLevel: 'watch' })

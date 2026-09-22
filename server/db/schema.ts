@@ -760,6 +760,8 @@ export const conversationReviewDraftRevisions = pgTable(
     strengthsSummary: text('strengths_summary'),
     areasForAttentionSummary: text('areas_for_attention_summary'),
     evidenceTurnIds: jsonb('evidence_turn_ids').notNull(),
+    /** Noncanonical PHQ-9 candidate evidence; immutable with this review revision. */
+    phq9Evidence: jsonb('phq9_evidence'),
     createdByUserId: uuid('created_by_user_id'),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
   },

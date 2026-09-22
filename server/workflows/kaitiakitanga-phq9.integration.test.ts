@@ -101,8 +101,10 @@ describe.skipIf(!hasTestDatabaseUrl())('Kaitiakitanga authoritative PHQ-9 confir
       })).rejects.toThrow()
 
       const wrongStage = await prepare()
-      await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'kaitiakitanga' } })
-      await expect(repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 3 } })).rejects.toThrow(WorkflowTransitionError)
+      await expect(repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'kaitiakitanga' } })).rejects.toThrow('PHQ-9 details must be explicitly confirmed')
+      await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 2 } })
+      await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'kaitiakitanga' } })
+      await expect(repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 4 } })).rejects.toThrow(WorkflowTransitionError)
 
       const safetyWorkflow = await prepare()
       await repository.submitCommand({ actor, workflowSessionId: safetyWorkflow, command: {
