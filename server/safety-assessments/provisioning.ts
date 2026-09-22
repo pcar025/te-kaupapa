@@ -82,7 +82,9 @@ export class SafetyProvisioningService {
   /**
    * Re-derive an immutable provider projection from an existing approved
    * specification. This preserves the original approval provenance while
-   * allowing an operator to supersede an obsolete technical projection.
+   * allowing an operator to supersede an obsolete technical projection. The
+   * active ordinary Pou activation is relinked in the same transaction, so a
+   * newly selected provider can never leave the runtime with mismatched pins.
    */
   async reprojectAndActivateExisting(input: SafetyProjectionReactivationInput): Promise<{ specificationId: string; projectionId: string }> {
     return this.db.transaction(async (tx) => {
@@ -116,6 +118,27 @@ export class SafetyProvisioningService {
       await tx.insert(schema.safetySpecificationActivations).values({
         organisationId: input.organisationId, pouId: specification.pouId, specificationId: storedSpecification.id, projectionId: storedProjection.id,
         activatedByUserId: input.operatorUserId, activatedAt: this.now(),
+      })
+
+      const activePou = await tx.execute(sql`select * from organisation_pou_specification_activation where organisation_id = ${input.organisationId} and pou_id = ${specification.pouId} and deactivated_at is null for update`)
+      const activePouRow = activePou.rows[0] as { specification_id?: string; conversation_guidance_projection_id?: string; pou_review_projection_id?: string } | undefined
+      if (!activePouRow?.specification_id || !activePouRow.conversation_guidance_projection_id || !activePouRow.pou_review_projection_id) {
+        throw new SafetyProvisioningError('The active Pou specification could not be relinked to the provider projection.')
+      }
+      const [link] = await tx.insert(schema.organisationPouSafetySpecificationLinks).values({
+        organisationId: input.organisationId, pouId: specification.pouId, organisationPouSpecificationId: activePouRow.specification_id,
+        safetySpecificationId: storedSpecification.id, safetyProjectionId: storedProjection.id, createdAt: this.now(),
+      }).returning()
+      if (!link) throw new SafetyProvisioningError('The provider projection link could not be created.')
+      await tx.update(schema.organisationPouSpecificationActivations).set({ deactivatedAt: this.now() }).where(and(
+        eq(schema.organisationPouSpecificationActivations.organisationId, input.organisationId),
+        eq(schema.organisationPouSpecificationActivations.pouId, specification.pouId),
+        sql`${schema.organisationPouSpecificationActivations.deactivatedAt} is null`,
+      ))
+      await tx.insert(schema.organisationPouSpecificationActivations).values({
+        organisationId: input.organisationId, pouId: specification.pouId, specificationId: activePouRow.specification_id,
+        conversationGuidanceProjectionId: activePouRow.conversation_guidance_projection_id, pouReviewProjectionId: activePouRow.pou_review_projection_id,
+        safetyLinkId: link.id, activatedByUserId: input.operatorUserId, activatedAt: this.now(),
       })
       return { specificationId: storedSpecification.id, projectionId: storedProjection.id }
     })

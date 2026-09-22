@@ -30,6 +30,7 @@ const workflow: WorkflowView = {
   currentPouId: 'whakapapa',
   version: 2,
   setup: null,
+  readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
   checkpoints: [{ pouId: 'whakapapa', ordinal: 1, progress: 'not_started', userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
   actions: [],
   referrals: [],
@@ -157,7 +158,12 @@ describe('ConversationService', () => {
       ...workflow,
       currentStage: 'pou-convo' as const,
       currentPouId: 'manaakitanga' as const,
-      checkpoints: [{ pouId: 'manaakitanga' as const, ordinal: 2, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
+      checkpoints: [
+        { pouId: 'kaitiakitanga' as const, ordinal: 1, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'tikanga' as const, ordinal: 2, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'whakapapa' as const, ordinal: 3, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'manaakitanga' as const, ordinal: 4, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null },
+      ],
     }
     const application = new ConversationService(
       { findById: async () => manaWorkflow } as unknown as WorkflowRepository,
@@ -179,7 +185,12 @@ describe('ConversationService', () => {
       ...workflow,
       currentStage: 'pou-convo' as const,
       currentPouId: 'manaakitanga' as const,
-      checkpoints: [{ pouId: 'manaakitanga' as const, ordinal: 2, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null }],
+      checkpoints: [
+        { pouId: 'kaitiakitanga' as const, ordinal: 1, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'tikanga' as const, ordinal: 2, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'whakapapa' as const, ordinal: 3, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: new Date() },
+        { pouId: 'manaakitanga' as const, ordinal: 4, progress: 'not_started' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null },
+      ],
     }
     const application = new ConversationService(
       { findById: async () => manaWorkflow } as unknown as WorkflowRepository,

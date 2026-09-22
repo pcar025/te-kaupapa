@@ -14,6 +14,7 @@ import {
   type WorkflowInteractionType,
   type WorkflowPouConcern,
   type WorkflowPouId,
+  type WorkflowReadiness,
   type WorkflowReferralInput,
   type WorkflowReferralStatus,
   type SafetyBroadClass,
@@ -33,6 +34,7 @@ import {
   checkpointAfterReferralPlan,
   checkpointAfterSetup,
   checkpointAfterStructuredReview,
+  assertPreReflectionReadiness,
   WorkflowTransitionError,
 } from './domain.js'
 import {
@@ -218,6 +220,7 @@ export interface WorkflowView {
     additionalNotes: string | null
     immediateConcern: WorkflowImmediateConcern
   } | null
+  readiness: WorkflowReadiness
   checkpoints: WorkflowCheckpointView[]
   actions: WorkflowActionView[]
   referrals: WorkflowReferralView[]
@@ -643,8 +646,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         } else if (input.command.type === 'carry-forward-marked') {
           if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
           const isCurrentPou = workflow.currentPouId === input.command.pouId && (
-            (input.command.pouId === WORKFLOW_POU_IDS[0] && workflow.currentStage === 'pou-overview') ||
-            workflow.currentStage === 'pou-convo'
+            workflow.currentStage === 'pou-overview' || workflow.currentStage === 'pou-convo'
           )
           if (!isCurrentPou) throw new WorkflowTransitionError('Carry-forward items can be marked only during the current Pou review.')
           const [checkpoint] = await tx.select().from(schema.workflowPouCheckpoints).where(and(
@@ -695,6 +697,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           const isInitialSetup = workflow.status === 'draft' && workflow.currentStage === 'setup'
           const isSetupRevision = workflow.status === 'in_progress' && workflow.currentStage === 'pou-overview'
           if (!isInitialSetup && !isSetupRevision) throw new WorkflowTransitionError()
+          assertPreReflectionReadiness(input.command.readiness)
           const checkpoint = isInitialSetup
             ? checkpointAfterSetup()
             : { stage: workflow.currentStage, currentPouId: workflow.currentPouId }
@@ -704,6 +707,9 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             sessionFocus: input.command.sessionFocus,
             additionalNotes: input.command.additionalNotes || null,
             immediateConcern: input.command.immediateConcern,
+            verbalConsentConfirmed: input.command.readiness.verbalConsentConfirmed,
+            writtenConsentConfirmed: input.command.readiness.writtenConsentConfirmed,
+            initialRiskAssessmentCompleted: input.command.readiness.initialRiskAssessmentCompleted,
             status: 'in_progress',
             currentStage: checkpoint.stage,
             currentPouId: checkpoint.currentPouId,
@@ -714,14 +720,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           interactionType = 'setup_confirmed'
         } else if (input.command.type === 'pou-review-confirmed') {
           if (workflow.status !== 'in_progress') throw new WorkflowTransitionError()
-          const [checkpoint] = await tx
+          const confirmedPouId = input.command.pouId
+          const checkpoints = await tx
             .select()
             .from(schema.workflowPouCheckpoints)
-            .where(and(
-              eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id),
-              eq(schema.workflowPouCheckpoints.pouId, input.command.pouId),
-          ))
-          .limit(1)
+            .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
+            .orderBy(schema.workflowPouCheckpoints.ordinal)
+          const checkpoint = checkpoints.find((candidate) => candidate.pouId === confirmedPouId)
           if (!checkpoint) throw new WorkflowTransitionError('The Pou checkpoint could not be found.')
           if (this.safetyAssessments) {
             await this.safetyAssessments.assertNoUnresolvedForPouConfirmation(
@@ -741,7 +746,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           const next = checkpointAfterPouReview({
             stage: workflow.currentStage as WorkflowStage,
             currentPouId: workflow.currentPouId as WorkflowPouId | null,
-          }, input.command.pouId, checkpoint.progress === 'confirmed')
+          }, input.command.pouId, checkpoint.progress === 'confirmed', checkpoints.map((candidate) => candidate.pouId as WorkflowPouId))
           await tx.update(schema.workflowPouCheckpoints).set({
             progress: 'confirmed',
             userSelectedConcern: null,
@@ -1348,6 +1353,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       currentPouId: workflow.currentPouId as WorkflowPouId | null,
       version: workflow.version,
       setup,
+      readiness: {
+        verbalConsentConfirmed: workflow.verbalConsentConfirmed,
+        writtenConsentConfirmed: workflow.writtenConsentConfirmed,
+        initialRiskAssessmentCompleted: workflow.initialRiskAssessmentCompleted,
+      },
       checkpoints: checkpointViews,
       actions: actionViews,
       referrals: referralViews,

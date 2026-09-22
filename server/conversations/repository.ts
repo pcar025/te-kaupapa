@@ -142,7 +142,7 @@ export class PostgresConversationRepository implements ConversationRepository {
           .where(eq(schema.workflowSessions.id, input.workflowSessionId))
           .limit(1)
         const checkpoints = await tx
-          .select({ pouId: schema.workflowPouCheckpoints.pouId, progress: schema.workflowPouCheckpoints.progress })
+          .select({ pouId: schema.workflowPouCheckpoints.pouId, ordinal: schema.workflowPouCheckpoints.ordinal, progress: schema.workflowPouCheckpoints.progress })
           .from(schema.workflowPouCheckpoints)
           .where(eq(schema.workflowPouCheckpoints.workflowSessionId, input.workflowSessionId))
         if (!lockedWorkflow) throw new ConversationRepositoryError()
@@ -150,7 +150,7 @@ export class PostgresConversationRepository implements ConversationRepository {
           status: lockedWorkflow.status as ConversationWorkflowState['status'],
           currentStage: lockedWorkflow.currentStage as ConversationWorkflowState['currentStage'],
           currentPouId: lockedWorkflow.currentPouId as ConversationWorkflowState['currentPouId'],
-          checkpoints: checkpoints.map((checkpoint) => ({ pouId: checkpoint.pouId as WorkflowPouId, progress: checkpoint.progress as 'not_started' | 'confirmed' })),
+          checkpoints: checkpoints.map((checkpoint) => ({ pouId: checkpoint.pouId as WorkflowPouId, ordinal: checkpoint.ordinal, progress: checkpoint.progress as 'not_started' | 'confirmed' })),
         }
         assertConversationEligibility(workflowState, input.pouId)
 

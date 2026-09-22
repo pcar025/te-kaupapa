@@ -20,7 +20,7 @@ import {
   WorkflowNotFoundError,
   type WorkflowRepository,
 } from './workflows/repository.js'
-import { WorkflowTransitionError } from './workflows/domain.js'
+import { WorkflowReadinessError, WorkflowTransitionError } from './workflows/domain.js'
 import {
   ConversationAuthorizationAlreadyIssuedError,
   ConversationNotFoundError,
@@ -491,6 +491,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (error instanceof StaleSafetyObservationError) return reply.code(409).send({ error: 'stale_safety_observation', currentRevision: error.currentRevision })
     if (error instanceof SafetyObservationIdentifierReuseError) return reply.code(409).send({ error: 'safety_observation_identifier_reused' })
     if (error instanceof UnresolvedSafetyCandidateError) return reply.code(409).send({ error: 'unresolved_safety_candidate' })
+    if (error instanceof WorkflowReadinessError) return reply.code(409).send({ error: 'workflow_readiness_incomplete' })
     if (error instanceof WorkflowTransitionError) return reply.code(409).send({ error: 'invalid_transition' })
     if (error instanceof StaleWorkflowSynthesisError) return reply.code(409).send({ error: 'stale_synthesis', currentRevision: error.currentRevision })
     if (error instanceof WorkflowSynthesisUnavailableError) return reply.code(409).send({ error: 'synthesis_unavailable' })
@@ -572,6 +573,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     sessionFocus: z.string().trim().min(3).max(4_000),
     additionalNotes: z.string().trim().max(4_000).optional(),
     immediateConcern: z.enum(WORKFLOW_IMMEDIATE_CONCERNS),
+    readiness: z.object({
+      verbalConsentConfirmed: z.boolean(),
+      writtenConsentConfirmed: z.boolean(),
+      initialRiskAssessmentCompleted: z.boolean(),
+    }).strict(),
   })
   const pouReviewCommandSchema = z.object({
     type: z.literal('pou-review-confirmed'),

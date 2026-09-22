@@ -5,6 +5,7 @@ import type {
   WorkflowCommand,
   WorkflowEngagementType,
   WorkflowImmediateConcern,
+  WorkflowReadiness,
   WorkflowPouConcern,
   WorkflowPouId,
   WorkflowStage,
@@ -40,6 +41,7 @@ export interface Workflow {
     additionalNotes: string | null
     immediateConcern: WorkflowImmediateConcern
   } | null
+  readiness: WorkflowReadiness
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]

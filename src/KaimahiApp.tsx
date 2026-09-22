@@ -481,7 +481,7 @@ function HomeScreen({
               <div style={{ backgroundColor: 'var(--color-surface)', borderLeft: '4px solid var(--color-ridge)', padding: '1rem 1.25rem' }}>
                 <p className="text-xs tracking-wide mb-1" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>TĪMATA HOU</p>
                 <p className="text-base font-medium italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>Start a new reflection</p>
-                <p className="mt-1 text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Begin fresh, then enter Whakapapa →</p>
+                <p className="mt-1 text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Begin fresh, then enter Kaitiakitanga →</p>
               </div>
             </button>
             {savedSessions.filter((session) => session.reference !== sessionRef).length > 0 && (

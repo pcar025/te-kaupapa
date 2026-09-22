@@ -2,6 +2,7 @@ import {
   WORKFLOW_POU_IDS,
   type WorkflowCheckpoint,
   type WorkflowPouId,
+  type WorkflowReadiness,
   type WorkflowStage,
 } from '../../shared/workflow.js'
 
@@ -9,6 +10,19 @@ export class WorkflowTransitionError extends Error {
   constructor(message = 'The workflow is not at the required checkpoint.') {
     super(message)
     this.name = 'WorkflowTransitionError'
+  }
+}
+
+export class WorkflowReadinessError extends WorkflowTransitionError {
+  constructor() {
+    super('All pre-reflection requirements must be confirmed before the reflection journey can begin.')
+    this.name = 'WorkflowReadinessError'
+  }
+}
+
+export function assertPreReflectionReadiness(readiness: WorkflowReadiness): void {
+  if (!readiness.verbalConsentConfirmed || !readiness.writtenConsentConfirmed || !readiness.initialRiskAssessmentCompleted) {
+    throw new WorkflowReadinessError()
   }
 }
 
@@ -24,8 +38,9 @@ export function checkpointAfterPouReview(
   checkpoint: WorkflowCheckpoint,
   pouId: WorkflowPouId,
   alreadyConfirmed: boolean,
+  pouSequence: readonly WorkflowPouId[] = WORKFLOW_POU_IDS,
 ): WorkflowCheckpoint {
-  const pouIndex = WORKFLOW_POU_IDS.indexOf(pouId)
+  const pouIndex = pouSequence.indexOf(pouId)
   if (pouIndex === -1) throw new WorkflowTransitionError('The Pou is not recognised.')
 
   if (alreadyConfirmed) return checkpoint
@@ -35,7 +50,7 @@ export function checkpointAfterPouReview(
     throw new WorkflowTransitionError()
   }
 
-  const nextPouId = WORKFLOW_POU_IDS[pouIndex + 1]
+  const nextPouId = pouSequence[pouIndex + 1]
   return nextPouId
     ? { stage: 'pou-convo', currentPouId: nextPouId }
     : { stage: 'pou-summary', currentPouId: null }

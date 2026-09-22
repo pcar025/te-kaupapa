@@ -18,6 +18,7 @@ function workflowFixture(overrides: Partial<Workflow> = {}): Workflow {
   const base: Workflow = {
     id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'in_progress', currentStage: 'pou-review' as Workflow['currentStage'], currentPouId: 'whakapapa', version: 2,
     setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'none' }, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: emptySafety,
+    readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
     structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: null }, completedAt: null, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
   }
   return { ...base, ...overrides }
@@ -48,6 +49,12 @@ function interactionCalls() {
   return vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith('/interactions') && (init as RequestInit | undefined)?.method === 'POST')
 }
 
+async function confirmReadiness(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByLabelText('Verbal consent has been obtained.'))
+  await user.click(screen.getByLabelText('Written consent has been obtained and filed.'))
+  await user.click(screen.getByLabelText('The initial risk assessment has been completed.'))
+}
+
 afterEach(() => cleanup())
 
 beforeEach(() => {
@@ -68,7 +75,7 @@ beforeEach(() => {
     ...workflow,
     status: 'in_progress',
     currentStage: 'pou-overview',
-    currentPouId: 'whakapapa',
+    currentPouId: 'kaitiakitanga',
     version: 2,
     setup: {
       whanauReference: 'TW-04',
@@ -105,6 +112,23 @@ beforeEach(() => {
 })
 
 describe('approved application smoke paths', () => {
+  it('resumes a historic Whakapapa-first journey from its persisted checkpoint order', async () => {
+    const historic = workflowFixture({
+      currentStage: 'pou-overview',
+      currentPouId: 'whakapapa',
+      checkpoints: ['whakapapa', 'manaakitanga', 'tikanga', 'kaitiakitanga', 'puukenga', 'haepapa', 'oranga'].map((pouId, index) => ({
+        pouId: pouId as Workflow['checkpoints'][number]['pouId'], ordinal: index + 1, progress: 'not_started' as const,
+        userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null,
+      })),
+    })
+    const user = userEvent.setup()
+    render(<SessionShell workflow={historic} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
+
+    const begin = screen.getByRole('button', { name: /Begin with Pou 1 of 7.*Whakapapa & Identity Safety/i })
+    await user.click(begin)
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).includes(`/api/workflows/${historic.id}/pou/whakapapa/conversation`))).toBe(true))
+  })
+
   it('keeps narrative Pou confirmation separate from formal safety and governance controls', async () => {
     const initial = workflowFixture()
     const acknowledged = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'manaakitanga', version: 3 })
@@ -115,7 +139,7 @@ describe('approved application smoke paths', () => {
     await screen.findByText(/Manual Whakapapa review/i)
     expect(screen.queryByRole('button', { name: 'Urgent' })).toBeNull()
     expect(screen.queryByRole('button', { name: /Request supervisor review/i })).toBeNull()
-    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
+    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 4/i }))
     await waitFor(() => expect(interactionCalls()).toHaveLength(1))
     const command = JSON.parse(String(interactionCalls()[0]?.[1]?.body))
     expect(command).toMatchObject({ type: 'pou-review-confirmed' })
@@ -282,12 +306,12 @@ describe('approved application smoke paths', () => {
     expect(screen.getByRole('button', { name: 'Watch' })).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Action' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Urgent' })).toBeNull()
-    expect(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }).hasAttribute('disabled')).toBe(false)
-    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
+    expect(screen.getByRole('button', { name: /Confirm & continue to Pou 4/i }).hasAttribute('disabled')).toBe(false)
+    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 4/i }))
     expect(interactionCalls()).toHaveLength(0)
     await user.click(screen.getByLabelText('Practice quality'))
     await user.click(screen.getByRole('button', { name: 'Action' }))
-    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
+    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 4/i }))
     await waitFor(() => expect(interactionCalls()).toHaveLength(2))
     const first = JSON.parse(String(interactionCalls()[0]?.[1]?.body))
     const second = JSON.parse(String(interactionCalls()[1]?.[1]?.body))
@@ -314,7 +338,7 @@ describe('approved application smoke paths', () => {
     await user.click(screen.getByRole('button', { name: 'Record this as a safety concern' }))
     await user.click(screen.getByLabelText('Whānau safety'))
     await user.click(screen.getByRole('button', { name: 'Watch' }))
-    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 2/i }))
+    await user.click(screen.getByRole('button', { name: /Confirm & continue to Pou 4/i }))
     expect(await screen.findByText('A safety concern has not yet been saved.')).toBeTruthy()
     const failedSafetyCommand = String(interactionCalls()[1]?.[1]?.body)
     await user.click(screen.getByRole('button', { name: 'Try again' }))
@@ -327,16 +351,17 @@ describe('approved application smoke paths', () => {
   it('does not create a safety concern from an urgent setup selection without explicit confirmation', async () => {
     const initial: Workflow = {
       id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'draft', currentStage: 'setup', currentPouId: null, version: 1,
-      setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: emptySafety,
+      setup: null, readiness: { verbalConsentConfirmed: false, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: false }, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: emptySafety,
       structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: null }, completedAt: null, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
     }
-    const acknowledged: Workflow = { ...initial, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2, setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' } }
+    const acknowledged: Workflow = { ...initial, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'kaitiakitanga', version: 2, setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' } }
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) }))
     function Harness() { const [workflow, setWorkflow] = useState(initial); return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} /> }
     const user = userEvent.setup()
     render(<Harness />)
     await user.type(screen.getByPlaceholderText('e.g. TW-04'), 'TW-04')
     await user.type(screen.getByPlaceholderText('What was the purpose or focus of this engagement?'), 'Support discussion')
+    await confirmReadiness(user)
     await user.click(screen.getByRole('button', { name: /An immediate concern exists/i }))
     await user.click(screen.getByRole('button', { name: /Uru atu ki te whare/i }))
     expect(await screen.findByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeTruthy()
@@ -347,10 +372,10 @@ describe('approved application smoke paths', () => {
   it('requires a broad class and submits an explicitly selected setup safety concern after setup acknowledgement', async () => {
     const initial: Workflow = {
       id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'draft', currentStage: 'setup', currentPouId: null, version: 1,
-      setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: emptySafety,
+      setup: null, readiness: { verbalConsentConfirmed: false, writtenConsentConfirmed: false, initialRiskAssessmentCompleted: false }, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: emptySafety,
       structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: null }, completedAt: null, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
     }
-    const setupAcknowledged: Workflow = { ...initial, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'whakapapa', version: 2, setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' } }
+    const setupAcknowledged: Workflow = { ...initial, status: 'in_progress', currentStage: 'pou-overview', currentPouId: 'kaitiakitanga', version: 2, setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' } }
     const safetyAcknowledged: Workflow = { ...setupAcknowledged, version: 3, safety: { ...emptySafety, observations: [{ id: 'f5a90392-fc8e-4f4c-a4d0-e54a8a210269', assessmentContext: 'setup', pouId: null, broadClass: 'whanau_safety', concernLevel: 'urgent', contextNote: null, status: 'active', currentRevision: 1, confirmedAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', retractedAt: null }], indicators: { ...emptySafety.indicators, activeObservationCount: 1, urgentObservationCount: 1, supervisorReviewRequired: true, supervisorNotificationRequired: true } } }
     let interaction = 0
     vi.stubGlobal('fetch', vi.fn().mockImplementation(() => Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: ++interaction === 1 ? setupAcknowledged : safetyAcknowledged, acknowledgement: { replayed: false } }) })))
@@ -359,6 +384,7 @@ describe('approved application smoke paths', () => {
     render(<Harness />)
     await user.type(screen.getByPlaceholderText('e.g. TW-04'), 'TW-04')
     await user.type(screen.getByPlaceholderText('What was the purpose or focus of this engagement?'), 'Support discussion')
+    await confirmReadiness(user)
     await user.click(screen.getByRole('button', { name: /An immediate concern exists/i }))
     await user.click(screen.getByRole('button', { name: 'Record this as a safety concern' }))
     expect((screen.getByRole('button', { name: /Complete the fields above to continue/i }) as HTMLButtonElement).disabled).toBe(true)
@@ -381,7 +407,7 @@ describe('approved application smoke paths', () => {
     }
     const workflow: Workflow = {
       id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'completed', currentStage: 'complete', currentPouId: null, version: 8,
-      setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' }, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: urgentSafety,
+      setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Support discussion', additionalNotes: null, immediateConcern: 'urgent' }, readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true }, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], safety: urgentSafety,
       structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints: [], actions: [], referrals: [], carryForwards: [], pouReviews: [], createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: '2026-08-10T00:00:00.000Z' }, completedAt: '2026-08-10T00:00:00.000Z', createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z',
     }
     render(<SessionShell workflow={workflow} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
@@ -426,6 +452,7 @@ describe('approved application smoke paths', () => {
     render(<Harness />)
     await user.type(screen.getByPlaceholderText('e.g. TW-04'), 'TW-04')
     await user.type(screen.getByPlaceholderText('What was the purpose or focus of this engagement?'), 'Support discussion')
+    await confirmReadiness(user)
     await user.click(screen.getByRole('button', { name: /An immediate concern exists/i }))
     await user.click(screen.getByRole('button', { name: 'Record this as a safety concern' }))
     await user.click(screen.getByLabelText('Whānau safety'))
@@ -533,6 +560,7 @@ describe('approved application smoke paths', () => {
       id: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', reference: 'TK-7K4M2P9Q', status: 'in_progress',
       currentStage: 'pou-summary', currentPouId: null, version: 9,
       setup: { whanauReference: 'TW-04', engagementType: 'home-visit', sessionFocus: 'Whānau support discussion', additionalNotes: null, immediateConcern: 'none' },
+      readiness: { verbalConsentConfirmed: true, writtenConsentConfirmed: true, initialRiskAssessmentCompleted: true },
       checkpoints, actions: [], referrals: [], carryForwards: [], pouReviews, completedAt: null,
       safety: emptySafety,
       structuredReview: { reference: 'TK-7K4M2P9Q', setup: null, checkpoints, actions: [], referrals: [], carryForwards: [], pouReviews, createdAt: '2026-08-10T00:00:00.000Z', updatedAt: '2026-08-10T00:00:00.000Z', completedAt: null },
@@ -738,6 +766,12 @@ describe('approved application smoke paths', () => {
     await user.type(screen.getByPlaceholderText('e.g. TW-04'), 'tw-04')
     await user.type(screen.getByPlaceholderText('What was the purpose or focus of this engagement?'), 'Whānau support discussion')
     await user.click(screen.getByRole('button', { name: /No immediate concern/i }))
+    expect(screen.getByText(/Complete these requirements before continuing/i)).toBeTruthy()
+    expect((screen.getByRole('button', { name: /Complete the fields above to continue/i }) as HTMLButtonElement).disabled).toBe(true)
+    await user.click(screen.getByLabelText('Verbal consent has been obtained.'))
+    await user.click(screen.getByLabelText('Written consent has been obtained and filed.'))
+    expect((screen.getByRole('button', { name: /Complete the fields above to continue/i }) as HTMLButtonElement).disabled).toBe(true)
+    await user.click(screen.getByLabelText('The initial risk assessment has been completed.'))
     await user.click(screen.getByRole('button', { name: /Uru atu ki te whare/i }))
 
     expect(await screen.findByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeTruthy()
@@ -745,6 +779,11 @@ describe('approved application smoke paths', () => {
       '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/interactions',
       expect.objectContaining({ method: 'POST' }),
     )
+    expect(JSON.parse(String(interactionCalls()[0]?.[1]?.body)).readiness).toEqual({
+      verbalConsentConfirmed: true,
+      writtenConsentConfirmed: true,
+      initialRiskAssessmentCompleted: true,
+    })
   })
 
   it('loads and resumes the server-authoritative workflow checkpoint after entry', async () => {
@@ -827,6 +866,7 @@ describe('approved application smoke paths', () => {
 
     await user.click(await screen.findByRole('button', { name: 'Kaimahi — Tīmata Kōrero' }))
     await screen.findByText('SESSION IN PROGRESS')
+    expect(screen.getByText('Begin fresh, then enter Kaitiakitanga →')).toBeTruthy()
     await user.click(screen.getByRole('button', { name: /Start a new reflection/i }))
 
     expect(await screen.findByRole('heading', { name: /Pause at the entrance/i })).toBeTruthy()
