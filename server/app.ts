@@ -56,6 +56,7 @@ import { PostgresWorkflowSynthesisRepository, WorkflowSynthesisInProgressError }
 import type { WorkflowSynthesisProvider } from './workflow-synthesis/provider.js'
 import { StaleWorkflowSynthesisError, WorkflowSynthesisUnavailableError } from './workflow-synthesis/domain.js'
 import { createFinalRecordPdf, finalRecordPlainText } from './workflow-synthesis/final-record.js'
+import { logPouReviewTiming } from './observability/pou-review-timing.js'
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
@@ -892,8 +893,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     const params = z.object({ workflowSessionId: z.string().uuid(), pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
     if (!params.success) return reply.code(404).send({ error: 'not_found' })
     try {
+      const startedAt = process.hrtime.bigint()
       reply.header('cache-control', 'no-store')
-      return { review: await reviewDraftRepository.findForKaimahi(user, params.data.workflowSessionId, params.data.pouId) }
+      const review = await reviewDraftRepository.findForKaimahi(user, params.data.workflowSessionId, params.data.pouId)
+      if (review.status === 'ready' && review.draft) logPouReviewTiming(request.log, startedAt, now(), 'review_ready_available', { workflowSessionId: params.data.workflowSessionId, reviewDraftId: review.draft.id, pouId: params.data.pouId })
+      return { review }
     } catch (error) {
       if (error instanceof ReviewDraftUnavailableError) return reply.code(404).send({ error: 'not_found' })
       request.log.warn({ category: 'review_draft_lookup_failed' }, 'Whakapapa review draft lookup failed')
@@ -982,7 +986,9 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     const body = conversationEndSchema.safeParse(request.body)
     if (!params.success || !body.success) return reply.code(400).send({ error: 'invalid_request' })
     try {
+      const startedAt = process.hrtime.bigint()
       const conversation = await conversationService.end(user, params.data.conversationId, body.data.reason as ConversationTerminationReason)
+      logPouReviewTiming(request.log, startedAt, now(), 'conversation_end_acknowledged', { conversationId: conversation.id, workflowSessionId: conversation.workflowSessionId, pouId: conversation.pouId })
       reply.header('cache-control', 'no-store')
       return { conversation: publicConversation(conversation) }
     } catch (error) {
@@ -1012,6 +1018,8 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       webhookApp.addContentTypeParser('application/json', { parseAs: 'buffer', bodyLimit: config.elevenlabsWebhook!.maximumBodyBytes }, (_request, body, done) => done(null, body))
       webhookApp.post('/api/integrations/elevenlabs/post-call', async (request, reply) => {
         if (!Buffer.isBuffer(request.body)) return reply.code(415).send({ error: 'unsupported_media_type' })
+        const webhookStartedAt = process.hrtime.bigint()
+        logPouReviewTiming(request.log, webhookStartedAt, now(), 'post_call_webhook_received', {}, { bodyBytes: request.body.length })
         try {
           verifier.verify(request.body, request.headers[elevenLabsSignatureHeader] as string | undefined, now())
           const event = parseElevenLabsPostCallTranscript(request.body)
@@ -1030,16 +1038,23 @@ export async function createApplication(dependencies: AppDependencies): Promise<
               throw new ElevenLabsGuidanceProvenanceMismatchError('Provider conversation guidance did not match the server-pinned projection.')
             }
           }
+          const correlation = { conversationId: pin.workflowConversationId, workflowSessionId: pin.workflowSessionId, assessmentRunId: pin.runId, pouId: pin.pouId }
+          logPouReviewTiming(request.log, webhookStartedAt, now(), 'post_call_webhook_validated', correlation, { bodyBytes: request.body.length })
           const reservation = await safetyAssessmentRepository.reserveDelivery({ provider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, assessmentRunId: pin.runId })
           if (reservation.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
           if (reservation.replayed) return reply.code(200).send({ accepted: true, replayed: true, superseded: pin.superseded })
           if (reservation.inFlight) return reply.code(503).send({ error: 'delivery_in_progress' })
           try {
+            const normalizationStartedAt = process.hrtime.bigint()
+            const normalizedTurns = normaliseSignedTranscript(event.transientTranscript)
+            logPouReviewTiming(request.log, normalizationStartedAt, now(), 'transcript_normalized', correlation, { turnCount: normalizedTurns.length })
+            const transcriptPersistenceStartedAt = process.hrtime.bigint()
             const retainedTranscript = await transcriptRepository.retainForConversation({
               organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId,
               workflowConversationId: pin.workflowConversationId, provider: 'elevenlabs', providerConversationId: event.providerConversationId,
-              turns: normaliseSignedTranscript(event.transientTranscript),
+              turns: normalizedTurns,
             })
+            logPouReviewTiming(request.log, transcriptPersistenceStartedAt, now(), 'transcript_persisted', correlation, { turnCount: retainedTranscript.turns.length })
             if (!pin.requiresAssessment || reservation.superseded) {
               const outcome = await safetyAssessmentRepository.ingest({
                 deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
@@ -1055,7 +1070,13 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             if (!conversationReviewDraftProvider) reviewFailure = 'provider_unavailable'
             else if (!pin.reviewProjection) reviewFailure = 'invalid_output'
             else {
-              try { reviewResult = await conversationReviewDraftProvider.generatePouReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection }) }
+              logPouReviewTiming(request.log, webhookStartedAt, now(), 'narrative_review_enqueued', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length })
+              const reviewStartedAt = process.hrtime.bigint()
+              logPouReviewTiming(request.log, webhookStartedAt, now(), 'narrative_review_started', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length })
+              try {
+                reviewResult = await conversationReviewDraftProvider.generatePouReviewDraft({ transcriptTurns: retainedTranscript.turns, reviewProjection: pin.reviewProjection })
+                logPouReviewTiming(request.log, reviewStartedAt, now(), 'narrative_review_completed', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length })
+              }
               catch { reviewFailure = 'invalid_output' }
             }
             // A source-derived Pou with no approved bounded safety rule must
@@ -1065,15 +1086,19 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             let assessment: Awaited<ReturnType<ConversationAssessmentProvider['assessPouConversation']>> | undefined
             if (shouldAssessSafety) {
               if (!conversationAssessmentProvider) throw new ConversationAssessmentProviderError('Assessment provider is unavailable.')
+              logPouReviewTiming(request.log, webhookStartedAt, now(), 'structured_assessment_enqueued', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length, safetyRuleCount: pin.projection.rules.length })
+              const assessmentStartedAt = process.hrtime.bigint()
+              logPouReviewTiming(request.log, webhookStartedAt, now(), 'structured_assessment_started', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length, safetyRuleCount: pin.projection.rules.length })
               try {
                 assessment = await conversationAssessmentProvider.assessPouConversation({ transcriptTurns: retainedTranscript.turns, assessmentProjection: pin.projection })
+                logPouReviewTiming(request.log, assessmentStartedAt, now(), 'structured_assessment_completed', correlation, { executionMode: 'inline', turnCount: retainedTranscript.turns.length, safetyRuleCount: pin.projection.rules.length })
               } catch (error) {
                 // A usable narrative remains explicitly noncanonical even where a
                 // separate safety interpretation was unavailable.
                 if (reviewResult && reviewDraftRepository) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
                 throw error
               }
-            }
+            } else logPouReviewTiming(request.log, webhookStartedAt, now(), 'structured_assessment_not_required', correlation, { safetyRuleCount: 0 })
             const outcome = await safetyAssessmentRepository.ingest({
               deliveryProvider: 'elevenlabs', deliveryId: event.deliveryId, payloadHash, providerConversationId: event.providerConversationId,
               agentReference: event.agentReference, branchReference: event.branchReference, environment: event.environment,
@@ -1087,7 +1112,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
             })
             if (outcome.conflict) return reply.code(409).send({ error: 'delivery_conflict' })
             if (reviewDraftRepository) {
-              if (reviewResult) await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+              if (reviewResult) {
+                const reviewPersistenceStartedAt = process.hrtime.bigint()
+                await reviewDraftRepository.recordGenerated({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, transcriptId: retainedTranscript.transcriptId, result: reviewResult })
+                logPouReviewTiming(request.log, reviewPersistenceStartedAt, now(), 'review_persisted', correlation)
+              }
               else if (reviewFailure) await reviewDraftRepository.recordFailed({ assessmentRunId: pin.runId, workflowConversationId: pin.workflowConversationId, organisationId: pin.organisationId, workflowSessionId: pin.workflowSessionId, pouId: pin.pouId, category: reviewFailure })
             }
             return reply.code(outcome.replayed ? 200 : 202).send({ accepted: true, replayed: outcome.replayed, superseded: outcome.superseded })

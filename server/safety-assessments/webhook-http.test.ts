@@ -73,8 +73,11 @@ describe('post-call HTTP raw-body boundary', () => {
       await app.close()
       expect(JSON.stringify(ingest.mock.calls[0]?.[0])).not.toContain(transcriptSentinel)
       expect(JSON.stringify(ingest.mock.calls[0]?.[0])).not.toContain(audioSentinel)
-      expect(writes.join('')).not.toContain(transcriptSentinel)
-      expect(writes.join('')).not.toContain(audioSentinel)
+      const output = writes.join('')
+      expect(output).toContain('"event":"pou_review_timing"')
+      expect(output).toContain('"stage":"transcript_persisted"')
+      expect(output).not.toContain(transcriptSentinel)
+      expect(output).not.toContain(audioSentinel)
     } finally {
       await app.close()
       write.mockRestore()

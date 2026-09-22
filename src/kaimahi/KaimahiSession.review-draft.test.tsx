@@ -35,7 +35,7 @@ describe('WhakapapaNarrativeReview', () => {
     expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
     expect(screen.queryByRole('button', { name: /confirm/i })).toBeNull()
 
-    await act(async () => { await vi.advanceTimersByTimeAsync(4_000) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
     expect(onReady).toHaveBeenCalledTimes(1)
     expect(screen.queryByText(/WHAT WE HEARD — REVIEW DRAFT/i)).toBeNull()
   })
@@ -51,6 +51,73 @@ describe('WhakapapaNarrativeReview', () => {
     render(<PouReviewProcessingStage workflowId={workflowId} pouId="whakapapa" onReady={onReady} onManualReview={() => undefined} />)
     await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1))
     expect(screen.getByText('Opening your Pou review…')).toBeTruthy()
+  })
+
+  it('polls once per second only while the dedicated processing screen remains analysing', async () => {
+    vi.useFakeTimers()
+    const analysing = () => new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 })
+    const fetchMock = vi.fn(() => Promise.resolve(analysing()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PouReviewProcessingStage workflowId={workflowId} pouId="kaitiakitanga" onReady={() => undefined} onManualReview={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(999) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(1) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not use the faster cadence outside the processing presentation', async () => {
+    vi.useFakeTimers()
+    const analysing = () => new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 })
+    const fetchMock = vi.fn(() => Promise.resolve(analysing()))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PouNarrativeReview workflowId={workflowId} pouId="kaitiakitanga" onDraftState={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not overlap a slow processing-screen poll and cleans it up on unmount', async () => {
+    vi.useFakeTimers()
+    let resolveSlowPoll: (response: Response) => void = () => undefined
+    const slowPoll = new Promise<Response>((resolve) => { resolveSlowPoll = resolve })
+    const analysing = () => new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 })
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(analysing())
+      .mockReturnValueOnce(slowPoll)
+    vi.stubGlobal('fetch', fetchMock)
+
+    const view = render(<PouReviewProcessingStage workflowId={workflowId} pouId="kaitiakitanga" onReady={() => undefined} onManualReview={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+
+    view.unmount()
+    resolveSlowPoll(analysing())
+    await act(async () => { await Promise.resolve() })
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('stops processing-screen polling after a terminal review failure', async () => {
+    vi.useFakeTimers()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ review: { status: 'analysing', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ review: { status: 'failed', draft: null, assessmentCompleted: true, hasReviewableCandidate: false } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(<PouReviewProcessingStage workflowId={workflowId} pouId="kaitiakitanga" onReady={() => undefined} onManualReview={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(0) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000) })
+    expect(screen.getByText('We couldn’t finish preparing your review.')).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
   })
 
   it('keeps a review-generation failure on the processing screen and offers only the truthful manual fallback', async () => {
