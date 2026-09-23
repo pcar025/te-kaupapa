@@ -63,6 +63,8 @@ describe.skipIf(!hasTestDatabaseUrl())('Kaitiakitanga authoritative PHQ-9 confir
         [{ phq9Indicated: true, phq9Completed: true, confirmedTotalScore: 27 }, { score: 27, required: true }],
       ] as const) {
         const { result } = await confirm(facts)
+        expect(result.workflow).toMatchObject({ currentStage: 'pou-overview', currentPouId: 'kaitiakitanga' })
+        expect(result.workflow.checkpoints.find((checkpoint) => checkpoint.pouId === 'kaitiakitanga')).toMatchObject({ progress: 'not_started' })
         expect(result.workflow.kaitiakitangaPhq9).toMatchObject({ confirmedTotalScore: expected.score, supervisorEscalationRequired: expected.required, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1 })
         expect(result.workflow.safety).toMatchObject({ observations: [], requiredConsequences: [] })
       }
@@ -84,7 +86,9 @@ describe.skipIf(!hasTestDatabaseUrl())('Kaitiakitanga authoritative PHQ-9 confir
       const command = { type: 'kaitiakitanga-phq9-confirmed' as const, idempotencyKey, expectedVersion: 2, phq9Indicated: true, phq9Completed: true, confirmedTotalScore: 12 }
       const accepted = await repository.submitCommand({ actor, workflowSessionId: workflowId, command })
       const replay = await repository.submitCommand({ actor, workflowSessionId: workflowId, command })
+      const acceptedInteractions = await connection.db.select({ type: workflowInteractions.type }).from(workflowInteractions).where(eq(workflowInteractions.workflowSessionId, workflowId))
       expect(replay).toMatchObject({ replayed: true, interactionId: accepted.interactionId, workflow: { version: 3, kaitiakitangaPhq9: { supervisorEscalationRequired: true } } })
+      expect(acceptedInteractions.map((interaction) => interaction.type)).toEqual(['workflow_created', 'setup_confirmed', 'kaitiakitanga_phq9_confirmed'])
       expect(await connection.db.select().from(workflowKaitiakitangaPhq9Confirmations).where(eq(workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflowId))).toHaveLength(1)
       await expect(repository.submitCommand({ actor: foreignActor, workflowSessionId: workflowId, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 3 } })).rejects.toThrow(WorkflowNotFoundError)
 
@@ -103,7 +107,8 @@ describe.skipIf(!hasTestDatabaseUrl())('Kaitiakitanga authoritative PHQ-9 confir
       const wrongStage = await prepare()
       await expect(repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'kaitiakitanga' } })).rejects.toThrow('PHQ-9 details must be explicitly confirmed')
       await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 2 } })
-      await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'kaitiakitanga' } })
+      const advanced = await repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'kaitiakitanga' } })
+      expect(advanced.workflow).toMatchObject({ currentStage: 'pou-convo', currentPouId: 'tikanga' })
       await expect(repository.submitCommand({ actor, workflowSessionId: wrongStage, command: { ...command, idempotencyKey: randomUUID(), expectedVersion: 4 } })).rejects.toThrow(WorkflowTransitionError)
 
       const safetyWorkflow = await prepare()

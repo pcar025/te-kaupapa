@@ -2295,7 +2295,10 @@ export function SinglePouReviewStage({
     : item.source.kind === 'areas_for_attention' ? `attention:${item.source.reviewDraftRevisionId}` : `safety:${item.source.observationId}`))
   const currentPouSafety = (safetyObservations ?? []).filter((observation) => observation.status === 'active' && observation.assessmentContext === 'pou' && observation.pouId === TE_WAHAROA_POU[pouIdx]!.id)
 
-  if (persistenceState === 'saving' || persistenceState === 'retrying') {
+  // PHQ-9 confirmation is an inline Kaitiakitanga-review substep. Keep the
+  // review visible while that bounded command is acknowledged; the form itself
+  // is disabled below to prevent a duplicate submission.
+  if ((persistenceState === 'saving' || persistenceState === 'retrying') && !phq9Pending) {
     return (
       <div className="flex flex-col items-center justify-center" style={{ minHeight: '70vh', fontFamily: 'var(--font-body)' }}>
         <div className="flex gap-1 mb-6">
@@ -2338,7 +2341,7 @@ export function SinglePouReviewStage({
 
       <div className="px-5 pt-5 space-y-5">
         <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded, hasReviewableCandidate: nextHasReviewableCandidate, phq9Evidence }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded); setPhq9Suggestion(phq9Evidence); if (typeof nextHasReviewableCandidate === 'boolean') setHasReviewableCandidate(nextHasReviewableCandidate) }} />
-        {isKaitiakitanga && <KaitiakitangaPhq9Confirmation suggestion={phq9Suggestion} confirmation={kaitiakitangaPhq9} onConfirm={onConfirmKaitiakitangaPhq9} disabled={false} />}
+        {isKaitiakitanga && <KaitiakitangaPhq9Confirmation suggestion={phq9Suggestion} confirmation={kaitiakitangaPhq9} onConfirm={onConfirmKaitiakitangaPhq9} disabled={persistenceState === 'saving' || persistenceState === 'retrying'} />}
         <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} hasReviewableCandidate={hasReviewableCandidate} onConfirm={onCandidateConfirm} onReviewableCandidatesChange={setHasReviewableCandidate} />
         {currentPouSafety.length > 0 && <div className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
           <SectionLabel>Confirmed safety concerns</SectionLabel>
@@ -6266,12 +6269,17 @@ export function SessionShell({
     const nextPouIdx = pouIndexForId(workflow.currentPouId)
     const preserveLocalStage = preserveNextWorkflowStage.current
     const hasCurrentPouCarryForward = workflow.currentPouId !== null && (workflow.carryForwards ?? []).some((item) => item.pouId === workflow.currentPouId)
+    // PHQ-9 confirmation deliberately updates only its authoritative record;
+    // it does not emit a Pou review confirmation or advance the checkpoint.
+    // A resumed confirmed Kaitiakitanga workflow must therefore reopen the
+    // same review, just as an active carry-forward does.
+    const hasConfirmedKaitiakitangaReview = workflow.currentPouId === 'kaitiakitanga' && Boolean(workflow.kaitiakitangaPhq9)
     preserveNextWorkflowStage.current = false
     if (!preserveLocalStage) {
       // A carry-forward is created from the current Pou review but does not
       // advance canonical workflow state. Reopening that workflow must return
       // the Kaimahi to the same review, not the canonical overview/conversation.
-      setStage(hasCurrentPouCarryForward ? 'pou-review' : sessionStageForWorkflow(workflow.currentStage))
+      setStage(hasCurrentPouCarryForward || hasConfirmedKaitiakitangaReview ? 'pou-review' : sessionStageForWorkflow(workflow.currentStage))
       setCurrentPouIdx(nextPouIdx)
     }
     setData((current) => ({

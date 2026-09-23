@@ -225,6 +225,66 @@ describe('approved application smoke paths', () => {
     expect(screen.queryByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeNull()
   })
 
+  it('keeps confirmed Kaitiakitanga PHQ-9 details inline until the whole Pou review is explicitly confirmed', async () => {
+    const checkpoints = ['kaitiakitanga', 'tikanga', 'whakapapa', 'manaakitanga', 'puukenga', 'haepapa', 'oranga'].map((pouId, index) => ({
+      pouId: pouId as Workflow['checkpoints'][number]['pouId'], ordinal: index + 1, progress: 'not_started' as const,
+      userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: null,
+    }))
+    const draft = {
+      id: 'cccd0d9f-24c2-4e86-9a02-5b95942539f1', revisionId: 'f90d0b5e-2794-4a1b-b719-2edc1861132b', revision: 1,
+      overallSummary: 'Kaitiakitanga reflection remains visible.', strengthsSummary: 'Whānau support is a protective factor.', areasForAttentionSummary: 'Follow-up remains for Kaimahi review.', evidenceTurnIds: [], generatedAt: '2026-09-23T00:00:00.000Z',
+      criterionAssessments: [{ criterionCode: 'KAIT_01', label: 'Kaitiakitanga criterion', strengthsOrProtective: true, areasForAttention: true, status: 'evidenced' as const, evidenceTurnIds: [], missingInformationCodes: [] }],
+      phq9Evidence: { indication: 'indicated' as const, indicationEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], completion: 'completed' as const, completionEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'] },
+    }
+    const initial = workflowFixture({ currentStage: 'pou-review', currentPouId: 'kaitiakitanga', version: 2, checkpoints })
+    const phqConfirmed = workflowFixture({
+      currentStage: 'pou-overview', currentPouId: 'kaitiakitanga', version: 3, checkpoints,
+      kaitiakitangaPhq9: { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-23T00:01:00.000Z' },
+    })
+    const pouConfirmed = workflowFixture({ currentStage: 'pou-convo', currentPouId: 'tikanga', version: 4, checkpoints: checkpoints.map((checkpoint) => checkpoint.pouId === 'kaitiakitanga' ? { ...checkpoint, progress: 'confirmed' as const, confirmedAt: '2026-09-23T00:02:00.000Z' } : checkpoint), kaitiakitangaPhq9: phqConfirmed.kaitiakitangaPhq9 })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.endsWith('/review-draft')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ review: { status: 'ready', assessmentCompleted: true, hasReviewableCandidate: false, draft } }) })
+      if (url.endsWith('/assessment-candidates')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: [] }) })
+      if (url.endsWith('/reviewed')) return Promise.resolve({ ok: true, status: 204, json: async () => ({}) })
+      if (url.endsWith('/interactions') && init?.method === 'POST') {
+        const command = JSON.parse(String(init.body))
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: command.type === 'kaitiakitanga-phq9-confirmed' ? phqConfirmed : pouConfirmed, acknowledgement: { replayed: false } }) })
+      }
+      throw new Error(`Unexpected request: ${url}`)
+    }))
+    function Harness() { const [workflow, setWorkflow] = useState(initial); return <SessionShell workflow={workflow} onWorkflowChange={setWorkflow} displayName="Test Kaimahi" onDone={() => undefined} /> }
+    const user = userEvent.setup()
+    render(<Harness />)
+
+    expect(await screen.findByText('Kaitiakitanga reflection remains visible.')).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Confirm PHQ-9 details' }))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(1))
+    expect(JSON.parse(String(interactionCalls()[0]?.[1]?.body))).toMatchObject({ type: 'kaitiakitanga-phq9-confirmed', phq9Indicated: true, phq9Completed: true, confirmedTotalScore: 12 })
+    expect(await screen.findByText('Supervisor escalation required')).toBeTruthy()
+    expect(screen.getByText(/Notification has not yet been sent/i)).toBeTruthy()
+    expect(screen.getByText('No formal safety concern was identified for review.')).toBeTruthy()
+    expect(screen.getByDisplayValue('Kaitiakitanga reflection remains visible.')).toBeTruthy()
+    expect(screen.getByDisplayValue('Whānau support is a protective factor.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 2' })).toBeTruthy()
+    expect(screen.queryByRole('heading', { name: /Ngā Pou o Te Waharoa/i })).toBeNull()
+
+    cleanup()
+    render(<SessionShell workflow={phqConfirmed} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
+    expect(await screen.findByText('Supervisor escalation required')).toBeTruthy()
+    expect(screen.getByDisplayValue('Kaitiakitanga reflection remains visible.')).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 2' })).toBeTruthy()
+
+    cleanup()
+    render(<Harness />)
+    await screen.findByText('Kaitiakitanga reflection remains visible.')
+    await user.click(screen.getByRole('button', { name: 'Confirm PHQ-9 details' }))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(2))
+    await user.click(screen.getByRole('button', { name: 'Whakaū — Confirm & continue to Pou 2' }))
+    await waitFor(() => expect(interactionCalls()).toHaveLength(3))
+    expect(JSON.parse(String(interactionCalls()[2]?.[1]?.body))).toMatchObject({ type: 'pou-review-confirmed', pouId: 'kaitiakitanga' })
+  })
+
   it('keeps a populated Pou review open after confirming a formal safety candidate', async () => {
     const initial = workflowFixture({
       currentStage: 'pou-overview', currentPouId: 'manaakitanga', version: 2,
