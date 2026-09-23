@@ -16,6 +16,9 @@ import { PostgresOrganisationPouSpecificationAuthoringService } from './pou-spec
 import { PostgresSafetyPolicyAuthoringService } from './safety-assessments/authoring.js'
 import { PostgresWorkflowSynthesisRepository } from './workflow-synthesis/repository.js'
 import { OpenAIWorkflowSynthesisProvider } from './workflow-synthesis/provider.js'
+import { PostgresPhq9SupervisorEscalationRepository } from './phq9-escalations/repository.js'
+import { SesPhq9EscalationEmailSender } from './phq9-escalations/ses.js'
+import { Phq9EscalationDeliveryService } from './phq9-escalations/service.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
@@ -23,8 +26,10 @@ const safetyAssessmentRepository = new PostgresSafetyAssessmentRepository(databa
 const transcriptRepository = new PostgresTranscriptRepository(database.db)
 const reviewDraftRepository = new PostgresConversationReviewDraftRepository(database.db)
 const workflowSynthesisRepository = new PostgresWorkflowSynthesisRepository(database.db)
+const phq9EscalationRepository = new PostgresPhq9SupervisorEscalationRepository(database.db)
+const phq9EscalationDeliveryService = new Phq9EscalationDeliveryService(phq9EscalationRepository, config.ses ? new SesPhq9EscalationEmailSender(config.ses.region, config.ses.fromAddress) : undefined)
 const pouSpecificationRepository = new PostgresOrganisationPouSpecificationRepository(database.db)
-const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository, workflowSynthesisRepository)
+const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository, workflowSynthesisRepository, phq9EscalationRepository)
 const conversationService = new ConversationService(
   workflowRepository,
   new PostgresConversationRepository(database.db, undefined, safetyAssessmentRepository),
@@ -52,10 +57,17 @@ const app = await createApplication({
   pouSpecificationAuthoringService: new PostgresOrganisationPouSpecificationAuthoringService(database.db),
   safetyPolicyAuthoringService: new PostgresSafetyPolicyAuthoringService(database.db),
   oidcProvider: config.cognito ? new CognitoOidcProvider(config.cognito) : undefined,
+  phq9EscalationRepository,
+  phq9EscalationDeliveryService,
 })
+
+// Durable rows survive browser/process failure; this bounded poll only advances queued work.
+void phq9EscalationDeliveryService.processOne()
+const escalationTimer = setInterval(() => void phq9EscalationDeliveryService.processOne(), 30_000)
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
+    clearInterval(escalationTimer)
     void app.close().then(() => database.close()).finally(() => process.exit(0))
   })
 }

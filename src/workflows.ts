@@ -51,6 +51,12 @@ export interface Workflow {
     ruleVersion: number
     confirmedAt: string
   }
+  phq9SupervisorEscalation?: null | {
+    status: 'recipient_unresolved' | 'queued' | 'sending' | 'provider_accepted' | 'failed' | 'retry_pending'
+    attemptCount: number
+    providerAcceptedAt: string | null
+    failureCategory: string | null
+  }
   checkpoints: WorkflowCheckpoint[]
   actions: WorkflowAction[]
   referrals: WorkflowReferral[]
@@ -69,6 +75,8 @@ export interface Workflow {
   createdAt: string
   updatedAt: string
 }
+
+export type Phq9SupervisorEscalation = NonNullable<Workflow['phq9SupervisorEscalation']>
 
 export interface SafetyObservationCurrentView {
   id: string
@@ -312,6 +320,12 @@ export async function listCompletedWorkflows(): Promise<CompletedWorkflowListIte
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   const payload = await requestJson<{ workflow: Workflow }>(`/api/workflows/${encodeURIComponent(workflowId)}`)
   return payload.workflow
+}
+
+/** Read-only, bounded delivery state for the active Kaitiakitanga review. */
+export async function getPhq9SupervisorEscalation(workflowId: string, signal?: AbortSignal): Promise<Phq9SupervisorEscalation | null> {
+  const payload = await requestJson<{ escalation: Phq9SupervisorEscalation | null }>(`/api/workflows/${encodeURIComponent(workflowId)}/phq9-supervisor-escalation`, { signal })
+  return payload.escalation
 }
 
 export async function getWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {

@@ -65,6 +65,7 @@ export const providerAssessmentOutcome = pgEnum('provider_assessment_outcome', [
 export const providerAssessmentRunStatus = pgEnum('provider_assessment_run_status', ['pending', 'received', 'superseded'])
 export const providerAssessmentReviewStatus = pgEnum('provider_assessment_review_status', ['confirmed', 'dismissed', 'insufficient_information_acknowledged'])
 export const providerAssessmentDeliveryStatus = pgEnum('provider_assessment_delivery_status', ['reserved', 'completed'])
+export const phq9SupervisorEscalationStatus = pgEnum('phq9_supervisor_escalation_status', ['recipient_unresolved', 'queued', 'sending', 'provider_accepted', 'failed', 'retry_pending'])
 export const conversationTranscriptSpeaker = pgEnum('conversation_transcript_speaker', ['kaimahi', 'assistant', 'unknown'])
 export const conversationReviewDraftStatus = pgEnum('conversation_review_draft_status', ['generated', 'failed'])
 export const conversationReviewDraftRevisionSource = pgEnum('conversation_review_draft_revision_source', ['generated', 'edited'])
@@ -1182,6 +1183,31 @@ export const workflowKaitiakitangaPhq9Confirmations = pgTable(
     check('workflow_kaitiakitanga_phq9_escalation_derivation', sql`${table.supervisorEscalationRequired} = case when ${table.phq9Completed} and ${table.confirmedTotalScore} >= 12 then true else false end`),
     check('workflow_kaitiakitanga_phq9_rule_code_length', sql`length(${table.escalationRuleCode}) between 1 and 200`),
     check('workflow_kaitiakitanga_phq9_rule_version_positive', sql`${table.escalationRuleVersion} > 0`),
+  ],
+)
+
+/** The deterministic PHQ-9 requirement and its single durable email outbox item. */
+export const workflowPhq9SupervisorEscalations = pgTable(
+  'workflow_phq9_supervisor_escalation',
+  {
+    id: uuid('id').defaultRandom().primaryKey(), organisationId: uuid('organisation_id').notNull(), workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').default('kaitiakitanga').notNull(), phq9ConfirmationInteractionId: uuid('phq9_confirmation_interaction_id').notNull(),
+    ruleCode: text('rule_code').notNull(), ruleVersion: integer('rule_version').notNull(), kaimahiUserId: uuid('kaimahi_user_id').notNull(), supervisorUserId: uuid('supervisor_user_id'),
+    deliveryChannel: text('delivery_channel').default('email').notNull(), recipientEmail: text('recipient_email'), status: phq9SupervisorEscalationStatus('status').notNull(),
+    attemptCount: integer('attempt_count').default(0).notNull(), lastAttemptAt: timestamp('last_attempt_at', { withTimezone: true }), providerMessageId: text('provider_message_id'), providerAcceptedAt: timestamp('provider_accepted_at', { withTimezone: true }), failureCategory: text('failure_category'),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp('updated_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    uniqueIndex('workflow_phq9_supervisor_escalation_workflow_uq').on(table.workflowSessionId), index('workflow_phq9_supervisor_escalation_delivery_idx').on(table.status, table.createdAt), index('workflow_phq9_supervisor_escalation_supervisor_idx').on(table.supervisorUserId, table.createdAt),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'workflow_phq9_escalation_session_organisation_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'workflow_phq9_escalation_checkpoint_organisation_fk' }),
+    foreignKey({ columns: [table.phq9ConfirmationInteractionId, table.organisationId, table.workflowSessionId], foreignColumns: [workflowInteractions.id, workflowInteractions.organisationId, workflowInteractions.workflowSessionId], name: 'workflow_phq9_escalation_confirmation_interaction_fk' }),
+    foreignKey({ columns: [table.kaimahiUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_phq9_escalation_kaimahi_organisation_fk' }), foreignKey({ columns: [table.supervisorUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_phq9_escalation_supervisor_organisation_fk' }),
+    check('workflow_phq9_escalation_pou', sql`${table.pouId} = 'kaitiakitanga'`), check('workflow_phq9_escalation_channel', sql`${table.deliveryChannel} = 'email'`),
+    check('workflow_phq9_escalation_recipient', sql`(${table.status} = 'recipient_unresolved' and ${table.supervisorUserId} is null and ${table.recipientEmail} is null) or (${table.status} <> 'recipient_unresolved' and ${table.supervisorUserId} is not null and ${table.recipientEmail} is not null)`), check('workflow_phq9_escalation_attempt_count', sql`${table.attemptCount} >= 0 and ${table.attemptCount} <= 3`),
+    check('workflow_phq9_escalation_provider_acceptance', sql`(${table.status} = 'provider_accepted' and ${table.providerMessageId} is not null and ${table.providerAcceptedAt} is not null) or (${table.status} <> 'provider_accepted' and ${table.providerMessageId} is null and ${table.providerAcceptedAt} is null)`),
+    check('workflow_phq9_escalation_failure_category', sql`${table.failureCategory} is null or ${table.failureCategory} in ('configuration', 'permanent', 'ambiguous', 'transient')`),
+    check('workflow_phq9_escalation_failure_state', sql`(${table.status} in ('failed', 'retry_pending') and ${table.failureCategory} is not null) or (${table.status} not in ('failed', 'retry_pending') and ${table.failureCategory} is null)`),
   ],
 )
 

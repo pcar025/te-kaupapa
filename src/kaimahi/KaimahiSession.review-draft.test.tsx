@@ -471,6 +471,96 @@ describe('WhakapapaNarrativeReview', () => {
     expect(screen.queryByText(/person is safe/i)).toBeNull()
   })
 
+  it('shows only the authoritative PHQ escalation delivery state while retaining the Kaitiakitanga review', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 })))
+    const confirmation = { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' } as const
+    const props = { pouIdx: 0, workflowId, onConfirm: vi.fn(), onCandidateConfirm: () => undefined, kaitiakitangaPhq9: confirmation, onConfirmKaitiakitangaPhq9: () => undefined, persistenceState: 'idle' as const, onRetry: () => undefined, onReload: () => undefined }
+    const view = render(<SinglePouReviewStage {...props} phq9SupervisorEscalation={{ status: 'recipient_unresolved', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} />)
+    expect(await screen.findByText(/single recipient could not be resolved/i)).toBeTruthy()
+    expect(screen.getByText('PHQ-9')).toBeTruthy()
+    view.rerender(<SinglePouReviewStage {...props} phq9SupervisorEscalation={{ status: 'queued', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} />)
+    expect(screen.getByText('Sending supervisor notification…')).toBeTruthy()
+    expect(screen.getByText(/will continue even if you move on/i)).toBeTruthy()
+    view.rerender(<SinglePouReviewStage {...props} phq9SupervisorEscalation={{ status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: '2026-09-22T00:00:01.000Z', failureCategory: null }} />)
+    expect(screen.getByText(/sent to the email service/i)).toBeTruthy()
+    expect(screen.queryByText(/read the notification/i)).toBeNull()
+    view.rerender(<SinglePouReviewStage {...props} phq9SupervisorEscalation={{ status: 'failed', attemptCount: 3, providerAcceptedAt: null, failureCategory: 'permanent' }} />)
+    expect(screen.getByText(/could not be sent automatically/i)).toBeTruthy()
+    expect(screen.getByText('PHQ-9')).toBeTruthy()
+  })
+
+  it('refreshes a queued escalation inline and stops once provider acceptance arrives', async () => {
+    vi.useFakeTimers()
+    const confirmation = { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' } as const
+    let statusReads = 0
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      if (path.includes('/phq9-supervisor-escalation')) {
+        statusReads += 1
+        return Promise.resolve(new Response(JSON.stringify({ escalation: { status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: '2026-09-22T00:00:01.000Z', failureCategory: null } }), { status: 200 }))
+      }
+      if (path.includes('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: [] }), { status: 200 }))
+      return Promise.resolve(new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+    }))
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={confirmation} phq9SupervisorEscalation={{ status: 'queued', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    expect(screen.getByText('Sending supervisor notification…')).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_500) })
+    expect(screen.getByText('Supervisor notification sent to the email service.')).toBeTruthy()
+    expect(statusReads).toBe(1)
+    await act(async () => { await vi.advanceTimersByTimeAsync(7_500) })
+    expect(statusReads).toBe(1)
+  })
+
+  it('keeps whole-Pou confirmation available while an escalation is queued', async () => {
+    const confirmation = { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' } as const
+    const onConfirm = vi.fn()
+    vi.stubGlobal('fetch', vi.fn((path: string) => path.includes('/assessment-candidates')
+      ? Promise.resolve(new Response(JSON.stringify({ candidates: [] }), { status: 200 }))
+      : Promise.resolve(new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))))
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={onConfirm} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={confirmation} phq9SupervisorEscalation={{ status: 'queued', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    fireEvent.click(await screen.findByRole('button', { name: 'Whakaū — Confirm & continue to Pou 2' }))
+    expect(onConfirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a failed delivery inline and stops the bounded status poll', async () => {
+    vi.useFakeTimers()
+    const confirmation = { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' } as const
+    let statusReads = 0
+    vi.stubGlobal('fetch', vi.fn((path: string) => {
+      if (path.includes('/phq9-supervisor-escalation')) {
+        statusReads += 1
+        return Promise.resolve(new Response(JSON.stringify({ escalation: { status: 'failed', attemptCount: 1, providerAcceptedAt: null, failureCategory: 'permanent' } }), { status: 200 }))
+      }
+      if (path.includes('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: [] }), { status: 200 }))
+      return Promise.resolve(new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+    }))
+    render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={confirmation} phq9SupervisorEscalation={{ status: 'queued', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_500) })
+    expect(screen.getByText(/could not be sent automatically/i)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(7_500) })
+    expect(statusReads).toBe(1)
+  })
+
+  it('does not overlap a slow delivery-state read and cleans it up when leaving review', async () => {
+    vi.useFakeTimers()
+    const confirmation = { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-22T00:00:00.000Z' } as const
+    let resolveStatus: (response: Response) => void = () => undefined
+    const pendingStatus = new Promise<Response>((resolve) => { resolveStatus = resolve })
+    const fetchMock = vi.fn((path: string) => {
+      if (path.includes('/phq9-supervisor-escalation')) return pendingStatus
+      if (path.includes('/assessment-candidates')) return Promise.resolve(new Response(JSON.stringify({ candidates: [] }), { status: 200 }))
+      return Promise.resolve(new Response(JSON.stringify({ review: { status: 'manual', draft: null, assessmentCompleted: false, hasReviewableCandidate: false } }), { status: 200 }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const view = render(<SinglePouReviewStage pouIdx={0} workflowId={workflowId} onConfirm={() => undefined} onCandidateConfirm={() => undefined} kaitiakitangaPhq9={confirmation} phq9SupervisorEscalation={{ status: 'queued', attemptCount: 0, providerAcceptedAt: null, failureCategory: null }} onConfirmKaitiakitangaPhq9={() => undefined} persistenceState="idle" onRetry={() => undefined} onReload={() => undefined} />)
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_500) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).includes('/phq9-supervisor-escalation'))).toHaveLength(1)
+    view.unmount()
+    resolveStatus(new Response(JSON.stringify({ escalation: { status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: '2026-09-22T00:00:01.000Z', failureCategory: null } }), { status: 200 }))
+    await act(async () => { await Promise.resolve(); await vi.advanceTimersByTimeAsync(10_000) })
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).includes('/phq9-supervisor-escalation'))).toHaveLength(1)
+  })
+
   it('passes the current Pou into an explicit candidate confirmation and never falls back to Whakapapa', async () => {
     const command = candidateConfirmationCommand(reviewableCandidate, 'watch', 'manaakitanga', 7)
     expect(command?.observation).toMatchObject({ assessmentContext: 'pou', pouId: 'manaakitanga', broadClass: 'practice_quality', concernLevel: 'watch' })

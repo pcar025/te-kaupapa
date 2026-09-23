@@ -57,6 +57,8 @@ import type { WorkflowSynthesisProvider } from './workflow-synthesis/provider.js
 import { StaleWorkflowSynthesisError, WorkflowSynthesisUnavailableError } from './workflow-synthesis/domain.js'
 import { createFinalRecordPdf, finalRecordPlainText } from './workflow-synthesis/final-record.js'
 import { logPouReviewTiming } from './observability/pou-review-timing.js'
+import { PostgresPhq9SupervisorEscalationRepository } from './phq9-escalations/repository.js'
+import { Phq9EscalationDeliveryService } from './phq9-escalations/service.js'
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
@@ -125,6 +127,8 @@ export interface AppDependencies {
   pouSpecificationAuthoringService?: PostgresOrganisationPouSpecificationAuthoringService
   safetyPolicyAuthoringService?: PostgresSafetyPolicyAuthoringService
   oidcProvider?: OidcProvider
+  phq9EscalationRepository?: PostgresPhq9SupervisorEscalationRepository
+  phq9EscalationDeliveryService?: Phq9EscalationDeliveryService
   now?: () => Date
 }
 
@@ -135,7 +139,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, phq9EscalationRepository, phq9EscalationDeliveryService, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -742,6 +746,31 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     }
   })
 
+  // This is deliberately narrower than the workflow read: the Kaimahi review
+  // needs only the asynchronous outbox state, never the recipient or message id.
+  app.get('/api/workflows/:workflowSessionId/phq9-supervisor-escalation', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository || !phq9EscalationRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      if (!await workflowRepository.findById(user, parsed.data.workflowSessionId)) return reply.code(404).send({ error: 'not_found' })
+      const escalation = await phq9EscalationRepository.findForWorkflow(user.organisation.id, parsed.data.workflowSessionId)
+      reply.header('cache-control', 'no-store')
+      return {
+        escalation: escalation ? {
+          status: escalation.status,
+          attemptCount: escalation.attemptCount,
+          providerAcceptedAt: escalation.providerAcceptedAt,
+          failureCategory: escalation.failureCategory,
+        } : null,
+      }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
   app.get('/api/workflows/:workflowSessionId/synthesis', async (request, reply) => {
     const user = await requireKaimahi(request, reply)
     if (!user) return reply
@@ -854,9 +883,23 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     if (!params.success || !command.success) return reply.code(400).send({ error: 'invalid_request' })
     try {
       const result = await workflowRepository.submitCommand({ actor: user, workflowSessionId: params.data.workflowSessionId, command: command.data })
+      if (command.data.type === 'kaitiakitanga-phq9-confirmed' && result.workflow.kaitiakitangaPhq9?.supervisorEscalationRequired) void phq9EscalationDeliveryService?.processOne()
       return { workflow: result.workflow, acknowledgement: { interactionId: result.interactionId, replayed: result.replayed } }
     } catch (error) {
       return workflowFailure(error, request, reply)
+    }
+  })
+
+  app.get('/api/phq9-escalations/assigned', async (request, reply) => {
+    const user = await authenticate(request)
+    if (!user) return reply.code(401).send({ error: 'unauthenticated' })
+    try {
+      requireRole(user, 'SUPERVISOR')
+      if (!phq9EscalationRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+      return { escalations: await phq9EscalationRepository.findAssignedToSupervisor(user.organisation.id, user.id) }
+    } catch (error) {
+      if (error instanceof AuthorizationError) return reply.code(403).send({ error: 'forbidden' })
+      throw error
     }
   })
 

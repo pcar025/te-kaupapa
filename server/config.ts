@@ -20,6 +20,7 @@ export interface ElevenLabsWebhookConfiguration {
   maximumAgeSeconds: number
 }
 export interface OpenAiAssessmentConfiguration { apiKey: string; model: string }
+export interface SesConfiguration { region: 'ap-southeast-2'; fromAddress: string }
 
 export interface AppConfiguration {
   nodeEnv: 'development' | 'test' | 'production'
@@ -35,6 +36,7 @@ export interface AppConfiguration {
   elevenlabs?: ElevenLabsConfiguration
   elevenlabsWebhook?: ElevenLabsWebhookConfiguration
   openaiAssessment?: OpenAiAssessmentConfiguration
+  ses?: SesConfiguration
 }
 
 const runtimeSchema = z.object({
@@ -62,6 +64,8 @@ const runtimeSchema = z.object({
   ELEVENLABS_WEBHOOK_MAXIMUM_AGE_SECONDS: z.coerce.number().int().min(30).max(900).default(300),
   OPENAI_API_KEY: z.string().min(1).optional(),
   OPENAI_ASSESSMENT_MODEL: z.string().trim().min(1).max(200).optional(),
+  SES_REGION: z.literal('ap-southeast-2').optional(),
+  SES_FROM_ADDRESS: z.string().email().optional(),
 })
 
 export function loadConfiguration(env = process.env): AppConfiguration {
@@ -88,6 +92,9 @@ export function loadConfiguration(env = process.env): AppConfiguration {
   const openAiValues = [parsed.OPENAI_API_KEY, parsed.OPENAI_ASSESSMENT_MODEL]
   const hasOpenAiAssessment = openAiValues.some(Boolean)
   if (hasOpenAiAssessment && openAiValues.some((value) => !value)) throw new Error('OPENAI_API_KEY and OPENAI_ASSESSMENT_MODEL must be set together.')
+  const sesValues = [parsed.SES_REGION, parsed.SES_FROM_ADDRESS]
+  const hasSes = sesValues.some(Boolean)
+  if (hasSes && sesValues.some((value) => !value)) throw new Error('SES_REGION and SES_FROM_ADDRESS must be set together.')
 
   const allowedOrigins = new Set([parsed.APP_ORIGIN, parsed.FRONTEND_ORIGIN])
   for (const origin of (parsed.CORS_ALLOWED_ORIGINS ?? '').split(',')) {
@@ -124,5 +131,6 @@ export function loadConfiguration(env = process.env): AppConfiguration {
       ? { signingSecret: parsed.ELEVENLABS_WEBHOOK_SECRET, maximumBodyBytes: parsed.ELEVENLABS_WEBHOOK_MAXIMUM_BODY_BYTES, maximumAgeSeconds: parsed.ELEVENLABS_WEBHOOK_MAXIMUM_AGE_SECONDS }
       : undefined,
     openaiAssessment: hasOpenAiAssessment ? { apiKey: parsed.OPENAI_API_KEY!, model: parsed.OPENAI_ASSESSMENT_MODEL! } : undefined,
+    ses: hasSes ? { region: parsed.SES_REGION!, fromAddress: parsed.SES_FROM_ADDRESS! } : undefined,
   }
 }

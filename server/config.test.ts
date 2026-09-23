@@ -51,4 +51,10 @@ describe('ElevenLabs server configuration', () => {
       signingSecret: 'test-webhook-secret-with-sufficient-length', maximumBodyBytes: 131072, maximumAgeSeconds: 300,
     })
   })
+
+  it('requires both server-only SES values and pins delivery to the approved Sydney region', () => {
+    expect(() => loadConfiguration({ ...base, SES_FROM_ADDRESS: 'sender@example.invalid' })).toThrow('SES_REGION and SES_FROM_ADDRESS must be set together.')
+    expect(() => loadConfiguration({ ...base, SES_REGION: 'us-east-1', SES_FROM_ADDRESS: 'sender@example.invalid' })).toThrow()
+    expect(loadConfiguration({ ...base, SES_REGION: 'ap-southeast-2', SES_FROM_ADDRESS: 'sender@example.invalid' }).ses).toEqual({ region: 'ap-southeast-2', fromAddress: 'sender@example.invalid' })
+  })
 })

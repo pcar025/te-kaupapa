@@ -33,6 +33,7 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
+  getPhq9SupervisorEscalation,
   getPouAssessmentCandidates,
   getPouReviewDraft,
   markPouReviewDraftReviewed,
@@ -2162,13 +2163,17 @@ function StructuredCriterionReview({
 }
 
 function KaitiakitangaPhq9Confirmation({
+  workflowId,
   suggestion,
   confirmation,
+  escalation,
   onConfirm,
   disabled,
 }: {
+  workflowId: string
   suggestion?: PouReviewDraft['phq9Evidence']
   confirmation?: Workflow['kaitiakitangaPhq9']
+  escalation?: Workflow['phq9SupervisorEscalation']
   onConfirm?: (facts: { phq9Indicated: boolean; phq9Completed: boolean; confirmedTotalScore?: number }) => void
   disabled: boolean
 }) {
@@ -2177,6 +2182,29 @@ function KaitiakitangaPhq9Confirmation({
   const [score, setScore] = useState('')
   const [touched, setTouched] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [delivery, setDelivery] = useState(escalation ?? null)
+  useEffect(() => { setDelivery(escalation ?? null) }, [escalation])
+  useEffect(() => {
+    if (!delivery || !['queued', 'sending', 'retry_pending'].includes(delivery.status)) return
+    let active = true
+    let inFlight = false
+    let controller: AbortController | undefined
+    const poll = () => {
+      if (!active || inFlight) return
+      inFlight = true
+      controller = new AbortController()
+      void getPhq9SupervisorEscalation(workflowId, controller.signal)
+        .then((latest) => { if (active) setDelivery(latest) })
+        .catch(() => undefined)
+        .finally(() => { inFlight = false })
+    }
+    const timer = window.setInterval(poll, 2_500)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+      controller?.abort()
+    }
+  }, [delivery?.status, workflowId])
   useEffect(() => {
     if (touched || confirmation || !suggestion) return
     if (suggestion.indication === 'indicated') setIndicated(true)
@@ -2195,7 +2223,7 @@ function KaitiakitangaPhq9Confirmation({
       <SectionLabel>PHQ-9</SectionLabel>
       <p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{result}</p>
       {confirmation.completed && confirmation.supervisorEscalationRequired
-        ? <><p className="text-sm font-medium" style={{ color: 'var(--color-caution)' }}>Supervisor escalation required</p><p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>PHQ-9 score is 12 or above. Escalation to the kaupapa supervisor is required. Notification has not yet been sent.</p></>
+        ? <><p className="text-sm font-medium" style={{ color: 'var(--color-caution)' }}>Supervisor escalation required</p>{delivery?.status === 'recipient_unresolved' ? <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Supervisor escalation is required, but a single recipient could not be resolved.</p> : delivery?.status === 'provider_accepted' ? <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Supervisor notification sent to the email service.</p> : delivery?.status === 'failed' && delivery.failureCategory === 'ambiguous' ? <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Supervisor notification delivery could not be confirmed. The escalation remains required.</p> : delivery?.status === 'failed' ? <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Supervisor notification could not be sent automatically. The escalation remains required.</p> : delivery ? <div aria-live="polite" className="space-y-1"><p className="text-xs flex items-center gap-2" style={{ color: 'var(--color-ink-muted)' }}><span role="img" aria-label="Sending supervisor notification" className="inline-block animate-spin">◌</span>Sending supervisor notification…</p><p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>The escalation has been recorded and will continue even if you move on.</p></div> : <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Notification has not yet been sent.</p>}</>
         : confirmation.completed
           ? <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>This PHQ-9 score does not meet the Te Kaupapa ≥12 supervisor-escalation threshold.</p>
           : null}
@@ -2233,6 +2261,7 @@ export function SinglePouReviewStage({
   onMarkCarryForward = () => undefined,
   onCandidateConfirm,
   kaitiakitangaPhq9,
+  phq9SupervisorEscalation,
   onConfirmKaitiakitangaPhq9,
   persistenceState,
   onRetry,
@@ -2251,6 +2280,7 @@ export function SinglePouReviewStage({
   onMarkCarryForward?: (source: WorkflowCarryForwardSource) => void
   onCandidateConfirm: (candidate: PouAssessmentCandidate, level: SafetyObservationConcernLevel, pouId: (typeof TE_WAHAROA_POU)[number]['id']) => boolean | void | Promise<boolean | void>
   kaitiakitangaPhq9?: Workflow['kaitiakitangaPhq9']
+  phq9SupervisorEscalation?: Workflow['phq9SupervisorEscalation']
   onConfirmKaitiakitangaPhq9?: (facts: { phq9Indicated: boolean; phq9Completed: boolean; confirmedTotalScore?: number }) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
@@ -2341,7 +2371,7 @@ export function SinglePouReviewStage({
 
       <div className="px-5 pt-5 space-y-5">
         <PouNarrativeReview workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} carriedSources={carriedSources} onMarkCarryForward={onMarkCarryForward} onDraftState={({ reviewDraftRevisionId: id, hasUnsavedChanges, loaded, hasReviewableCandidate: nextHasReviewableCandidate, phq9Evidence }) => { setReviewDraftRevisionId(id); setHasUnsavedReviewDraftChanges(hasUnsavedChanges); setReviewDraftLoaded(loaded); setPhq9Suggestion(phq9Evidence); if (typeof nextHasReviewableCandidate === 'boolean') setHasReviewableCandidate(nextHasReviewableCandidate) }} />
-        {isKaitiakitanga && <KaitiakitangaPhq9Confirmation suggestion={phq9Suggestion} confirmation={kaitiakitangaPhq9} onConfirm={onConfirmKaitiakitangaPhq9} disabled={persistenceState === 'saving' || persistenceState === 'retrying'} />}
+        {isKaitiakitanga && <KaitiakitangaPhq9Confirmation workflowId={workflowId} suggestion={phq9Suggestion} confirmation={kaitiakitangaPhq9} escalation={phq9SupervisorEscalation} onConfirm={onConfirmKaitiakitangaPhq9} disabled={persistenceState === 'saving' || persistenceState === 'retrying'} />}
         <PouAssessmentCandidates workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} hasReviewableCandidate={hasReviewableCandidate} onConfirm={onCandidateConfirm} onReviewableCandidatesChange={setHasReviewableCandidate} />
         {currentPouSafety.length > 0 && <div className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
           <SectionLabel>Confirmed safety concerns</SectionLabel>
@@ -6676,7 +6706,7 @@ export function SessionShell({
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} journeyIdx={currentJourneyIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
         {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} phq9SupervisorEscalation={workflow.phq9SupervisorEscalation} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

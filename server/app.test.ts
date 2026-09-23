@@ -963,6 +963,53 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
+  it('exposes only the minimum assigned PHQ escalation record to its resolved supervisor', async () => {
+    const repository = new MemoryRepository()
+    const supervisor: AuthenticatedUser = { ...activeKaimahi, id: 'ad58cac7-5986-49de-9b48-6f1dc4d6873e', roles: ['SUPERVISOR'] }
+    const otherSupervisor: AuthenticatedUser = { ...activeKaimahi, id: '3d3c82d2-f398-4e1b-96d0-603ea46c167f', roles: ['SUPERVISOR'] }
+    const foreignSupervisor: AuthenticatedUser = { ...supervisor, id: '99d76dd9-b9ef-4cf1-ae89-a9c8f1258505', organisation: { id: '95f08743-18b5-4aec-9b5b-f62a24edddbc', slug: 'foreign', name: 'Foreign organisation' } }
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    repository.identities.set('cognito:supervisor', supervisor)
+    repository.identities.set('cognito:other-supervisor', otherSupervisor)
+    repository.identities.set('cognito:foreign-supervisor', foreignSupervisor)
+    for (const [token, user] of [['phq-kaimahi', activeKaimahi], ['phq-supervisor', supervisor], ['phq-other-supervisor', otherSupervisor], ['phq-foreign-supervisor', foreignSupervisor]] as const) {
+      await repository.createSession({ id: `${token}-session`, userId: user.id, tokenHash: sha256(token), expiresAt: new Date(Date.now() + 60_000) })
+    }
+    const escalationRepository = {
+      findAssignedToSupervisor: vi.fn(async (organisationId: string, supervisorUserId: string) => organisationId === supervisor.organisation.id && supervisorUserId === supervisor.id
+        ? [{ id: '4f7f6df9-babc-46d8-bf01-e88904723bca', workflowReference: 'TK-7K4M2P9Q', createdAt: new Date('2026-09-23T00:00:00.000Z'), status: 'queued', attemptCount: 0 }]
+        : []),
+    }
+    const app = await createApplication({ config: config(), repository, phq9EscalationRepository: escalationRepository as any, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: '/api/phq9-escalations/assigned', headers: { cookie: 'test_session=phq-kaimahi' } })).statusCode).toBe(403)
+    expect((await app.inject({ method: 'GET', url: '/api/phq9-escalations/assigned', headers: { cookie: 'test_session=phq-other-supervisor' } })).json()).toEqual({ escalations: [] })
+    expect((await app.inject({ method: 'GET', url: '/api/phq9-escalations/assigned', headers: { cookie: 'test_session=phq-foreign-supervisor' } })).json()).toEqual({ escalations: [] })
+    expect((await app.inject({ method: 'GET', url: '/api/phq9-escalations/assigned', headers: { cookie: 'test_session=phq-supervisor' } })).json()).toMatchObject({ escalations: [{ workflowReference: 'TK-7K4M2P9Q', status: 'queued' }] })
+    expect(escalationRepository.findAssignedToSupervisor).toHaveBeenCalledWith(supervisor.organisation.id, supervisor.id)
+    await app.close()
+  })
+
+  it('exposes only the current PHQ escalation delivery state to its Kaimahi owner', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: 'phq-status-session', userId: activeKaimahi.id, tokenHash: sha256('phq-status'), expiresAt: new Date(Date.now() + 60_000) })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: 'a3e2c35d-806d-4792-8a21-afc0fc321a5c' })
+    const escalationRepository = {
+      findForWorkflow: vi.fn(async () => ({
+        status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: new Date('2026-09-23T00:00:01.000Z'), failureCategory: null,
+        recipientEmail: 'must-not-be-returned@example.invalid', providerMessageId: 'must-not-be-returned',
+      })),
+    }
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, phq9EscalationRepository: escalationRepository as any, oidcProvider: new FakeOidcProvider() })
+    const response = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/phq9-supervisor-escalation`, headers: { cookie: 'test_session=phq-status' } })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.json()).toEqual({ escalation: { status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: '2026-09-23T00:00:01.000Z', failureCategory: null } })
+    expect(escalationRepository.findForWorkflow).toHaveBeenCalledWith(activeKaimahi.organisation.id, created.workflow.id)
+    await app.close()
+  })
+
   it('returns a bounded conflict for a direct Pou-confirmation attempt with an unresolved safety candidate', async () => {
     const repository = new MemoryRepository()
     const workflows = new MemoryWorkflowRepository()

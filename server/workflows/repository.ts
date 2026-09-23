@@ -46,6 +46,7 @@ import type { PostgresSafetyAssessmentRepository } from '../safety-assessments/r
 import type { PostgresConversationReviewDraftRepository } from '../review-drafts/repository.js'
 import type { PouReviewProjection } from '../pou-specifications/domain.js'
 import type { PostgresWorkflowSynthesisRepository } from '../workflow-synthesis/repository.js'
+import { PostgresPhq9SupervisorEscalationRepository, type Phq9EscalationWriter } from '../phq9-escalations/repository.js'
 
 type WorkflowDatabase = NodePgDatabase<typeof schema>
 
@@ -360,6 +361,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     private readonly safetyAssessments?: PostgresSafetyAssessmentRepository,
     private readonly reviewDrafts?: PostgresConversationReviewDraftRepository,
     private readonly syntheses?: PostgresWorkflowSynthesisRepository,
+    private readonly phq9Escalations: Phq9EscalationWriter = new PostgresPhq9SupervisorEscalationRepository(db),
   ) {}
 
   async createDraft(input: CreateWorkflowInput): Promise<WorkflowMutationResult> {
@@ -544,6 +546,12 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             escalationRuleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', escalationRuleVersion: 1,
             confirmedByUserId: input.actor.id, confirmedAt: timestamp, interactionId: recordedInteractionId,
           })
+          if (supervisorEscalationRequired) {
+            await this.phq9Escalations.createRequiredInTransaction(tx, {
+              organisationId: input.actor.organisation.id, workflowSessionId: workflow.id, confirmationInteractionId: recordedInteractionId,
+              ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, kaimahiUserId: input.actor.id, createdAt: timestamp,
+            })
+          }
           await this.updateSafetyOnlyWorkflow(tx, workflow.id, resultingVersion, timestamp)
         } else if (input.command.type === 'safety-observation-confirmed') {
           this.assertSafetyObservationSnapshot(input.command.observation)
@@ -1275,12 +1283,13 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       .where(eq(schema.workflowPouCheckpoints.workflowSessionId, workflow.id))
       .orderBy(schema.workflowPouCheckpoints.ordinal)
 
-    const [actions, referrals, carryForwards, pouReviews, phq9Rows] = await Promise.all([
+    const [actions, referrals, carryForwards, pouReviews, phq9Rows, phq9EscalationRows] = await Promise.all([
       executor.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflow.id)).orderBy(schema.workflowActions.createdAt),
       executor.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflow.id)).orderBy(schema.workflowReferrals.createdAt),
       executor.select().from(schema.workflowCarryForwards).where(eq(schema.workflowCarryForwards.workflowSessionId, workflow.id)).orderBy(schema.workflowCarryForwards.createdAt),
       executor.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflow.id)),
       executor.select().from(schema.workflowKaitiakitangaPhq9Confirmations).where(and(eq(schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId, workflow.id), eq(schema.workflowKaitiakitangaPhq9Confirmations.organisationId, workflow.organisationId))).limit(1),
+      executor.select().from(schema.workflowPhq9SupervisorEscalations).where(and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, workflow.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, workflow.organisationId))).limit(1),
     ])
     const safety = await this.findSafetyState(workflow.id, executor)
 
@@ -1414,6 +1423,10 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
         ruleCode: phq9Rows[0].escalationRuleCode,
         ruleVersion: phq9Rows[0].escalationRuleVersion,
         confirmedAt: phq9Rows[0].confirmedAt,
+      } : null,
+      phq9SupervisorEscalation: phq9EscalationRows[0] ? {
+        status: phq9EscalationRows[0].status, attemptCount: phq9EscalationRows[0].attemptCount,
+        providerAcceptedAt: phq9EscalationRows[0].providerAcceptedAt, failureCategory: phq9EscalationRows[0].failureCategory,
       } : null,
       checkpoints: checkpointViews,
       actions: actionViews,
