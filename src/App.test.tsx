@@ -236,7 +236,9 @@ describe('approved application smoke paths', () => {
       criterionAssessments: [{ criterionCode: 'KAIT_01', label: 'Kaitiakitanga criterion', strengthsOrProtective: true, areasForAttention: true, status: 'evidenced' as const, evidenceTurnIds: [], missingInformationCodes: [] }],
       phq9Evidence: { indication: 'indicated' as const, indicationEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], completion: 'completed' as const, completionEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'], reportedTotalScore: 12, reportedTotalScoreEvidenceTurnIds: ['11111111-1111-4111-8111-111111111111'] },
     }
-    const initial = workflowFixture({ currentStage: 'pou-review', currentPouId: 'kaitiakitanga', version: 2, checkpoints })
+    // The persisted checkpoint remains at the overview while this client-only
+    // test starts midway through its active review presentation.
+    const initial = workflowFixture({ currentStage: 'pou-review' as Workflow['currentStage'], currentPouId: 'kaitiakitanga', version: 2, checkpoints })
     const phqConfirmed = workflowFixture({
       currentStage: 'pou-overview', currentPouId: 'kaitiakitanga', version: 3, checkpoints,
       kaitiakitangaPhq9: { indicated: true, completed: true, confirmedTotalScore: 12, supervisorEscalationRequired: true, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-23T00:01:00.000Z' },
