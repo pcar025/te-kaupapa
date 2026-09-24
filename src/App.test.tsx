@@ -1008,20 +1008,32 @@ describe('approved application smoke paths', () => {
     }
   })
 
-  it('enters the Supervisor application and renders representative navigation', async () => {
+  it('enters the authoritative Supervisor escalation view without loading prototype matrix data', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      if (String(input) === '/api/phq9-escalations/assigned') return Promise.resolve({ ok: true, status: 200, json: async () => ({ escalations: [] }) })
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          profile: {
+            id: 'test-user', displayName: 'Test user',
+            organisation: { id: 'test-org', slug: 'test', name: 'Test organisation' },
+            roles: ['KAIMAHI', 'SUPERVISOR'],
+          },
+        }),
+      })
+    }))
     const user = userEvent.setup()
     render(<App />)
 
     await screen.findByRole('button', { name: 'Mātāmua — Supervisor View' })
     await user.click(screen.getByRole('button', { name: 'Mātāmua — Supervisor View' }))
 
-    expect(await screen.findByText('KAIMAHI / WHĀNAU')).toBeTruthy()
-    expect(screen.getByText('Aroha Ngāti')).toBeTruthy()
+    expect(await screen.findByRole('heading', { name: 'Assigned escalations' })).toBeTruthy()
+    expect(await screen.findByText('No assigned PHQ-9 escalations require your review.')).toBeTruthy()
+    expect(screen.queryByText('KAIMAHI / WHĀNAU')).toBeNull()
 
-    await user.click(screen.getByRole('button', { name: /Tirohanga/ }))
-    expect(await screen.findByRole('heading', { name: 'Ata mārie, Test user' })).toBeTruthy()
-
-    await user.click(screen.getByRole('button', { name: /Mātāmua Supervisor view/i }))
+    await user.click(screen.getByRole('button', { name: /Back to Te Kaupapa/i }))
     expect(await screen.findByRole('heading', { name: /nau mai,\s*haere mai/i })).toBeTruthy()
   })
 })

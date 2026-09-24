@@ -896,7 +896,25 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     try {
       requireRole(user, 'SUPERVISOR')
       if (!phq9EscalationRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+      reply.header('cache-control', 'no-store')
       return { escalations: await phq9EscalationRepository.findAssignedToSupervisor(user.organisation.id, user.id) }
+    } catch (error) {
+      if (error instanceof AuthorizationError) return reply.code(403).send({ error: 'forbidden' })
+      throw error
+    }
+  })
+
+  app.get('/api/phq9-escalations/assigned/:escalationId', async (request, reply) => {
+    const user = await authenticate(request)
+    if (!user) return reply.code(401).send({ error: 'unauthenticated' })
+    const params = z.object({ escalationId: z.string().uuid() }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      requireRole(user, 'SUPERVISOR')
+      if (!phq9EscalationRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+      reply.header('cache-control', 'no-store')
+      const escalation = await phq9EscalationRepository.findAssignedDetailToSupervisor(user.organisation.id, user.id, params.data.escalationId)
+      return escalation ? { escalation } : reply.code(404).send({ error: 'not_found' })
     } catch (error) {
       if (error instanceof AuthorizationError) return reply.code(403).send({ error: 'forbidden' })
       throw error

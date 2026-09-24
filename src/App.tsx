@@ -4,7 +4,7 @@ import EntryScreen from './EntryScreen'
 import { useAuthState } from './auth'
 
 const KaimahiApp = lazy(() => import('./KaimahiApp'))
-const SupervisorApp = lazy(() => import('./SupervisorApp'))
+const SupervisorEscalationsApp = lazy(() => import('./SupervisorEscalationsApp'))
 const PouSpecificationsApp = lazy(() => import('./PouSpecificationsApp'))
 
 type RootView = 'entry' | 'kaimahi' | 'supervisor' | 'specifications'
@@ -67,7 +67,7 @@ export default function App() {
       {view !== 'entry' && (
         <Suspense fallback={<RoleLoadingScreen />}>
           {view === 'kaimahi' && <KaimahiApp profile={profile} onBack={() => setView('entry')} />}
-          {view === 'supervisor' && <SupervisorApp profile={profile} onBack={() => setView('entry')} />}
+          {view === 'supervisor' && <SupervisorEscalationsApp profile={profile} onBack={() => setView('entry')} />}
           {view === 'specifications' && <PouSpecificationsApp profile={profile} onBack={() => setView('entry')} />}
         </Suspense>
       )}

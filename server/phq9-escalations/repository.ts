@@ -1,5 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
+import { alias } from 'drizzle-orm/pg-core'
 import { z } from 'zod'
 
 import * as schema from '../db/schema.js'
@@ -45,13 +46,46 @@ export class PostgresPhq9SupervisorEscalationRepository implements Phq9Escalatio
   }
 
   async findAssignedToSupervisor(organisationId: string, supervisorUserId: string) {
-    return this.db.select({ id: schema.workflowPhq9SupervisorEscalations.id, workflowReference: schema.workflowSessions.reference, createdAt: schema.workflowPhq9SupervisorEscalations.createdAt, status: schema.workflowPhq9SupervisorEscalations.status, attemptCount: schema.workflowPhq9SupervisorEscalations.attemptCount })
+    const kaimahi = alias(schema.appUsers, 'phq9_escalation_kaimahi')
+    return this.db.select({
+      id: schema.workflowPhq9SupervisorEscalations.id,
+      workflowReference: schema.workflowSessions.reference,
+      kaimahiDisplayName: kaimahi.displayName,
+      createdAt: schema.workflowPhq9SupervisorEscalations.createdAt,
+      status: schema.workflowPhq9SupervisorEscalations.status,
+    })
       .from(schema.workflowPhq9SupervisorEscalations)
       .innerJoin(schema.workflowSessions, and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, schema.workflowSessions.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, schema.workflowSessions.organisationId)))
+      .innerJoin(kaimahi, and(eq(schema.workflowPhq9SupervisorEscalations.kaimahiUserId, kaimahi.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, kaimahi.organisationId)))
       .innerJoin(schema.supervision, and(eq(schema.supervision.organisationId, schema.workflowPhq9SupervisorEscalations.organisationId), eq(schema.supervision.kaimahiUserId, schema.workflowPhq9SupervisorEscalations.kaimahiUserId), eq(schema.supervision.supervisorUserId, supervisorUserId)))
       .innerJoin(schema.appUsers, and(eq(schema.appUsers.id, schema.supervision.supervisorUserId), eq(schema.appUsers.organisationId, schema.supervision.organisationId)))
       .innerJoin(schema.roleAssignments, and(eq(schema.roleAssignments.userId, schema.appUsers.id), eq(schema.roleAssignments.role, 'SUPERVISOR')))
       .where(and(eq(schema.workflowPhq9SupervisorEscalations.organisationId, organisationId), eq(schema.workflowPhq9SupervisorEscalations.supervisorUserId, supervisorUserId), eq(schema.appUsers.status, 'active'), sql`(select count(*) from supervision relation join app_user supervisor on supervisor.id = relation.supervisor_user_id and supervisor.organisation_id = relation.organisation_id join role_assignment role on role.user_id = supervisor.id and role.role = 'SUPERVISOR' where relation.organisation_id = ${schema.workflowPhq9SupervisorEscalations.organisationId} and relation.kaimahi_user_id = ${schema.workflowPhq9SupervisorEscalations.kaimahiUserId} and supervisor.status = 'active') = 1`))
+  }
+
+  /** A read is permitted only while the original exact-one assignment remains valid. */
+  async findAssignedDetailToSupervisor(organisationId: string, supervisorUserId: string, escalationId: string) {
+    const kaimahi = alias(schema.appUsers, 'phq9_escalation_detail_kaimahi')
+    const [detail] = await this.db.select({
+      id: schema.workflowPhq9SupervisorEscalations.id,
+      workflowReference: schema.workflowSessions.reference,
+      kaimahiDisplayName: kaimahi.displayName,
+      createdAt: schema.workflowPhq9SupervisorEscalations.createdAt,
+      status: schema.workflowPhq9SupervisorEscalations.status,
+      confirmedTotalScore: schema.workflowKaitiakitangaPhq9Confirmations.confirmedTotalScore,
+      ruleCode: schema.workflowKaitiakitangaPhq9Confirmations.escalationRuleCode,
+      ruleVersion: schema.workflowKaitiakitangaPhq9Confirmations.escalationRuleVersion,
+    })
+      .from(schema.workflowPhq9SupervisorEscalations)
+      .innerJoin(schema.workflowSessions, and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, schema.workflowSessions.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, schema.workflowSessions.organisationId)))
+      .innerJoin(schema.workflowKaitiakitangaPhq9Confirmations, and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId), eq(schema.workflowPhq9SupervisorEscalations.organisationId, schema.workflowKaitiakitangaPhq9Confirmations.organisationId), eq(schema.workflowPhq9SupervisorEscalations.phq9ConfirmationInteractionId, schema.workflowKaitiakitangaPhq9Confirmations.interactionId)))
+      .innerJoin(kaimahi, and(eq(schema.workflowPhq9SupervisorEscalations.kaimahiUserId, kaimahi.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, kaimahi.organisationId)))
+      .innerJoin(schema.supervision, and(eq(schema.supervision.organisationId, schema.workflowPhq9SupervisorEscalations.organisationId), eq(schema.supervision.kaimahiUserId, schema.workflowPhq9SupervisorEscalations.kaimahiUserId), eq(schema.supervision.supervisorUserId, supervisorUserId)))
+      .innerJoin(schema.appUsers, and(eq(schema.appUsers.id, schema.supervision.supervisorUserId), eq(schema.appUsers.organisationId, schema.supervision.organisationId)))
+      .innerJoin(schema.roleAssignments, and(eq(schema.roleAssignments.userId, schema.appUsers.id), eq(schema.roleAssignments.role, 'SUPERVISOR')))
+      .where(and(eq(schema.workflowPhq9SupervisorEscalations.id, escalationId), eq(schema.workflowPhq9SupervisorEscalations.organisationId, organisationId), eq(schema.workflowPhq9SupervisorEscalations.supervisorUserId, supervisorUserId), eq(schema.appUsers.status, 'active'), sql`(select count(*) from supervision relation join app_user supervisor on supervisor.id = relation.supervisor_user_id and supervisor.organisation_id = relation.organisation_id join role_assignment role on role.user_id = supervisor.id and role.role = 'SUPERVISOR' where relation.organisation_id = ${schema.workflowPhq9SupervisorEscalations.organisationId} and relation.kaimahi_user_id = ${schema.workflowPhq9SupervisorEscalations.kaimahiUserId} and supervisor.status = 'active') = 1`))
+      .limit(1)
+    return detail ?? null
   }
 
   /** Revocation, deactivation, ambiguity, or an address change after enqueue fails closed before I/O. */
