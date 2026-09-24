@@ -114,7 +114,7 @@ describe.skipIf(!hasTestDatabaseUrl())('Kaitiakitanga authoritative PHQ-9 confir
       expect(assignedEscalations).toEqual([expect.objectContaining({ workflowReference: oneSupervisor.result.workflow.reference, kaimahiDisplayName: actor.displayName, status: 'queued' })])
       expect(assignedEscalations[0]).not.toHaveProperty('confirmedTotalScore')
       const assignedDetail = await escalationRepository.findAssignedDetailToSupervisor(organisationId, supervisorId, assignedEscalations[0]!.id)
-      expect(assignedDetail).toMatchObject({ workflowReference: oneSupervisor.result.workflow.reference, kaimahiDisplayName: actor.displayName, confirmedTotalScore: 12, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, status: 'queued' })
+      expect(assignedDetail).toMatchObject({ workflowReference: oneSupervisor.result.workflow.reference, kaimahiDisplayName: actor.displayName, confirmedTotalScore: 12, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, status: 'queued', contextSummary: null })
       expect(assignedDetail).not.toHaveProperty('recipientEmail')
       expect(assignedDetail).not.toHaveProperty('providerMessageId')
       expect(assignedDetail).not.toHaveProperty('transcript')

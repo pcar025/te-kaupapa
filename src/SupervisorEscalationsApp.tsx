@@ -16,6 +16,7 @@ interface EscalationDetail extends EscalationListItem {
   confirmedTotalScore: number
   ruleCode: string
   ruleVersion: number
+  contextSummary: string | null
 }
 
 function deliveryLabel(status: DeliveryStatus) {
@@ -114,6 +115,12 @@ export default function SupervisorEscalationsApp({ onBack, profile }: { onBack: 
               <div><dt className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>DETERMINISTIC RULE</dt><dd>Confirmed PHQ-9 total score ≥12 requires supervisor escalation (version {detail.ruleVersion}).</dd></div>
               <div><dt className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>NOTIFICATION</dt><dd>{deliveryLabel(detail.status)}</dd></div>
             </dl>
+            {detail.contextSummary && (
+              <section className="mt-6 pt-5" style={{ borderTop: '1px solid var(--color-border)' }}>
+                <p className="text-xs mb-2" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)', letterSpacing: '0.08em' }}>KAITIAKITANGA CONTEXT SUMMARY</p>
+                <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{detail.contextSummary}</p>
+              </section>
+            )}
           </section>
         )}
       </div>

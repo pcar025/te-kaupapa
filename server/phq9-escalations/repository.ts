@@ -75,10 +75,13 @@ export class PostgresPhq9SupervisorEscalationRepository implements Phq9Escalatio
       confirmedTotalScore: schema.workflowKaitiakitangaPhq9Confirmations.confirmedTotalScore,
       ruleCode: schema.workflowKaitiakitangaPhq9Confirmations.escalationRuleCode,
       ruleVersion: schema.workflowKaitiakitangaPhq9Confirmations.escalationRuleVersion,
+      /** Canonical Kaitiakitanga review text, never a newly generated Supervisor summary. */
+      contextSummary: schema.workflowPouReviews.overallSummary,
     })
       .from(schema.workflowPhq9SupervisorEscalations)
       .innerJoin(schema.workflowSessions, and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, schema.workflowSessions.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, schema.workflowSessions.organisationId)))
       .innerJoin(schema.workflowKaitiakitangaPhq9Confirmations, and(eq(schema.workflowPhq9SupervisorEscalations.workflowSessionId, schema.workflowKaitiakitangaPhq9Confirmations.workflowSessionId), eq(schema.workflowPhq9SupervisorEscalations.organisationId, schema.workflowKaitiakitangaPhq9Confirmations.organisationId), eq(schema.workflowPhq9SupervisorEscalations.phq9ConfirmationInteractionId, schema.workflowKaitiakitangaPhq9Confirmations.interactionId)))
+      .leftJoin(schema.workflowPouReviews, and(eq(schema.workflowPouReviews.workflowSessionId, schema.workflowPhq9SupervisorEscalations.workflowSessionId), eq(schema.workflowPouReviews.organisationId, schema.workflowPhq9SupervisorEscalations.organisationId), eq(schema.workflowPouReviews.pouId, 'kaitiakitanga')))
       .innerJoin(kaimahi, and(eq(schema.workflowPhq9SupervisorEscalations.kaimahiUserId, kaimahi.id), eq(schema.workflowPhq9SupervisorEscalations.organisationId, kaimahi.organisationId)))
       .innerJoin(schema.supervision, and(eq(schema.supervision.organisationId, schema.workflowPhq9SupervisorEscalations.organisationId), eq(schema.supervision.kaimahiUserId, schema.workflowPhq9SupervisorEscalations.kaimahiUserId), eq(schema.supervision.supervisorUserId, supervisorUserId)))
       .innerJoin(schema.appUsers, and(eq(schema.appUsers.id, schema.supervision.supervisorUserId), eq(schema.appUsers.organisationId, schema.supervision.organisationId)))

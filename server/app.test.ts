@@ -980,7 +980,7 @@ describe('authenticated application shell API', () => {
         ? [{ id: '4f7f6df9-babc-46d8-bf01-e88904723bca', workflowReference: 'TK-7K4M2P9Q', kaimahiDisplayName: 'Assigned Kaimahi', createdAt: new Date('2026-09-23T00:00:00.000Z'), status: 'queued' }]
         : []),
       findAssignedDetailToSupervisor: vi.fn(async (organisationId: string, supervisorUserId: string, escalationId: string) => organisationId === supervisor.organisation.id && supervisorUserId === supervisor.id && escalationId === '4f7f6df9-babc-46d8-bf01-e88904723bca'
-        ? { id: escalationId, workflowReference: 'TK-7K4M2P9Q', kaimahiDisplayName: 'Assigned Kaimahi', createdAt: new Date('2026-09-23T00:00:00.000Z'), status: 'provider_accepted', confirmedTotalScore: 12, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1 }
+        ? { id: escalationId, workflowReference: 'TK-7K4M2P9Q', kaimahiDisplayName: 'Assigned Kaimahi', createdAt: new Date('2026-09-23T00:00:00.000Z'), status: 'provider_accepted', confirmedTotalScore: 12, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, contextSummary: 'Persisted Kaitiakitanga context only.' }
         : null),
     }
     const app = await createApplication({ config: config(), repository, phq9EscalationRepository: escalationRepository as any, oidcProvider: new FakeOidcProvider() })
@@ -991,6 +991,7 @@ describe('authenticated application shell API', () => {
     expect(list.headers['cache-control']).toBe('no-store')
     expect(list.json()).toMatchObject({ escalations: [{ workflowReference: 'TK-7K4M2P9Q', kaimahiDisplayName: 'Assigned Kaimahi', status: 'queued' }] })
     expect(list.json().escalations[0]).not.toHaveProperty('confirmedTotalScore')
+    expect(list.json().escalations[0]).not.toHaveProperty('contextSummary')
     expect(escalationRepository.findAssignedToSupervisor).toHaveBeenCalledWith(supervisor.organisation.id, supervisor.id)
     const detailUrl = '/api/phq9-escalations/assigned/4f7f6df9-babc-46d8-bf01-e88904723bca'
     expect((await app.inject({ method: 'GET', url: detailUrl, headers: { cookie: 'test_session=phq-kaimahi' } })).statusCode).toBe(403)
@@ -999,11 +1000,12 @@ describe('authenticated application shell API', () => {
     const detail = await app.inject({ method: 'GET', url: detailUrl, headers: { cookie: 'test_session=phq-supervisor' } })
     expect(detail.statusCode).toBe(200)
     expect(detail.headers['cache-control']).toBe('no-store')
-    expect(detail.json()).toMatchObject({ escalation: { workflowReference: 'TK-7K4M2P9Q', confirmedTotalScore: 12, status: 'provider_accepted', ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1 } })
+    expect(detail.json()).toMatchObject({ escalation: { workflowReference: 'TK-7K4M2P9Q', confirmedTotalScore: 12, status: 'provider_accepted', ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, contextSummary: 'Persisted Kaitiakitanga context only.' } })
     expect(detail.json().escalation).not.toHaveProperty('recipientEmail')
     expect(detail.json().escalation).not.toHaveProperty('providerMessageId')
     expect(detail.json().escalation).not.toHaveProperty('transcript')
     expect(detail.json().escalation).not.toHaveProperty('narrative')
+    expect(detail.json().escalation).not.toHaveProperty('phq9ItemResponses')
     expect(escalationRepository.findAssignedDetailToSupervisor).toHaveBeenCalledWith(supervisor.organisation.id, supervisor.id, '4f7f6df9-babc-46d8-bf01-e88904723bca')
     await app.close()
   })
