@@ -13,7 +13,7 @@ function postgresCause(error: unknown): { code?: unknown; message?: unknown } | 
     if (!value || typeof value !== 'object' || seen.has(value)) return undefined
     seen.add(value)
     const record = value as { code?: unknown; message?: unknown; cause?: unknown; errors?: unknown[] }
-    if (record.code === 'P0001' && record.message === 'review draft provenance is immutable') return record
+    if (record.code === 'P0001') return record
     const direct = visit(record.cause)
     if (direct) return direct
     return Array.isArray(record.errors) ? record.errors.map(visit).find(Boolean) : undefined
@@ -36,10 +36,33 @@ describe('Whakapapa review-draft reconciliation', () => {
       expect(edited.revision).toBe(2)
       expect(await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id))).toHaveLength(2)
       const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
-      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa', reviewDraftRevisionId: edited.revisionId } })
+      const confirmation = { type: 'pou-review-confirmed' as const, idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa' as const, reviewDraftRevisionId: edited.revisionId }
+      await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: confirmation })
       const [canonical] = await connection.db.select().from(schema.workflowPouReviews).where(and(eq(schema.workflowPouReviews.workflowSessionId, workflowId), eq(schema.workflowPouReviews.pouId, 'whakapapa')))
-      expect(canonical).toMatchObject({ reviewDraftRevisionId: edited.revisionId, overallSummary: 'Edited human-visible Whakapapa review.', confirmedByUserId: actor.id })
-      expect((await canonicalSnapshot()).counts.workflowSafetyObservations).toBe(0)
+      expect(canonical).toMatchObject({ reviewDraftRevisionId: edited.revisionId, criterionSnapshotsVersion: 1, overallSummary: 'Edited human-visible Whakapapa review.', confirmedByUserId: actor.id })
+      const sourceCriteria = await connection.db.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, edited.revisionId))
+      const snapshots = await connection.db.select().from(schema.workflowPouReviewCriterionSnapshots).where(eq(schema.workflowPouReviewCriterionSnapshots.workflowPouReviewId, canonical.id))
+      expect(snapshots).toHaveLength(sourceCriteria.length)
+      expect(snapshots.map((snapshot: any) => ({
+        sourceCriterionAssessmentId: snapshot.sourceCriterionAssessmentId,
+        criterionCode: snapshot.criterionCode,
+        availabilityStatus: snapshot.availabilityStatus,
+        evidenceTurnIds: snapshot.evidenceTurnIds,
+        missingInformationCodes: snapshot.missingInformationCodes,
+      }))).toEqual(sourceCriteria.map((criterion: any) => ({
+        sourceCriterionAssessmentId: criterion.id,
+        criterionCode: criterion.criterionCode,
+        availabilityStatus: criterion.status,
+        evidenceTurnIds: criterion.evidenceTurnIds,
+        missingInformationCodes: criterion.missingInformationCodes,
+      })))
+      expect(Object.keys(snapshots[0]!)).not.toContain('text')
+      const read = await workflowRepository.findById(actor, workflowId)
+      expect(read?.pouReviews[0]?.criterionEvidence).toMatchObject({ status: 'canonical_snapshot' })
+      expect(read?.pouReviews[0]?.criterionEvidence.status === 'canonical_snapshot' && read.pouReviews[0].criterionEvidence.snapshots.some((snapshot) => snapshot.sourceCriterionAssessmentId === sourceCriteria[0]!.id)).toBe(true)
+      expect((await canonicalSnapshot()).counts).toMatchObject({ workflowSafetyObservations: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 })
+      expect((await workflowRepository.submitCommand({ actor, workflowSessionId: workflowId, command: confirmation })).replayed).toBe(true)
+      expect(await connection.db.select().from(schema.workflowPouReviewCriterionSnapshots).where(eq(schema.workflowPouReviewCriterionSnapshots.workflowPouReviewId, canonical.id))).toHaveLength(sourceCriteria.length)
       const original = await connection.db.select().from(schema.conversationReviewDraftRevisions).where(and(eq(schema.conversationReviewDraftRevisions.reviewDraftId, draft.id), eq(schema.conversationReviewDraftRevisions.revision, 1)))
       expect(original[0]!.overallSummary).toBe('Synthetic Whakapapa review draft.')
       let rejection: unknown
@@ -50,6 +73,14 @@ describe('Whakapapa review-draft reconciliation', () => {
       expect(postgresCause(rejection)).toMatchObject({ code: 'P0001', message: 'review draft provenance is immutable' })
       const afterRejectedUpdate = await connection.db.select().from(schema.conversationReviewDraftRevisions).where(eq(schema.conversationReviewDraftRevisions.id, generated[0]!.id))
       expect(afterRejectedUpdate[0]!.overallSummary).toBe('Synthetic Whakapapa review draft.')
+      for (const statement of [
+        sql`update workflow_pou_review_criterion_snapshot set availability_status = 'not_explored' where id = ${snapshots[0]!.id}`,
+        sql`delete from workflow_pou_review_criterion_snapshot where id = ${snapshots[0]!.id}`,
+      ]) {
+        let snapshotRejection: unknown
+        try { await connection.db.execute(statement) } catch (error) { snapshotRejection = error }
+        expect(postgresCause(snapshotRejection)).toMatchObject({ code: 'P0001', message: 'confirmed Pou criterion snapshots are immutable' })
+      }
     })
   })
 
@@ -58,6 +89,84 @@ describe('Whakapapa review-draft reconciliation', () => {
       expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       await expect(reviewDraftRepository.edit({ ...actor, id: randomUUID() }, workflowId, { reviewDraftId: ready.draft.id, expectedRevision: 1, content: { overallSummary: 'Not allowed.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: ready.draft.evidenceTurnIds } })).rejects.toThrow('review draft')
+    })
+  })
+
+  it('rejects incomplete, wrong-revision, and wrong-Pou criterion snapshot sources without persisting a canonical review', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const sourceCriteria = await connection.db.select().from(schema.conversationReviewDraftCriterionAssessments).where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, ready.draft.revisionId))
+      const source = sourceCriteria[0]!
+      const reviewValues = (reviewDraftRevisionId: string, pouId: 'whakapapa' | 'manaakitanga') => ({
+        workflowSessionId: workflowId,
+        organisationId: actor.organisation.id,
+        pouId,
+        reviewDraftRevisionId,
+        overallSummary: 'Synthetic canonical review.',
+        strengthsSummary: null,
+        areasForAttentionSummary: null,
+        criterionSnapshotsVersion: 1,
+        confirmedByUserId: actor.id,
+        confirmedAt: new Date('2026-08-13T00:00:00.000Z'),
+      })
+      const snapshotValues = (reviewId: string, criterion = source) => ({
+        workflowPouReviewId: reviewId,
+        sourceCriterionAssessmentId: criterion.id,
+        criterionCode: criterion.criterionCode,
+        availabilityStatus: criterion.status,
+        evidenceTurnIds: criterion.evidenceTurnIds,
+        missingInformationCodes: criterion.missingInformationCodes,
+      })
+
+      let incompleteRejection: unknown
+      try { await connection.db.transaction(async (tx: any) => {
+        const [review] = await tx.insert(schema.workflowPouReviews).values(reviewValues(ready.draft.revisionId, 'whakapapa')).returning()
+        await tx.insert(schema.workflowPouReviewCriterionSnapshots).values(snapshotValues(review!.id))
+      }) } catch (error) { incompleteRejection = error }
+      expect(postgresCause(incompleteRejection)).toMatchObject({ message: 'canonical Pou review criterion snapshot set is incomplete or mismatched' })
+
+      const edited = await reviewDraftRepository.edit(actor, workflowId, {
+        reviewDraftId: ready.draft.id,
+        expectedRevision: ready.draft.revision,
+        content: { overallSummary: 'Edited revision.', strengthsSummary: null, areasForAttentionSummary: null, evidenceTurnIds: ready.draft.evidenceTurnIds },
+      })
+      let wrongRevisionRejection: unknown
+      try { await connection.db.transaction(async (tx: any) => {
+        const [review] = await tx.insert(schema.workflowPouReviews).values(reviewValues(edited.revisionId, 'whakapapa')).returning()
+        await tx.insert(schema.workflowPouReviewCriterionSnapshots).values(snapshotValues(review!.id, source))
+      }) } catch (error) { wrongRevisionRejection = error }
+      expect(postgresCause(wrongRevisionRejection)).toMatchObject({ message: 'canonical criterion snapshot provenance is invalid' })
+
+      let wrongPouRejection: unknown
+      try { await connection.db.transaction(async (tx: any) => {
+        const [review] = await tx.insert(schema.workflowPouReviews).values(reviewValues(ready.draft.revisionId, 'manaakitanga')).returning()
+        await tx.insert(schema.workflowPouReviewCriterionSnapshots).values(snapshotValues(review!.id, source))
+      }) } catch (error) { wrongPouRejection = error }
+      expect(postgresCause(wrongPouRejection)).toMatchObject({ message: 'canonical criterion snapshot provenance is invalid' })
+      expect(await connection.db.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
+  it('keeps a pre-6D confirmed review readable as legacy-unavailable without manufacturing evidence', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, workflowRepository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      await connection.db.insert(schema.workflowPouReviews).values({
+        workflowSessionId: workflowId,
+        organisationId: actor.organisation.id,
+        pouId: 'whakapapa',
+        reviewDraftRevisionId: ready.draft.revisionId,
+        overallSummary: 'Historic confirmed review.',
+        strengthsSummary: null,
+        areasForAttentionSummary: null,
+        confirmedByUserId: actor.id,
+        confirmedAt: new Date('2026-08-13T00:00:00.000Z'),
+      })
+      const workflow = await workflowRepository.findById(actor, workflowId)
+      expect(workflow?.pouReviews).toMatchObject([{ pouId: 'whakapapa', criterionEvidence: { status: 'legacy_unavailable' } }])
+      expect(workflow?.pouReviews[0]?.criterionEvidence).not.toHaveProperty('snapshots')
+      expect(await connection.db.select().from(schema.workflowPouReviewCriterionSnapshots)).toHaveLength(0)
     })
   })
 

@@ -826,6 +826,8 @@ export const workflowPouReviews = pgTable(
     overallSummary: text('overall_summary'),
     strengthsSummary: text('strengths_summary'),
     areasForAttentionSummary: text('areas_for_attention_summary'),
+    /** Null marks a review confirmed before canonical criterion snapshots existed. */
+    criterionSnapshotsVersion: integer('criterion_snapshots_version'),
     confirmedByUserId: uuid('confirmed_by_user_id').notNull(),
     confirmedAt: timestamp('confirmed_at', { withTimezone: true }).defaultNow().notNull(),
   },
@@ -835,6 +837,33 @@ export const workflowPouReviews = pgTable(
     foreignKey({ columns: [table.confirmedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'workflow_pou_review_confirming_user_organisation_fk' }),
     uniqueIndex('workflow_pou_review_session_pou_uq').on(table.workflowSessionId, table.pouId),
     check('workflow_pou_review_content_bound', sql`coalesce(length(${table.overallSummary}), 0) + coalesce(length(${table.strengthsSummary}), 0) + coalesce(length(${table.areasForAttentionSummary}), 0) > 0 and (${table.overallSummary} is null or length(${table.overallSummary}) <= 1200) and (${table.strengthsSummary} is null or length(${table.strengthsSummary}) <= 900) and (${table.areasForAttentionSummary} is null or length(${table.areasForAttentionSummary}) <= 900)`),
+    check('workflow_pou_review_criterion_snapshots_version', sql`${table.criterionSnapshotsVersion} is null or ${table.criterionSnapshotsVersion} = 1`),
+  ],
+)
+
+/**
+ * The criterion evidence a Kaimahi explicitly confirmed with a Pou review.
+ * It copies only bounded status/provenance from the immutable source row; the
+ * source row and the review's pinned projection retain the full lineage.
+ */
+export const workflowPouReviewCriterionSnapshots = pgTable(
+  'workflow_pou_review_criterion_snapshot',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowPouReviewId: uuid('workflow_pou_review_id').notNull(),
+    sourceCriterionAssessmentId: uuid('source_criterion_assessment_id').notNull(),
+    criterionCode: text('criterion_code').notNull(),
+    availabilityStatus: pouReviewCriterionStatus('availability_status').notNull(),
+    evidenceTurnIds: jsonb('evidence_turn_ids').notNull(),
+    missingInformationCodes: jsonb('missing_information_codes').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowPouReviewId], foreignColumns: [workflowPouReviews.id], name: 'workflow_pou_review_criterion_snapshot_review_fk' }),
+    foreignKey({ columns: [table.sourceCriterionAssessmentId], foreignColumns: [conversationReviewDraftCriterionAssessments.id], name: 'workflow_pou_review_criterion_snapshot_source_fk' }),
+    uniqueIndex('workflow_pou_review_criterion_snapshot_review_code_uq').on(table.workflowPouReviewId, table.criterionCode),
+    uniqueIndex('workflow_pou_review_criterion_snapshot_review_source_uq').on(table.workflowPouReviewId, table.sourceCriterionAssessmentId),
+    check('workflow_pou_review_criterion_snapshot_code_length', sql`length(${table.criterionCode}) between 2 and 120`),
   ],
 )
 

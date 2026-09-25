@@ -305,12 +305,13 @@ export class PostgresConversationReviewDraftRepository {
       if (existing[0].reviewDraftRevisionId === input.reviewDraftRevisionId) return
       throw new ReviewDraftUnavailableError('The Pou review has already been confirmed.')
     }
-    const rows = await tx.select({ draft: schema.conversationReviewDrafts, revision: schema.conversationReviewDraftRevisions })
+    const rows = await tx.select({ draft: schema.conversationReviewDrafts, revision: schema.conversationReviewDraftRevisions, pin: schema.workflowConversationPouSpecificationPins })
       .from(schema.conversationReviewDraftRevisions)
       .innerJoin(schema.conversationReviewDrafts, eq(schema.conversationReviewDraftRevisions.reviewDraftId, schema.conversationReviewDrafts.id))
       .innerJoin(schema.conversationSafetyAssessmentRuns, eq(schema.conversationReviewDrafts.assessmentRunId, schema.conversationSafetyAssessmentRuns.id))
       .innerJoin(schema.workflowConversations, eq(schema.workflowConversations.id, schema.conversationSafetyAssessmentRuns.workflowConversationId))
       .innerJoin(schema.workflowPouCheckpoints, and(eq(schema.workflowPouCheckpoints.workflowSessionId, schema.conversationSafetyAssessmentRuns.workflowSessionId), eq(schema.workflowPouCheckpoints.organisationId, schema.conversationSafetyAssessmentRuns.organisationId), eq(schema.workflowPouCheckpoints.pouId, schema.conversationSafetyAssessmentRuns.pouId)))
+      .innerJoin(schema.workflowConversationPouSpecificationPins, eq(schema.workflowConversationPouSpecificationPins.workflowConversationId, schema.conversationReviewDrafts.workflowConversationId))
       .where(and(
         eq(schema.conversationReviewDraftRevisions.id, input.reviewDraftRevisionId),
         eq(schema.conversationReviewDrafts.organisationId, input.actor.organisation.id),
@@ -322,7 +323,54 @@ export class PostgresConversationReviewDraftRepository {
     const row = rows[0]
     if (!row) throw new ReviewDraftUnavailableError('The final review draft is unavailable.')
     const content = readContent(row.revision)
-    await tx.insert(schema.workflowPouReviews).values({ workflowSessionId: input.workflowSessionId, organisationId: input.actor.organisation.id, pouId: input.pouId, reviewDraftRevisionId: row.revision.id, overallSummary: content.overallSummary, strengthsSummary: content.strengthsSummary, areasForAttentionSummary: content.areasForAttentionSummary, confirmedByUserId: input.actor.id, confirmedAt: input.timestamp })
+    const sourceTurns = await tx.select({ id: schema.conversationTranscriptTurns.id })
+      .from(schema.conversationTranscriptTurns)
+      .innerJoin(schema.conversationTranscripts, eq(schema.conversationTranscriptTurns.transcriptId, schema.conversationTranscripts.id))
+      .where(and(
+        eq(schema.conversationTranscripts.workflowConversationId, row.draft.workflowConversationId),
+        eq(schema.conversationTranscripts.organisationId, input.actor.organisation.id),
+        eq(schema.conversationTranscripts.workflowSessionId, input.workflowSessionId),
+        eq(schema.conversationTranscripts.pouId, input.pouId),
+      ))
+    const sourceCriteria = await tx.select().from(schema.conversationReviewDraftCriterionAssessments)
+      .where(eq(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, row.revision.id))
+    const confirmedCriteria = validateReviewCriterionAssessments(
+      row.pin.pouReviewProjectionSnapshot as PouReviewProjection,
+      sourceCriteria.map((criterion) => ({
+        criterionCode: criterion.criterionCode,
+        status: criterion.status as ReviewCriterionAssessment['status'],
+        evidenceTurnIds: criterion.evidenceTurnIds as string[],
+        missingInformationCodes: criterion.missingInformationCodes as string[],
+      })),
+      new Set(sourceTurns.map((turn) => turn.id)),
+    )
+    const sourceCriteriaByCode = new Map(sourceCriteria.map((criterion) => [criterion.criterionCode, criterion]))
+    const [canonical] = await tx.insert(schema.workflowPouReviews).values({
+      workflowSessionId: input.workflowSessionId,
+      organisationId: input.actor.organisation.id,
+      pouId: input.pouId,
+      reviewDraftRevisionId: row.revision.id,
+      overallSummary: content.overallSummary,
+      strengthsSummary: content.strengthsSummary,
+      areasForAttentionSummary: content.areasForAttentionSummary,
+      criterionSnapshotsVersion: 1,
+      confirmedByUserId: input.actor.id,
+      confirmedAt: input.timestamp,
+    }).returning()
+    if (!canonical) throw new ReviewDraftUnavailableError('Canonical Pou review persistence failed.')
+    await tx.insert(schema.workflowPouReviewCriterionSnapshots).values(confirmedCriteria.map((criterion) => {
+      const source = sourceCriteriaByCode.get(criterion.criterionCode)
+      if (!source) throw new ReviewDraftUnavailableError('The confirmed criterion source is unavailable.')
+      return {
+        workflowPouReviewId: canonical.id,
+        sourceCriterionAssessmentId: source.id,
+        criterionCode: criterion.criterionCode,
+        availabilityStatus: criterion.status,
+        evidenceTurnIds: criterion.evidenceTurnIds,
+        missingInformationCodes: criterion.missingInformationCodes,
+        createdAt: input.timestamp,
+      }
+    }))
   }
 
   /** A ready draft cannot be bypassed by a direct ordinary workflow command. */

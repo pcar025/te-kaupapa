@@ -10,7 +10,7 @@ import { createDatabaseConnection, type DatabaseConnection } from './repository.
 const TEST_DATABASE_URL_ENVIRONMENT_VARIABLE = 'TEST_DATABASE_URL'
 const DEFAULT_POSTGRES_PORT = '5432'
 const MIGRATION_LOCK_ID = 724188218
-const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway', '0013_wooden_triathlon', '0014_ordinary_lady_mastermind', '0015_yellow_microbe', '0016_lonely_vance_astro', '0017_flashy_betty_ross', '0018_trusted_device_sessions', '0019_absurd_norrin_radd', '0020_final_record_confirmed_synthesis_lineage', '0021_useful_anita_blake', '0022_pre_reflection_readiness', '0023_lush_prism', '0024_pretty_tenebrous', '0025_phq9_supervisor_escalation_outbox']
+const REQUIRED_MIGRATION_TAGS = ['0000_absent_wallow', '0001_conscious_richard_fisk', '0002_glossy_ronan', '0003_simple_grandmaster', '0004_nice_chamber', '0005_living_thena', '0006_large_wolfpack', '0007_opposite_johnny_blaze', '0008_dear_master_chief', '0009_loose_mindworm', '0010_violet_luke_cage', '0011_short_zeigeist', '0012_nervous_gateway', '0013_wooden_triathlon', '0014_ordinary_lady_mastermind', '0015_yellow_microbe', '0016_lonely_vance_astro', '0017_flashy_betty_ross', '0018_trusted_device_sessions', '0019_absurd_norrin_radd', '0020_final_record_confirmed_synthesis_lineage', '0021_useful_anita_blake', '0022_pre_reflection_readiness', '0023_lush_prism', '0024_pretty_tenebrous', '0025_phq9_supervisor_escalation_outbox', '0026_confirmed_pou_criterion_snapshots']
 const PRE_MILESTONE_5_MIGRATION_TAGS = REQUIRED_MIGRATION_TAGS.slice(0, 6)
 
 interface MigrationJournal {
@@ -235,6 +235,32 @@ export async function verifyUpgradeFromPreMilestone5TestDatabase(): Promise<void
     `)
     if (Number(finalRecordLineageTrigger.rows[0]?.count ?? 0) !== 1) {
       throw new Error('The final-record confirmed-synthesis lineage trigger was not created by the later migration chain.')
+    }
+    const canonicalCriterionSnapshotRelations = await connection.db.execute(sql`
+      select count(*)::int as count from pg_class
+      where oid = 'public.workflow_pou_review_criterion_snapshot'::regclass
+    `)
+    if (Number(canonicalCriterionSnapshotRelations.rows[0]?.count ?? 0) !== 1) {
+      throw new Error('The canonical Pou criterion snapshot relation was not created by the 6D migration chain.')
+    }
+    const canonicalCriterionSnapshotVersionColumn = await connection.db.execute(sql`
+      select count(*)::int as count from information_schema.columns
+      where table_schema = 'public' and table_name = 'workflow_pou_review' and column_name = 'criterion_snapshots_version'
+    `)
+    if (Number(canonicalCriterionSnapshotVersionColumn.rows[0]?.count ?? 0) !== 1) {
+      throw new Error('The canonical Pou criterion snapshot version marker was not created by the 6D migration chain.')
+    }
+    const canonicalCriterionSnapshotTriggers = await connection.db.execute(sql`
+      select count(*)::int as count from pg_trigger
+      where tgname in (
+        'workflow_pou_review_criterion_snapshot_source_provenance',
+        'workflow_pou_review_criterion_snapshot_immutable',
+        'workflow_pou_review_criterion_snapshot_set_on_review',
+        'workflow_pou_review_criterion_snapshot_set_on_snapshot'
+      ) and not tgisinternal
+    `)
+    if (Number(canonicalCriterionSnapshotTriggers.rows[0]?.count ?? 0) !== 4) {
+      throw new Error('The canonical Pou criterion snapshot provenance and completeness triggers were not created by the 6D migration chain.')
     }
   } catch (error) {
     primaryFailure = true

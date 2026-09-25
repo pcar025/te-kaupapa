@@ -67,6 +67,19 @@ export interface Workflow {
     strengthsSummary: string | null
     areasForAttentionSummary: string | null
     stillToExplore?: string[]
+    criterionEvidence?: {
+      status: 'legacy_unavailable'
+    } | {
+      status: 'canonical_snapshot'
+      snapshots: Array<{
+        id: string
+        sourceCriterionAssessmentId: string
+        criterionCode: string
+        availabilityStatus: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
+        evidenceTurnIds: string[]
+        missingInformationCodes: string[]
+      }>
+    }
     confirmedAt: string
   }>
   safety: WorkflowSafetyState

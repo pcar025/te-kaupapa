@@ -117,6 +117,19 @@ export interface WorkflowPouReviewView {
   areasForAttentionSummary: string | null
   /** Approved criterion labels only; never transcript text. */
   stillToExplore: string[]
+  criterionEvidence: {
+    status: 'legacy_unavailable'
+  } | {
+    status: 'canonical_snapshot'
+    snapshots: Array<{
+      id: string
+      sourceCriterionAssessmentId: string
+      criterionCode: string
+      availabilityStatus: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
+      evidenceTurnIds: string[]
+      missingInformationCodes: string[]
+    }>
+  }
   confirmedAt: Date
 }
 
@@ -1342,8 +1355,8 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       ...carryForwards.flatMap((item) => item.reviewDraftRevisionId ? [item.reviewDraftRevisionId] : []),
       ...pouReviews.map((review) => review.reviewDraftRevisionId),
     ])]
-    const [reviewSourceRows, criterionRows] = sourceRevisionIds.length === 0
-      ? [[], []] as const
+    const [reviewSourceRows, criterionRows, criterionSnapshotRows] = sourceRevisionIds.length === 0
+      ? [[], [], []] as const
       : await Promise.all([
           executor.select({ revision: schema.conversationReviewDraftRevisions, draft: schema.conversationReviewDrafts, pin: schema.workflowConversationPouSpecificationPins })
             .from(schema.conversationReviewDraftRevisions)
@@ -1356,9 +1369,17 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             )),
           executor.select().from(schema.conversationReviewDraftCriterionAssessments)
             .where(inArray(schema.conversationReviewDraftCriterionAssessments.reviewDraftRevisionId, sourceRevisionIds)),
+          executor.select().from(schema.workflowPouReviewCriterionSnapshots)
+            .where(inArray(schema.workflowPouReviewCriterionSnapshots.workflowPouReviewId, pouReviews.map((review) => review.id))),
         ])
     const sourceByRevisionId = new Map(reviewSourceRows.map((row) => [row.revision.id, row]))
     const criteriaByRevisionAndCode = new Map(criterionRows.map((criterion) => [`${criterion.reviewDraftRevisionId}:${criterion.criterionCode}`, criterion]))
+    const snapshotsByReviewId = new Map<string, Array<typeof schema.workflowPouReviewCriterionSnapshots.$inferSelect>>()
+    for (const snapshot of criterionSnapshotRows) {
+      const existing = snapshotsByReviewId.get(snapshot.workflowPouReviewId) ?? []
+      existing.push(snapshot)
+      snapshotsByReviewId.set(snapshot.workflowPouReviewId, existing)
+    }
     const carryForwardViews = carryForwards.map((item) => ({
       id: item.id,
       pouId: item.pouId as WorkflowPouId,
@@ -1392,12 +1413,45 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       const stillToExplore = criterionRows
         .filter((criterion) => criterion.reviewDraftRevisionId === review.reviewDraftRevisionId && ['not_explored', 'insufficient_information'].includes(criterion.status))
         .flatMap((criterion) => projection?.criteria.find((candidate) => candidate.criterionCode === criterion.criterionCode)?.label ?? [])
+      const snapshots = snapshotsByReviewId.get(review.id) ?? []
+      const expectedCriteria = criterionRows.filter((criterion) => criterion.reviewDraftRevisionId === review.reviewDraftRevisionId)
+      const criterionEvidence = review.criterionSnapshotsVersion == null
+        ? (() => {
+            if (snapshots.length !== 0) throw new WorkflowValidationError('Legacy Pou review contains unexpected canonical criterion snapshots.')
+            return { status: 'legacy_unavailable' as const }
+          })()
+        : (() => {
+            if (review.criterionSnapshotsVersion !== 1 || snapshots.length !== expectedCriteria.length) {
+              throw new WorkflowValidationError('Canonical Pou criterion snapshot integrity failure.')
+            }
+            const expectedBySourceId = new Map(expectedCriteria.map((criterion) => [criterion.id, criterion]))
+            if (snapshots.some((snapshot) => {
+              const sourceCriterion = expectedBySourceId.get(snapshot.sourceCriterionAssessmentId)
+              return !sourceCriterion
+                || sourceCriterion.criterionCode !== snapshot.criterionCode
+                || sourceCriterion.status !== snapshot.availabilityStatus
+                || JSON.stringify(sourceCriterion.evidenceTurnIds) !== JSON.stringify(snapshot.evidenceTurnIds)
+                || JSON.stringify(sourceCriterion.missingInformationCodes) !== JSON.stringify(snapshot.missingInformationCodes)
+            })) throw new WorkflowValidationError('Canonical Pou criterion snapshot provenance is invalid.')
+            return {
+              status: 'canonical_snapshot' as const,
+              snapshots: snapshots.map((snapshot) => ({
+                id: snapshot.id,
+                sourceCriterionAssessmentId: snapshot.sourceCriterionAssessmentId,
+                criterionCode: snapshot.criterionCode,
+                availabilityStatus: snapshot.availabilityStatus as 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable',
+                evidenceTurnIds: snapshot.evidenceTurnIds as string[],
+                missingInformationCodes: snapshot.missingInformationCodes as string[],
+              })),
+            }
+          })()
       return {
         pouId: review.pouId as WorkflowPouId,
         overallSummary: review.overallSummary,
         strengthsSummary: review.strengthsSummary,
         areasForAttentionSummary: review.areasForAttentionSummary,
         stillToExplore,
+        criterionEvidence,
         confirmedAt: review.confirmedAt,
       }
     })
