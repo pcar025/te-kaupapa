@@ -1056,6 +1056,29 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
+  it('serves only the narrow canonical evidence model from the read-only endpoint', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: 'cc31c05f-f14d-4f87-a80b-9b4c561fd1da', userId: activeKaimahi.id, tokenHash: sha256('confirmed-evidence'), expiresAt: new Date(Date.now() + 60_000) })
+    const evidenceRepository = {
+      findForAuthorizedUser: vi.fn(async () => ({
+        status: 'canonical_snapshot', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1,
+        criteria: [{ criterionCode: 'IDENTITY_CONTEXT', availabilityStatus: 'evidenced', missingInformationCodes: [], sourceEvidenceReferences: { available: true, count: 1 }, transcript: 'must not be exposed', safety: { severity: 'must not be exposed' } }],
+      })),
+    }
+    const app = await createApplication({ config: config(), repository, canonicalPouEvidenceRepository: evidenceRepository as any, oidcProvider: new FakeOidcProvider() })
+    const url = '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/pou/whakapapa/confirmed-evidence'
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401)
+    const response = await app.inject({ method: 'GET', url, headers: { cookie: 'test_session=confirmed-evidence' } })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.json()).toEqual({ evidence: { status: 'canonical_snapshot', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1, criteria: [{ criterionCode: 'IDENTITY_CONTEXT', availabilityStatus: 'evidenced', missingInformationCodes: [], sourceEvidenceReferences: { available: true, count: 1 } }] } })
+    expect(evidenceRepository.findForAuthorizedUser).toHaveBeenCalledWith(activeKaimahi, '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', 'whakapapa')
+    repository.identities.set('cognito:kaimahi', { ...activeKaimahi, roles: [] })
+    expect((await app.inject({ method: 'GET', url, headers: { cookie: 'test_session=confirmed-evidence' } })).statusCode).toBe(403)
+    await app.close()
+  })
+
   it('keeps cross-Pou synthesis and final-record output owner-scoped and free of raw source material', async () => {
     const repository = new MemoryRepository()
     const supervisor: AuthenticatedUser = { ...activeKaimahi, id: 'dd8a7c03-c7a9-496f-b6c4-92a8f90f4f19', roles: ['SUPERVISOR'] }

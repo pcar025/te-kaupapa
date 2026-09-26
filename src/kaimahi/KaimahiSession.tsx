@@ -33,6 +33,7 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
+  getConfirmedPouEvidence,
   getPhq9SupervisorEscalation,
   getPouAssessmentCandidates,
   getPouReviewDraft,
@@ -48,6 +49,7 @@ import {
   type Workflow,
   type WorkflowAction,
   type WorkflowCheckpoint,
+  type ConfirmedPouEvidence,
   type WorkflowReferral,
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
@@ -2250,6 +2252,62 @@ export function WhakapapaNarrativeReview(props: {
   return <PouNarrativeReview workflowId={props.workflowId} onDraftState={props.onDraftState} pouId="whakapapa" carriedSources={new Set()} onMarkCarryForward={() => undefined} />
 }
 
+const evidenceAvailabilityLabel: Record<Extract<ConfirmedPouEvidence, { status: 'canonical_snapshot' }>['criteria'][number]['availabilityStatus'], string> = {
+  evidenced: 'Evidenced',
+  partially_evidenced: 'Partially evidenced',
+  not_explored: 'Not explored',
+  insufficient_information: 'Insufficient information',
+  not_applicable: 'Not applicable',
+}
+
+/** A small read-only view of the immutable 6D criterion snapshot. */
+export function ConfirmedPouEvidenceView({ workflowId, pouId, onReturnToCurrentPou }: {
+  workflowId: string
+  pouId: WorkflowPouId
+  onReturnToCurrentPou?: () => void
+}) {
+  const [evidence, setEvidence] = useState<ConfirmedPouEvidence | null>(null)
+  const [unavailable, setUnavailable] = useState(false)
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setEvidence(null)
+    setUnavailable(false)
+    void getConfirmedPouEvidence(workflowId, pouId, controller.signal)
+      .then((next) => setEvidence(next))
+      .catch((error) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setUnavailable(true)
+      })
+    return () => controller.abort()
+  }, [workflowId, pouId])
+
+  return <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
+    <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
+      <p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)', letterSpacing: '0.14em' }}>Confirmed review</p>
+      <h2 className="mb-1 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.25rem', fontWeight: 500, color: 'var(--color-ink)' }}>Confirmed criterion evidence</h2>
+      {evidence && <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Confirmed {new Date(evidence.confirmedAt).toLocaleString()}</p>}
+    </div>
+    <div className="px-5 pt-5 space-y-3">
+      {!evidence && !unavailable && <p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Loading confirmed evidence…</p>}
+      {unavailable && <p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>Confirmed evidence is unavailable right now.</p>}
+      {evidence?.status === 'legacy_unavailable' && <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}>
+        <SectionLabel>Canonical criterion evidence unavailable</SectionLabel>
+        <p className="mt-2 text-xs leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>This confirmed review predates canonical criterion snapshots.</p>
+      </div>}
+      {evidence?.status === 'canonical_snapshot' && <>
+        <p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>Snapshot version {evidence.snapshotVersion}</p>
+        {evidence.criteria.map((criterion) => <article key={criterion.criterionCode} className="p-4 space-y-2" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border-strong)' }}>
+          <div className="flex items-start justify-between gap-3"><p className="text-xs font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink)' }}>{criterion.criterionCode}</p><span className="text-xs px-2 py-0.5" style={{ fontFamily: 'var(--font-mono)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)' }}>{evidenceAvailabilityLabel[criterion.availabilityStatus]}</span></div>
+          {criterion.missingInformationCodes.length > 0 && <p className="text-xs leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>Missing information: {criterion.missingInformationCodes.join(', ')}</p>}
+          <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>{criterion.sourceEvidenceReferences.available ? `${criterion.sourceEvidenceReferences.count} source evidence reference${criterion.sourceEvidenceReferences.count === 1 ? '' : 's'} retained` : 'No source evidence references retained'}</p>
+        </article>)}
+      </>}
+      {onReturnToCurrentPou && <button type="button" onClick={onReturnToCurrentPou} className="w-full mt-3 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Return to current Pou</button>}
+    </div>
+  </div>
+}
+
 export function SinglePouReviewStage({
   pouIdx,
   journeyPouIds,
@@ -2266,6 +2324,7 @@ export function SinglePouReviewStage({
   persistenceState,
   onRetry,
   onReload,
+  onReturnToCurrentPou,
 }: {
   pouIdx: number
   journeyPouIds?: readonly WorkflowPouId[]
@@ -2285,6 +2344,7 @@ export function SinglePouReviewStage({
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
+  onReturnToCurrentPou?: () => void
 }) {
   const ext = POU_EXTENDED[pouIdx]
   const journey = journeyPouIds ?? TE_WAHAROA_POU.map((pou) => pou.id)
@@ -2352,6 +2412,10 @@ export function SinglePouReviewStage({
         </p>
       </div>
     )
+  }
+
+  if (checkpoint?.progress === 'confirmed') {
+    return <ConfirmedPouEvidenceView workflowId={workflowId} pouId={TE_WAHAROA_POU[pouIdx]!.id} onReturnToCurrentPou={onReturnToCurrentPou} />
   }
 
   return (
@@ -6706,7 +6770,7 @@ export function SessionShell({
         {stage === 'pou-convo'    && <PouConversationStage data={data} onChange={patch} onNext={advance} onReflectionEnded={() => setStage('pou-processing')} pouIdx={currentPouIdx} journeyIdx={currentJourneyIdx} workflowId={workflow.id} />}
         {stage === 'pou-convo'    && !pendingSafetySave && <div className="px-5 pb-4"><PersistenceFeedback state={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} /></div>}
         {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
-        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} phq9SupervisorEscalation={workflow.phq9SupervisorEscalation} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} phq9SupervisorEscalation={workflow.phq9SupervisorEscalation} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} onReturnToCurrentPou={() => { if (workflow.currentPouId) setCurrentPouIdx(pouIndexForId(workflow.currentPouId)); setStage('pou-convo') }} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

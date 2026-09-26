@@ -59,6 +59,7 @@ import { createFinalRecordPdf, finalRecordPlainText } from './workflow-synthesis
 import { logPouReviewTiming } from './observability/pou-review-timing.js'
 import { PostgresPhq9SupervisorEscalationRepository } from './phq9-escalations/repository.js'
 import { Phq9EscalationDeliveryService } from './phq9-escalations/service.js'
+import { PostgresCanonicalPouEvidenceRepository, type ConfirmedPouEvidence } from './pou-evidence/repository.js'
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
@@ -111,6 +112,24 @@ function providerWebhookRejectionReason(error: unknown): 'signature' | 'guidance
   return 'unexpected'
 }
 
+function publicConfirmedPouEvidence(evidence: ConfirmedPouEvidence): ConfirmedPouEvidence {
+  if (evidence.status === 'legacy_unavailable') {
+    return { status: evidence.status, pouId: evidence.pouId, confirmedAt: evidence.confirmedAt, snapshotVersion: null }
+  }
+  return {
+    status: evidence.status,
+    pouId: evidence.pouId,
+    confirmedAt: evidence.confirmedAt,
+    snapshotVersion: evidence.snapshotVersion,
+    criteria: evidence.criteria.map((criterion) => ({
+      criterionCode: criterion.criterionCode,
+      availabilityStatus: criterion.availabilityStatus,
+      missingInformationCodes: [...criterion.missingInformationCodes],
+      sourceEvidenceReferences: { available: criterion.sourceEvidenceReferences.available, count: criterion.sourceEvidenceReferences.count },
+    })),
+  }
+}
+
 export interface AppDependencies {
   config: AppConfiguration
   repository: AuthRepository
@@ -129,6 +148,7 @@ export interface AppDependencies {
   oidcProvider?: OidcProvider
   phq9EscalationRepository?: PostgresPhq9SupervisorEscalationRepository
   phq9EscalationDeliveryService?: Phq9EscalationDeliveryService
+  canonicalPouEvidenceRepository?: PostgresCanonicalPouEvidenceRepository
   now?: () => Date
 }
 
@@ -139,7 +159,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, phq9EscalationRepository, phq9EscalationDeliveryService, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, phq9EscalationRepository, phq9EscalationDeliveryService, canonicalPouEvidenceRepository, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -768,6 +788,28 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       }
     } catch (error) {
       return workflowFailure(error, request, reply)
+    }
+  })
+
+  /**
+   * A distinct, minimised read.  It never widens the ordinary workflow view or
+   * loads draft, transcript, provider, safety, or follow-through data.
+   */
+  app.get('/api/workflows/:workflowSessionId/pou/:pouId/confirmed-evidence', async (request, reply) => {
+    const user = await authenticate(request)
+    if (!user) return reply.code(401).send({ error: 'unauthenticated' })
+    const params = z.object({ workflowSessionId: z.string().uuid(), pouId: z.enum(WORKFLOW_POU_IDS) }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    if (!canonicalPouEvidenceRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    if (!user.roles.includes('KAIMAHI') && !user.roles.includes('SUPERVISOR')) return reply.code(403).send({ error: 'forbidden' })
+    try {
+      const evidence = await canonicalPouEvidenceRepository.findForAuthorizedUser(user, params.data.workflowSessionId, params.data.pouId)
+      if (!evidence) return reply.code(404).send({ error: 'not_found' })
+      reply.header('cache-control', 'no-store')
+      return { evidence: publicConfirmedPouEvidence(evidence) }
+    } catch (error) {
+      request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Canonical Pou evidence lookup failed')
+      return reply.code(503).send({ error: 'persistence_unavailable' })
     }
   })
 

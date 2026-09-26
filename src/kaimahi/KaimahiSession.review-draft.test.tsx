@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { candidateConfirmationCommand, PouAssessmentCandidates, PouNarrativeReview, PouReviewProcessingStage, SinglePouReviewStage, WhakapapaNarrativeReview } from './KaimahiSession'
+import { candidateConfirmationCommand, ConfirmedPouEvidenceView, PouAssessmentCandidates, PouNarrativeReview, PouReviewProcessingStage, SinglePouReviewStage, WhakapapaNarrativeReview } from './KaimahiSession'
 import { TE_WAHAROA_POU } from '../pou'
 
 const workflowId = '11111111-1111-4111-8111-111111111111'
@@ -845,5 +845,37 @@ describe('WhakapapaNarrativeReview', () => {
     fireEvent.click(view.getByRole('button', { name: 'Load current saved review' }))
     expect(await view.findByDisplayValue(edited.overallSummary)).toBeTruthy()
     await waitFor(() => expect(states).toHaveBeenLastCalledWith(expect.objectContaining({ reviewDraftRevisionId: edited.revisionId, hasUnsavedChanges: false, loaded: true })))
+  })
+})
+
+describe('ConfirmedPouEvidenceView', () => {
+  it('renders each canonical availability state without a score or safety interpretation', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ evidence: {
+      status: 'canonical_snapshot', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1,
+      criteria: [
+        { criterionCode: 'EVIDENCED', availabilityStatus: 'evidenced', missingInformationCodes: [], sourceEvidenceReferences: { available: true, count: 1 } },
+        { criterionCode: 'PARTIAL', availabilityStatus: 'partially_evidenced', missingInformationCodes: ['detail_needed'], sourceEvidenceReferences: { available: true, count: 2 } },
+        { criterionCode: 'UNEXPLORED', availabilityStatus: 'not_explored', missingInformationCodes: [], sourceEvidenceReferences: { available: false, count: 0 } },
+        { criterionCode: 'INSUFFICIENT', availabilityStatus: 'insufficient_information', missingInformationCodes: ['context_needed'], sourceEvidenceReferences: { available: false, count: 0 } },
+        { criterionCode: 'NOT_APPLICABLE', availabilityStatus: 'not_applicable', missingInformationCodes: [], sourceEvidenceReferences: { available: false, count: 0 } },
+      ],
+    } }), { status: 200 })))
+    render(<ConfirmedPouEvidenceView workflowId={workflowId} pouId="whakapapa" />)
+    for (const label of ['Evidenced', 'Partially evidenced', 'Not explored', 'Insufficient information', 'Not applicable']) expect(await screen.findByText(label)).toBeTruthy()
+    expect(screen.getByText('Missing information: detail_needed')).toBeTruthy()
+    expect(screen.queryByText(/score/i)).toBeNull()
+    expect(screen.queryByText(/safe|unsafe|competenc/i)).toBeNull()
+    expect(String((fetch as any).mock.calls[0]?.[0])).toContain(`/pou/whakapapa/confirmed-evidence`)
+  })
+
+  it('keeps legacy evidence distinct from every availability state', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ evidence: {
+      status: 'legacy_unavailable', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: null,
+    } }), { status: 200 })))
+    render(<ConfirmedPouEvidenceView workflowId={workflowId} pouId="whakapapa" />)
+    expect(await screen.findByText('Canonical criterion evidence unavailable')).toBeTruthy()
+    expect(screen.getByText(/predates canonical criterion snapshots/i)).toBeTruthy()
+    expect(screen.queryByText('Not explored')).toBeNull()
+    expect(screen.queryByText('Insufficient information')).toBeNull()
   })
 })

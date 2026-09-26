@@ -27,6 +27,24 @@ export interface WorkflowCheckpoint {
   confirmedAt: string | null
 }
 
+export type ConfirmedPouEvidence = {
+  status: 'canonical_snapshot'
+  pouId: WorkflowPouId
+  confirmedAt: string
+  snapshotVersion: 1
+  criteria: Array<{
+    criterionCode: string
+    availabilityStatus: 'evidenced' | 'partially_evidenced' | 'not_explored' | 'insufficient_information' | 'not_applicable'
+    missingInformationCodes: string[]
+    sourceEvidenceReferences: { available: boolean; count: number }
+  }>
+} | {
+  status: 'legacy_unavailable'
+  pouId: WorkflowPouId
+  confirmedAt: string
+  snapshotVersion: null
+}
+
 export interface Workflow {
   id: string
   reference: string
@@ -333,6 +351,12 @@ export async function listCompletedWorkflows(): Promise<CompletedWorkflowListIte
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   const payload = await requestJson<{ workflow: Workflow }>(`/api/workflows/${encodeURIComponent(workflowId)}`)
   return payload.workflow
+}
+
+/** Narrow, canonical evidence only; distinct from the broad workflow read. */
+export async function getConfirmedPouEvidence(workflowId: string, pouId: WorkflowPouId, signal?: AbortSignal): Promise<ConfirmedPouEvidence> {
+  const payload = await requestJson<{ evidence: ConfirmedPouEvidence }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/confirmed-evidence`, { signal })
+  return payload.evidence
 }
 
 /** Read-only, bounded delivery state for the active Kaitiakitanga review. */
