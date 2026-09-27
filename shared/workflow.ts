@@ -83,6 +83,9 @@ export type WorkflowActionType = (typeof WORKFLOW_ACTION_TYPES)[number]
 export const WORKFLOW_ACTION_STATUSES = ['open', 'completed', 'withdrawn'] as const
 export type WorkflowActionStatus = (typeof WORKFLOW_ACTION_STATUSES)[number]
 
+/** Every pending candidate must fit in one explicit Action Plan confirmation. */
+export const WORKFLOW_ACTION_PLAN_MAX_ITEMS = 100
+
 export const WORKFLOW_REFERRAL_STATUSES = ['draft', 'prepared', 'declined', 'withdrawn'] as const
 export type WorkflowReferralStatus = (typeof WORKFLOW_REFERRAL_STATUSES)[number]
 
@@ -107,12 +110,20 @@ export type WorkflowInteractionType = (typeof WORKFLOW_INTERACTION_TYPES)[number
 
 export interface WorkflowActionInput {
   id: string
+  /** Present only when this explicit action accepts one pending candidate. */
+  sourceCandidateId?: string
   title: string
   type: WorkflowActionType
   pouId?: WorkflowPouId
   dueDate?: string
   status: Exclude<WorkflowActionStatus, 'withdrawn'>
   notes?: string
+}
+
+/** A non-action outcome for a pending carry-forward candidate. */
+export interface WorkflowActionCandidateDecisionInput {
+  candidateId: string
+  disposition: 'rejected' | 'routed_to_referral'
 }
 
 export interface WorkflowReferralInput {
@@ -197,6 +208,8 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       actions: WorkflowActionInput[]
+      /** Accepted candidates are represented by an action with sourceCandidateId. */
+      candidateDecisions?: WorkflowActionCandidateDecisionInput[]
     }
   | {
       type: 'referral-plan-confirmed'

@@ -633,4 +633,155 @@ describe('Whakapapa review-draft reconciliation', () => {
     })
   })
 
+  it('converts an explicitly accepted candidate atomically while preserving proposal provenance and routing another candidate without a referral', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const criterion = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
+      expect(criterion).toBeDefined()
+      const workflows = new PostgresWorkflowRepository(connection.db, () => new Date('2026-09-28T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      const edited = await reviewDraftRepository.edit(actor, workflowId, {
+        reviewDraftId: ready.draft.id,
+        expectedRevision: ready.draft.revision,
+        content: {
+          overallSummary: ready.draft.overallSummary,
+          strengthsSummary: ready.draft.strengthsSummary,
+          areasForAttentionSummary: 'Kaimahi-confirmed area for ordinary follow-up.',
+          evidenceTurnIds: ready.draft.evidenceTurnIds,
+        },
+      })
+      let version = 2
+      for (const source of [
+        { kind: 'review_criterion' as const, reviewDraftRevisionId: edited.revisionId, criterionCode: criterion!.criterionCode },
+        { kind: 'areas_for_attention' as const, reviewDraftRevisionId: edited.revisionId },
+      ]) {
+        const carried = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+          type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: version,
+          pouId: 'whakapapa', source,
+        } })
+        version = carried.workflow.version
+      }
+      const confirmed = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, pouId: 'whakapapa', reviewDraftRevisionId: edited.revisionId,
+      } })
+      await connection.db.update(schema.workflowSessions).set({ currentStage: 'action-planning', currentPouId: null }).where(eq(schema.workflowSessions.id, workflowId))
+      const candidates = await workflows.listPendingActionCandidates(actor, workflowId)
+      expect(candidates).toHaveLength(2)
+      expect(candidates?.every((candidate: any) => !JSON.stringify(candidate).includes('Synthetic Whakapapa reflection'))).toBe(true)
+      expect(await workflows.listPendingActionCandidates({ ...actor, id: randomUUID() }, workflowId)).toBeNull()
+      const accepted = candidates!.find((candidate: any) => candidate.sourceCriterionCode === criterion!.criterionCode)!
+      const routed = candidates!.find((candidate: any) => candidate.id !== accepted.id)!
+      const actionId = randomUUID()
+      const command = {
+        type: 'action-plan-confirmed' as const,
+        idempotencyKey: randomUUID(),
+        expectedVersion: confirmed.workflow.version,
+        actions: [{ id: actionId, sourceCandidateId: accepted.id, title: 'Kaimahi-edited follow-up wording.', type: 'follow-up' as const, pouId: 'whakapapa' as const, dueDate: '2026-10-05', status: 'open' as const }],
+        candidateDecisions: [{ candidateId: routed.id, disposition: 'routed_to_referral' as const }],
+      }
+      const result = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command })
+      expect(result.workflow).toMatchObject({ currentStage: 'referral-planning', actions: [{ id: actionId, sourceCandidateId: accepted.id, title: 'Kaimahi-edited follow-up wording.', pouId: 'whakapapa', status: 'open' }], referrals: [] })
+      expect((await workflows.submitCommand({ actor, workflowSessionId: workflowId, command })).replayed).toBe(true)
+      const storedCandidates = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))
+      expect(storedCandidates.find((candidate: any) => candidate.id === accepted.id)).toMatchObject({ disposition: 'accepted_as_action', proposedDescription: accepted.proposedDescription, dispositionedByUserId: actor.id })
+      expect(storedCandidates.find((candidate: any) => candidate.id === routed.id)).toMatchObject({ disposition: 'routed_to_referral', dispositionedByUserId: actor.id })
+      const [storedAction] = await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.id, actionId))
+      expect(storedAction).toMatchObject({ sourceCandidateId: accepted.id, title: 'Kaimahi-edited follow-up wording.', status: 'open' })
+      await expect(connection.db.insert(schema.workflowActions).values({
+        id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'manaakitanga',
+        title: 'Forged cross-Pou candidate action.', type: 'follow-up', status: 'open',
+        sourceCandidateId: accepted.id, createdByUserId: actor.id, ownerUserId: actor.id,
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived action must match its source workflow, organisation, and Pou')
+      await expect(connection.db.execute(sql`update workflow_action set source_candidate_id = null where id = ${actionId}`)).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'canonical action candidate provenance is immutable')
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.insert(schema.workflowActions).values({
+          id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa',
+          title: 'Forged routed-candidate action.', type: 'follow-up', status: 'open',
+          sourceCandidateId: routed.id, createdByUserId: actor.id, ownerUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived action requires an accepted candidate')
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.update(schema.workflowActionCandidates).set({
+          disposition: 'routed_to_referral', dispositionedAt: new Date('2026-09-28T00:00:00.000Z'), dispositionedByUserId: actor.id,
+        }).where(eq(schema.workflowActionCandidates.id, accepted.id))
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate linked to a canonical action must remain accepted')
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.delete(schema.workflowActions).where(eq(schema.workflowActions.id, actionId))
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'accepted candidate requires its canonical action')
+      expect(await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
+  it('requires a terminal decision for every candidate and retains rejection without creating an action', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const criterion = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
+      const workflows = new PostgresWorkflowRepository(connection.db, () => new Date('2026-09-28T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      const carried = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa',
+        source: { kind: 'review_criterion', reviewDraftRevisionId: ready.draft.revisionId, criterionCode: criterion!.criterionCode },
+      } })
+      await expect(workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: carried.workflow.version, pouId: 'whakapapa',
+        source: { kind: 'review_criterion', reviewDraftRevisionId: ready.draft.revisionId, criterionCode: criterion!.criterionCode },
+      } })).rejects.toThrow('already been selected')
+      const confirmed = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: carried.workflow.version, pouId: 'whakapapa', reviewDraftRevisionId: ready.draft.revisionId,
+      } })
+      await connection.db.update(schema.workflowSessions).set({ currentStage: 'action-planning', currentPouId: null }).where(eq(schema.workflowSessions.id, workflowId))
+      await expect(workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: confirmed.workflow.version, actions: [], candidateDecisions: [],
+      } })).rejects.toThrow('Every pending action candidate')
+      const [candidate] = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.insert(schema.workflowActions).values({
+          id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa',
+          title: 'Forged pending-candidate action.', type: 'follow-up', status: 'open',
+          sourceCandidateId: candidate!.id, createdByUserId: actor.id, ownerUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived action requires an accepted candidate')
+      const rejected = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: confirmed.workflow.version, actions: [], candidateDecisions: [{ candidateId: candidate!.id, disposition: 'rejected' }],
+      } })
+      expect(rejected.workflow).toMatchObject({ currentStage: 'referral-planning', actions: [], referrals: [] })
+      const [storedCandidate] = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.id, candidate!.id))
+      expect(storedCandidate).toMatchObject({ disposition: 'rejected', dispositionedByUserId: actor.id })
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.insert(schema.workflowActions).values({
+          id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa',
+          title: 'Forged rejected-candidate action.', type: 'follow-up', status: 'open',
+          sourceCandidateId: candidate!.id, createdByUserId: actor.id, ownerUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived action requires an accepted candidate')
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
+  it('caps distinct carry-forward sources at the Action Plan decision capacity', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const criterion = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
+      const now = new Date('2026-09-28T00:00:00.000Z')
+      const observations = Array.from({ length: 100 }, () => randomUUID())
+      await connection.db.insert(schema.workflowSafetyObservations).values(observations.map((id) => ({
+        id, workflowSessionId: workflowId, organisationId: actor.organisation.id,
+        assessmentContext: 'pou' as const, pouId: 'whakapapa' as const, broadClass: 'practice_quality' as const, concernLevel: 'low' as const,
+        status: 'active' as const, currentRevision: 1, confirmedByUserId: actor.id, confirmedAt: now, updatedAt: now,
+      })))
+      await connection.db.insert(schema.workflowCarryForwards).values(observations.map((safetyObservationId) => ({
+        id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa' as const,
+        source: 'safety_observation' as const, reviewDraftRevisionId: null, criterionCode: null, safetyObservationId,
+        note: null, createdByUserId: actor.id, createdAt: now,
+      })))
+      const workflows = new PostgresWorkflowRepository(connection.db, () => now, undefined, repository, reviewDraftRepository)
+      await expect(workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa',
+        source: { kind: 'review_criterion', reviewDraftRevisionId: ready.draft.revisionId, criterionCode: criterion!.criterionCode },
+      } })).rejects.toThrow('at most 100 carry-forward candidates')
+      expect(await connection.db.select().from(schema.workflowCarryForwards).where(eq(schema.workflowCarryForwards.workflowSessionId, workflowId))).toHaveLength(100)
+    })
+  })
+
 })

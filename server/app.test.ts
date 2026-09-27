@@ -169,6 +169,12 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     return workflow?.ownerId === actor.id ? this.publicWorkflow(workflow) : null
   }
 
+  async listPendingActionCandidates(actor: AuthenticatedUser, workflowSessionId: string) {
+    const workflow = this.workflows.get(workflowSessionId)
+    if (!workflow || workflow.ownerId !== actor.id) return null
+    return []
+  }
+
   async listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]> {
     return [...this.workflows.values()]
       .filter((workflow) => workflow.ownerId === actor.id && (workflow.status === 'draft' || workflow.status === 'in_progress'))
@@ -298,6 +304,7 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     } else if (input.command.type === 'action-plan-confirmed') {
       workflow.actions = input.command.actions.map((action) => ({
         ...action,
+        sourceCandidateId: action.sourceCandidateId ?? null,
         pouId: action.pouId ?? null,
         dueDate: action.dueDate ?? null,
         notes: action.notes ?? null,

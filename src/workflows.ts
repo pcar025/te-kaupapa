@@ -222,6 +222,7 @@ export type WhakapapaReviewDraftState = PouReviewDraftState
 
 export interface WorkflowAction {
   id: string
+  sourceCandidateId: string | null
   pouId: WorkflowPouId | null
   title: string
   type: WorkflowActionType
@@ -231,6 +232,15 @@ export interface WorkflowAction {
   withdrawnAt: string | null
   createdAt: string
   updatedAt: string
+}
+
+/** Action Plan-only projection; it intentionally contains no transcript or safety detail. */
+export interface WorkflowActionCandidate {
+  id: string
+  pouId: WorkflowPouId
+  originKind: 'kaimahi_carry_forward' | 'ai_suggestion' | 'deterministic_required'
+  proposedDescription: string
+  sourceCriterionCode: string | null
 }
 
 export interface WorkflowReferral {
@@ -361,6 +371,14 @@ export async function listCompletedWorkflows(): Promise<CompletedWorkflowListIte
 export async function getWorkflow(workflowId: string): Promise<Workflow> {
   const payload = await requestJson<{ workflow: Workflow }>(`/api/workflows/${encodeURIComponent(workflowId)}`)
   return payload.workflow
+}
+
+export async function getPendingActionCandidates(workflowId: string, signal?: AbortSignal): Promise<WorkflowActionCandidate[]> {
+  const payload = await requestJson<{ candidates: WorkflowActionCandidate[] }>(
+    `/api/workflows/${encodeURIComponent(workflowId)}/action-candidates`,
+    { signal },
+  )
+  return Array.isArray(payload.candidates) ? payload.candidates : []
 }
 
 /** Narrow, canonical evidence only; distinct from the broad workflow read. */

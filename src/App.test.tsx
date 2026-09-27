@@ -646,6 +646,7 @@ describe('approved application smoke paths', () => {
     vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
       const url = String(input)
       if (url.endsWith('/synthesis')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ synthesis }) })
+      if (url.endsWith('/action-candidates')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: [] }) })
       if (url.endsWith('/interactions')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) })
       return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: initial }) })
     }))
@@ -660,14 +661,14 @@ describe('approved application smoke paths', () => {
     expect(screen.queryByText(/Persistent low mood and sleep disruption/i)).toBeNull()
     await user.click(screen.getByRole('button', { name: /Confirm synthesis/i }))
     expect(await screen.findByRole('heading', { name: /Decide what to carry forward/i })).toBeTruthy()
-    expect(screen.getByText(/No follow-up items have been carried forward/i)).toBeTruthy()
+    expect(await screen.findByText(/Pending candidates are reviewed below/i)).toBeTruthy()
     expect(JSON.parse(String(interactionCalls()[0]?.[1]?.body))).toMatchObject({ type: 'workflow-synthesis-confirmed', synthesisRevisionId: synthesis.draft.id })
   })
 
   it('shows the complete confirmed canonical record before finalisation', async () => {
     const workflow = workflowFixture({
       currentStage: 'record-review', currentPouId: null,
-      actions: [{ id: '24c30b9f-7161-4e2e-844b-84daee3eedb4', pouId: 'whakapapa', title: 'Arrange a reconnection kōrero', type: 'follow-up', dueDate: '2026-08-22', status: 'open', notes: null, withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
+      actions: [{ id: '24c30b9f-7161-4e2e-844b-84daee3eedb4', sourceCandidateId: null, pouId: 'whakapapa', title: 'Arrange a reconnection kōrero', type: 'follow-up', dueDate: '2026-08-22', status: 'open', notes: null, withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
       referrals: [{ id: 'b5bca508-eef0-4a03-9c07-f6c848af6afc', pouId: 'manaakitanga', destinationCode: null, destinationName: 'Whānau support service', reason: 'Requested support', handoverNote: null, notes: null, status: 'prepared', withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
       safety: { ...emptySafety, observations: [activeObservation({ assessmentContext: 'pou', pouId: 'kaitiakitanga', concernLevel: 'action', contextNote: 'Human-confirmed safety context.' })], indicators: { ...emptySafety.indicators, activeObservationCount: 1 } },
     })
@@ -691,7 +692,7 @@ describe('approved application smoke paths', () => {
     expect(screen.getByRole('button', { name: /Finalise record and complete session/i })).toBeTruthy()
   })
 
-  it('shows only bounded Pou and source labels for carried-forward review items', () => {
+  it('shows only the bounded Action Plan candidate projection for carried-forward review items', async () => {
     const workflow = workflowFixture({
       currentStage: 'action-planning',
       currentPouId: null,
@@ -711,12 +712,15 @@ describe('approved application smoke paths', () => {
         createdAt: '2026-08-16T00:00:00.000Z',
       }],
     })
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => String(input).endsWith('/action-candidates')
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: [{ id: 'e22f4aa5-89fd-45e6-8a80-7a5fe2c7e3ad', pouId: 'manaakitanga', originKind: 'kaimahi_carry_forward', proposedDescription: 'Whānau support needs further exploration', sourceCriterionCode: 'whanau_support' }] }) })
+      : Promise.resolve({ ok: true, status: 200, json: async () => ({}) })))
     render(<SessionShell workflow={workflow} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
 
-    expect(screen.getByText('Manaakitanga')).toBeTruthy()
+    expect(await screen.findByText('Manaakitanga & Duty of Care')).toBeTruthy()
     expect(screen.getByText('Whānau support needs further exploration')).toBeTruthy()
-    expect(screen.getByText('Source: Still to explore / information needed')).toBeTruthy()
-    expect(screen.getByText(/not yet an action, referral, safety concern, escalation, or supervisor-review request/i)).toBeTruthy()
+    expect(screen.getByText(/Kaimahi carry-forward.*whanau_support/i)).toBeTruthy()
+    expect(screen.getByText(/not actions, referrals, or safety decisions/i)).toBeTruthy()
     expect(screen.queryByText(/review item/i)).toBeNull()
     expect(screen.queryByText(/Synthetic Whakapapa reflection with strength/i)).toBeNull()
   })

@@ -204,6 +204,27 @@
       "when": 1790495300141,
       "tag": "0028_melted_shard",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1790542890216,
+      "tag": "0029_foamy_thunderbird",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1790543801804,
+      "tag": "0030_charming_archangel",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790545000000,
+      "tag": "0031_candidate_action_delete_invariant",
+      "breakpoints": true
     }
   ]
 }

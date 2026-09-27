@@ -10,6 +10,7 @@ import type {
   SafetyBroadClass,
   SafetyObservationConcernLevel,
   WorkflowActionInput,
+  WorkflowActionCandidateDecisionInput,
   WorkflowCarryForwardSource,
   WorkflowPouId,
   WorkflowReferralInput,
@@ -33,6 +34,7 @@ import { SessionHeader, WhareShell, type SessionStageKey } from './KaimahiShell'
 import {
   WorkflowApiError,
   getWorkflow,
+  getPendingActionCandidates,
   getConfirmedPouEvidence,
   getCriterionSourceEvidence,
   getPhq9SupervisorEscalation,
@@ -49,6 +51,7 @@ import {
   submitWorkflowCommand,
   type Workflow,
   type WorkflowAction,
+  type WorkflowActionCandidate,
   type WorkflowCheckpoint,
   type ConfirmedPouEvidence,
   type CriterionSourceEvidence,
@@ -6149,6 +6152,9 @@ function WorkflowSynthesisStage({
 
 type ManualAction = WorkflowActionInput
 type ManualReferral = WorkflowReferralInput
+type CandidateResolution =
+  | { decision: 'accept'; action: ManualAction }
+  | { decision: 'reject' | 'route' }
 
 function RealActionsStage({
   workflow,
@@ -6158,7 +6164,7 @@ function RealActionsStage({
   onReload,
 }: {
   workflow: Workflow
-  onConfirm: (actions: ManualAction[]) => void
+  onConfirm: (actions: ManualAction[], candidateDecisions: WorkflowActionCandidateDecisionInput[]) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
@@ -6166,11 +6172,49 @@ function RealActionsStage({
   const [actions, setActions] = useState<ManualAction[]>(() => workflow.actions
     .filter(({ status }) => status !== 'withdrawn')
     .map((action) => ({
-      id: action.id, title: action.title, type: action.type, pouId: action.pouId ?? undefined,
+      id: action.id, sourceCandidateId: action.sourceCandidateId ?? undefined, title: action.title, type: action.type, pouId: action.pouId ?? undefined,
       dueDate: action.dueDate ?? undefined, status: action.status === 'completed' ? 'completed' : 'open', notes: action.notes ?? undefined,
     })))
+  const [candidates, setCandidates] = useState<WorkflowActionCandidate[] | null>(null)
+  const [candidateError, setCandidateError] = useState<string | null>(null)
+  const [resolutions, setResolutions] = useState<Record<string, CandidateResolution>>({})
+  useEffect(() => {
+    const controller = new AbortController()
+    setCandidates(null)
+    setCandidateError(null)
+    void getPendingActionCandidates(workflow.id, controller.signal)
+      .then(setCandidates)
+      .catch((error: unknown) => {
+        if (error instanceof DOMException && error.name === 'AbortError') return
+        setCandidateError('Carry-forward candidates could not be loaded. Nothing has been confirmed.')
+      })
+    return () => controller.abort()
+  }, [workflow.id])
   const update = (id: string, patch: Partial<ManualAction>) => setActions((items) => items.map((action) => action.id === id ? { ...action, ...patch } : action))
   const add = () => setActions((items) => [...items, { id: crypto.randomUUID(), title: '', type: 'follow-up', status: 'open' }])
+  const decide = (candidate: WorkflowActionCandidate, decision: CandidateResolution['decision']) => {
+    setResolutions((current) => ({
+      ...current,
+      [candidate.id]: decision === 'accept'
+        ? { decision, action: { id: crypto.randomUUID(), sourceCandidateId: candidate.id, title: candidate.proposedDescription, type: 'follow-up', pouId: candidate.pouId, status: 'open' } }
+        : { decision },
+    }))
+  }
+  const updateCandidateAction = (candidateId: string, patch: Partial<ManualAction>) => setResolutions((current) => {
+    const resolution = current[candidateId]
+    return resolution?.decision === 'accept'
+      ? { ...current, [candidateId]: { ...resolution, action: { ...resolution.action, ...patch } } }
+      : current
+  })
+  const candidateActions = Object.values(resolutions).flatMap((resolution) => resolution.decision === 'accept' ? [resolution.action] : [])
+  const candidateDecisions = Object.entries(resolutions).flatMap(([candidateId, resolution]) => resolution.decision === 'accept'
+    ? []
+    : [{ candidateId, disposition: resolution.decision === 'reject' ? 'rejected' as const : 'routed_to_referral' as const }])
+  const allCandidatesDecided = candidates !== null && candidates.every((candidate) => Boolean(resolutions[candidate.id]))
+  const groupedCandidates = (candidates ?? []).reduce<Record<WorkflowPouId, WorkflowActionCandidate[]>>((groups, candidate) => {
+    ;(groups[candidate.pouId] ??= []).push(candidate)
+    return groups
+  }, {} as Record<WorkflowPouId, WorkflowActionCandidate[]>)
   return (
     <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>
@@ -6181,8 +6225,23 @@ function RealActionsStage({
       <div className="px-5 pt-5 space-y-3">
         <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}>
           <SectionLabel>From the Pou reviews</SectionLabel>
-          <CarryForwardSourceList items={workflow.carryForwards}/>
+          <p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>Pending candidates are reviewed below. They are not actions, referrals, or safety decisions until you explicitly confirm this Action Plan.</p>
         </div>
+        {candidateError && <p className="text-xs" style={{ color: 'var(--color-concern)' }}>{candidateError}</p>}
+        {candidates === null && !candidateError && <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Loading carry-forward candidates…</p>}
+        {Object.entries(groupedCandidates).map(([pouId, items]) => <div key={pouId} className="space-y-3">
+          <SectionLabel>{WORKFLOW_POU_NAMES[pouId as WorkflowPouId]}</SectionLabel>
+          {items.map((candidate) => {
+            const resolution = resolutions[candidate.id]
+            const candidateAction = resolution?.decision === 'accept' ? resolution.action : null
+            return <div key={candidate.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
+              <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.proposedDescription}</p>
+              <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>{candidate.originKind === 'kaimahi_carry_forward' ? 'Kaimahi carry-forward' : 'Candidate origin recorded'}{candidate.sourceCriterionCode ? ` · ${candidate.sourceCriterionCode}` : ''}</p>
+              <div className="grid grid-cols-3 gap-2"><button onClick={() => decide(candidate, 'accept')} className="py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: resolution?.decision === 'accept' ? 'var(--color-ridge)' : 'var(--color-ground)', color: resolution?.decision === 'accept' ? 'white' : 'var(--color-ridge)', border: '1px solid var(--color-border)' }}>Accept as action</button><button onClick={() => decide(candidate, 'reject')} className="py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: resolution?.decision === 'reject' ? 'var(--color-ridge)' : 'var(--color-ground)', color: resolution?.decision === 'reject' ? 'white' : 'var(--color-ridge)', border: '1px solid var(--color-border)' }}>No action</button><button onClick={() => decide(candidate, 'route')} className="py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: resolution?.decision === 'route' ? 'var(--color-ridge)' : 'var(--color-ground)', color: resolution?.decision === 'route' ? 'white' : 'var(--color-ridge)', border: '1px solid var(--color-border)' }}>Route to referral</button></div>
+              {candidateAction && <div className="space-y-2 pt-1"><label className="block text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>FINAL ACTION WORDING<input value={candidateAction.title} onChange={(event) => updateCandidateAction(candidate.id, { title: event.target.value })} className="mt-2 w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /></label><input type="date" value={candidateAction.dueDate ?? ''} onChange={(event) => updateCandidateAction(candidate.id, { dueDate: event.target.value || undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }} /><textarea value={candidateAction.notes ?? ''} onChange={(event) => updateCandidateAction(candidate.id, { notes: event.target.value || undefined })} placeholder="Notes (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></div>}
+            </div>
+          })}
+        </div>)}
         {actions.map((action, index) => (
           <div key={action.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-ridge)' }}>
             <div className="flex items-center justify-between gap-3"><SectionLabel>Action {index + 1}</SectionLabel><button onClick={() => setActions((items) => items.filter((item) => item.id !== action.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div>
@@ -6198,7 +6257,7 @@ function RealActionsStage({
         ))}
         <button onClick={add} className="w-full px-4 py-3 text-left" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)', fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>+ Add action</button>
       </div>
-      <div className="px-5 pt-6"><button onClick={() => onConfirm(actions)} disabled={actions.some((action) => !action.title.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Confirm actions</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+      <div className="px-5 pt-6"><button onClick={() => onConfirm([...actions, ...candidateActions], candidateDecisions)} disabled={candidates === null || Boolean(candidateError) || !allCandidatesDecided || [...actions, ...candidateActions].some((action) => !action.title.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Whakaū — Confirm actions</button>{candidates !== null && !allCandidatesDecided && <p className="text-xs mt-3" style={{ color: 'var(--color-caution)' }}>Choose an outcome for every carry-forward candidate before confirming.</p>}<PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
     </div>
   )
 }
@@ -6759,7 +6818,7 @@ export function SessionShell({
     command:
       | { type: 'workflow-synthesis-confirmed'; synthesisRevisionId: string }
       | { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }
-      | { type: 'action-plan-confirmed'; actions: ManualAction[] }
+      | { type: 'action-plan-confirmed'; actions: ManualAction[]; candidateDecisions: WorkflowActionCandidateDecisionInput[] }
       | { type: 'referral-plan-confirmed'; referrals: ManualReferral[] },
   ) => {
     const submission = command.type === 'action-plan-confirmed' || command.type === 'referral-plan-confirmed'
@@ -6842,7 +6901,7 @@ export function SessionShell({
         {stage === 'pou-processing' && <PouReviewProcessingStage workflowId={workflow.id} pouId={TE_WAHAROA_POU[currentPouIdx]!.id} onReady={() => setStage('pou-review')} onManualReview={() => setStage('pou-review')} />}
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} phq9SupervisorEscalation={workflow.phq9SupervisorEscalation} confirmedReview={workflow.pouReviews.find((review) => review.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} onReturnToCurrentPou={() => { if (workflow.currentPouId) setCurrentPouIdx(pouIndexForId(workflow.currentPouId)); setStage('pou-convo') }} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions) => confirmDownstream({ type: 'action-plan-confirmed', actions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions, candidateDecisions) => confirmDownstream({ type: 'action-plan-confirmed', actions, candidateDecisions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'synthesis'    && <RealStructuredReviewStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'structured-review-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'record'       && <RecordReviewStage workflow={workflow} onComplete={() => confirmDownstream({ type: 'workflow-completed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}

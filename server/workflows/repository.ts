@@ -4,7 +4,9 @@ import { and, desc, eq, inArray, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import {
+  WORKFLOW_ACTION_PLAN_MAX_ITEMS,
   WORKFLOW_POU_IDS,
+  type WorkflowActionCandidateDecisionInput,
   type WorkflowActionInput,
   type WorkflowActionStatus,
   type WorkflowActionType,
@@ -63,6 +65,7 @@ export interface WorkflowCheckpointView {
 
 export interface WorkflowActionView {
   id: string
+  sourceCandidateId: string | null
   pouId: WorkflowPouId | null
   title: string
   type: WorkflowActionType
@@ -72,6 +75,15 @@ export interface WorkflowActionView {
   withdrawnAt: Date | null
   createdAt: Date
   updatedAt: Date
+}
+
+/** Minimal Action Plan read model. It deliberately excludes transcript and safety detail. */
+export interface WorkflowActionCandidateView {
+  id: string
+  pouId: WorkflowPouId
+  originKind: 'kaimahi_carry_forward' | 'ai_suggestion' | 'deterministic_required'
+  proposedDescription: string
+  sourceCriterionCode: string | null
 }
 
 export interface WorkflowReferralView {
@@ -300,6 +312,7 @@ export interface WorkflowRepository {
   listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]>
   listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]>
   submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult>
+  listPendingActionCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowActionCandidateView[] | null>
   findSafetyObservationHistory(actor: AuthenticatedUser, workflowSessionId: string, observationId: string): Promise<WorkflowSafetyObservationHistory | null>
 }
 
@@ -437,6 +450,45 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
 
   async findById(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowView | null> {
     return this.findByIdWithExecutor(actor, workflowSessionId, this.db)
+  }
+
+  async listPendingActionCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowActionCandidateView[] | null> {
+    const [workflow] = await this.db.select({
+      id: schema.workflowSessions.id,
+      currentStage: schema.workflowSessions.currentStage,
+    }).from(schema.workflowSessions).where(and(
+      eq(schema.workflowSessions.id, workflowSessionId),
+      eq(schema.workflowSessions.organisationId, actor.organisation.id),
+      eq(schema.workflowSessions.kaimahiUserId, actor.id),
+    )).limit(1)
+    if (!workflow) return null
+    if (workflow.currentStage !== 'action-planning') {
+      throw new WorkflowTransitionError('Action candidates are available only during Action Planning.')
+    }
+    const candidates = await this.db.select({
+      id: schema.workflowActionCandidates.id,
+      pouId: schema.workflowActionCandidates.pouId,
+      originKind: schema.workflowActionCandidates.originKind,
+      proposedDescription: schema.workflowActionCandidates.proposedDescription,
+      sourceCriterionCode: schema.workflowPouReviewCriterionSnapshots.criterionCode,
+    }).from(schema.workflowActionCandidates)
+      .leftJoin(schema.workflowPouReviewCriterionSnapshots, eq(
+        schema.workflowActionCandidates.criterionSnapshotId,
+        schema.workflowPouReviewCriterionSnapshots.id,
+      ))
+      .where(and(
+        eq(schema.workflowActionCandidates.workflowSessionId, workflow.id),
+        eq(schema.workflowActionCandidates.organisationId, actor.organisation.id),
+        eq(schema.workflowActionCandidates.disposition, 'pending'),
+      ))
+      .orderBy(schema.workflowActionCandidates.createdAt)
+    return candidates.map((candidate) => ({
+      id: candidate.id,
+      pouId: candidate.pouId as WorkflowPouId,
+      originKind: candidate.originKind as WorkflowActionCandidateView['originKind'],
+      proposedDescription: candidate.proposedDescription,
+      sourceCriterionCode: candidate.sourceCriterionCode,
+    }))
   }
 
   async listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]> {
@@ -734,6 +786,31 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
               source: input.command.source,
             })
           }
+          const duplicateSource = await tx.select({ id: schema.workflowCarryForwards.id })
+            .from(schema.workflowCarryForwards)
+            .where(and(
+              eq(schema.workflowCarryForwards.workflowSessionId, workflow.id),
+              eq(schema.workflowCarryForwards.organisationId, input.actor.organisation.id),
+              eq(schema.workflowCarryForwards.source, input.command.source.kind),
+              input.command.source.kind === 'review_criterion'
+                ? and(
+                    eq(schema.workflowCarryForwards.reviewDraftRevisionId, input.command.source.reviewDraftRevisionId),
+                    eq(schema.workflowCarryForwards.criterionCode, input.command.source.criterionCode),
+                  )
+                : input.command.source.kind === 'areas_for_attention'
+                  ? eq(schema.workflowCarryForwards.reviewDraftRevisionId, input.command.source.reviewDraftRevisionId)
+                  : eq(schema.workflowCarryForwards.safetyObservationId, input.command.source.observationId),
+            )).limit(1)
+          if (duplicateSource[0]) throw new WorkflowValidationError('This carry-forward source has already been selected.')
+          const selectedCount = await tx.execute(sql`
+            select count(*)::int as count from workflow_carry_forward
+            where workflow_session_id = ${workflow.id}
+              and organisation_id = ${input.actor.organisation.id}
+          `)
+          const selectedCarryForwards = Number((selectedCount.rows[0] as { count?: number | string } | undefined)?.count ?? 0)
+          if (selectedCarryForwards >= WORKFLOW_ACTION_PLAN_MAX_ITEMS) {
+            throw new WorkflowValidationError('The Action Plan can contain at most 100 carry-forward candidates.')
+          }
           interactionType = 'carry_forward_marked'
           interactionPouId = input.command.pouId
           recordedInteractionId = await this.recordInteraction(tx, {
@@ -879,7 +956,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             const next = workflow.currentStage === 'action-planning'
               ? checkpointAfterActionPlan(checkpoint)
               : this.assertActionRevisionStage(checkpoint)
-            await this.replaceActions(tx, workflow.id, input.actor, input.command.actions, timestamp)
+            await this.replaceActions(tx, workflow.id, input.actor, input.command.actions, input.command.candidateDecisions ?? [], timestamp)
             await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
             interactionType = 'action_plan_confirmed'
           } else if (input.command.type === 'referral-plan-confirmed') {
@@ -1023,9 +1100,11 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     workflowId: string,
     actor: AuthenticatedUser,
     actions: WorkflowActionInput[],
+    candidateDecisions: WorkflowActionCandidateDecisionInput[],
     timestamp: Date,
   ) {
     this.assertUniqueIds(actions, 'Action')
+    this.assertUniqueIds(candidateDecisions.map(({ candidateId }) => ({ id: candidateId })), 'Action candidate')
     const existing = await executor
       .select()
       .from(schema.workflowActions)
@@ -1033,9 +1112,49 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     const existingById = new Map(existing.map((action) => [action.id, action]))
     const requestedIds = new Set(actions.map(({ id }) => id))
 
+    const acceptedCandidateActions = actions.filter((action) => !existingById.has(action.id) && action.sourceCandidateId)
+    const acceptedCandidateIds = acceptedCandidateActions.map((action) => action.sourceCandidateId!)
+    if (new Set(acceptedCandidateIds).size !== acceptedCandidateIds.length) {
+      throw new WorkflowValidationError('Each action candidate can be accepted only once.')
+    }
+    if (acceptedCandidateIds.some((id) => candidateDecisions.some((decision) => decision.candidateId === id))) {
+      throw new WorkflowValidationError('An action candidate cannot be accepted and given another disposition together.')
+    }
+
     for (const action of actions) {
+      const existingAction = existingById.get(action.id)
+      if (existingAction && action.sourceCandidateId !== (existingAction.sourceCandidateId ?? undefined)) {
+        throw new WorkflowValidationError('Canonical action candidate provenance cannot be changed.')
+      }
+      if (existingAction && action.sourceCandidateId && action.pouId !== (existingAction.pouId as WorkflowPouId | null)) {
+        throw new WorkflowValidationError('A candidate-derived action remains linked to its source Pou.')
+      }
+    }
+
+    const pendingCandidates = await executor.select().from(schema.workflowActionCandidates).where(and(
+      eq(schema.workflowActionCandidates.workflowSessionId, workflowId),
+      eq(schema.workflowActionCandidates.organisationId, actor.organisation.id),
+      eq(schema.workflowActionCandidates.disposition, 'pending'),
+    ))
+    const pendingById = new Map(pendingCandidates.map((candidate) => [candidate.id, candidate]))
+    const disposedCandidateIds = new Set([...acceptedCandidateIds, ...candidateDecisions.map((decision) => decision.candidateId)])
+    if (disposedCandidateIds.size !== pendingCandidates.length || pendingCandidates.some((candidate) => !disposedCandidateIds.has(candidate.id))) {
+      throw new WorkflowValidationError('Every pending action candidate must be accepted, rejected, or routed before the Action Plan is confirmed.')
+    }
+    if ([...disposedCandidateIds].some((candidateId) => !pendingById.has(candidateId))) {
+      throw new WorkflowValidationError('Only pending candidates from this workflow can be decided.')
+    }
+    for (const action of acceptedCandidateActions) {
+      const candidate = pendingById.get(action.sourceCandidateId!)!
+      if (action.status !== 'open' || action.pouId !== candidate.pouId) {
+        throw new WorkflowValidationError('A candidate-derived action must begin open and remain linked to its source Pou.')
+      }
+    }
+
+    for (const action of actions) {
+      const candidate = action.sourceCandidateId ? pendingById.get(action.sourceCandidateId) : undefined
       const values = {
-        pouId: action.pouId ?? null,
+        pouId: candidate ? candidate.pouId : action.pouId ?? null,
         title: action.title.trim(),
         type: action.type,
         dueDate: action.dueDate ?? null,
@@ -1056,6 +1175,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           organisationId: actor.organisation.id,
           createdByUserId: actor.id,
           ownerUserId: actor.id,
+          sourceCandidateId: action.sourceCandidateId ?? null,
           ...values,
           createdAt: timestamp,
         })
@@ -1069,6 +1189,33 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           withdrawnAt: timestamp,
           updatedAt: timestamp,
         }).where(eq(schema.workflowActions.id, action.id))
+      }
+    }
+
+    if (acceptedCandidateIds.length > 0) {
+      await executor.update(schema.workflowActionCandidates).set({
+        disposition: 'accepted_as_action',
+        dispositionedAt: timestamp,
+        dispositionedByUserId: actor.id,
+      }).where(and(
+        eq(schema.workflowActionCandidates.workflowSessionId, workflowId),
+        eq(schema.workflowActionCandidates.organisationId, actor.organisation.id),
+        eq(schema.workflowActionCandidates.disposition, 'pending'),
+        inArray(schema.workflowActionCandidates.id, acceptedCandidateIds),
+      ))
+    }
+    if (candidateDecisions.length > 0) {
+      for (const decision of candidateDecisions) {
+        await executor.update(schema.workflowActionCandidates).set({
+          disposition: decision.disposition,
+          dispositionedAt: timestamp,
+          dispositionedByUserId: actor.id,
+        }).where(and(
+          eq(schema.workflowActionCandidates.id, decision.candidateId),
+          eq(schema.workflowActionCandidates.workflowSessionId, workflowId),
+          eq(schema.workflowActionCandidates.organisationId, actor.organisation.id),
+          eq(schema.workflowActionCandidates.disposition, 'pending'),
+        ))
       }
     }
   }
@@ -1428,6 +1575,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     }))
     const actionViews = actions.map((action) => ({
       id: action.id,
+      sourceCandidateId: action.sourceCandidateId,
       pouId: action.pouId as WorkflowPouId | null,
       title: action.title,
       type: action.type as WorkflowActionType,

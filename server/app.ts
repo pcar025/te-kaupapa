@@ -82,6 +82,7 @@ import {
 import {
   WORKFLOW_ENGAGEMENT_TYPES,
   WORKFLOW_ACTION_STATUSES,
+  WORKFLOW_ACTION_PLAN_MAX_ITEMS,
   WORKFLOW_ACTION_TYPES,
   WORKFLOW_IMMEDIATE_CONCERNS,
   WORKFLOW_POU_CONCERNS,
@@ -637,6 +638,7 @@ export async function createApplication(dependencies: AppDependencies): Promise<
   })
   const actionInputSchema = z.object({
     id: z.string().uuid(),
+    sourceCandidateId: z.string().uuid().optional(),
     title: z.string().trim().min(1).max(300),
     type: z.enum(WORKFLOW_ACTION_TYPES),
     pouId: z.enum(WORKFLOW_POU_IDS).optional(),
@@ -644,6 +646,10 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     status: z.enum(WORKFLOW_ACTION_STATUSES).exclude(['withdrawn']),
     notes: z.string().trim().max(4_000).optional(),
   })
+  const actionCandidateDecisionSchema = z.object({
+    candidateId: z.string().uuid(),
+    disposition: z.enum(['rejected', 'routed_to_referral']),
+  }).strict()
   const referralInputSchema = z.object({
     id: z.string().uuid(),
     destinationCode: z.string().trim().min(1).max(100).optional(),
@@ -682,7 +688,11 @@ export async function createApplication(dependencies: AppDependencies): Promise<
     pouReviewCommandSchema,
     downstreamCommandSchema.extend({ type: z.literal('pou-summary-confirmed') }),
     downstreamCommandSchema.extend({ type: z.literal('workflow-synthesis-confirmed'), synthesisRevisionId: z.string().uuid() }),
-    downstreamCommandSchema.extend({ type: z.literal('action-plan-confirmed'), actions: z.array(actionInputSchema).max(100) }),
+    downstreamCommandSchema.extend({
+      type: z.literal('action-plan-confirmed'),
+      actions: z.array(actionInputSchema).max(WORKFLOW_ACTION_PLAN_MAX_ITEMS),
+      candidateDecisions: z.array(actionCandidateDecisionSchema).max(WORKFLOW_ACTION_PLAN_MAX_ITEMS).default([]),
+    }),
     downstreamCommandSchema.extend({ type: z.literal('referral-plan-confirmed'), referrals: z.array(referralInputSchema).max(100) }),
     downstreamCommandSchema.extend({ type: z.literal('structured-review-confirmed') }),
     downstreamCommandSchema.extend({ type: z.literal('workflow-completed') }),
@@ -770,6 +780,26 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       const workflow = await workflowRepository.findById(user, parsed.data.workflowSessionId)
       if (!workflow) return reply.code(404).send({ error: 'not_found' })
       return { workflow }
+    } catch (error) {
+      return workflowFailure(error, request, reply)
+    }
+  })
+
+  /**
+   * Action Plan-only, owner-scoped candidate projection. This is distinct from
+   * ordinary workflow state so pending proposals do not become broad reads.
+   */
+  app.get('/api/workflows/:workflowSessionId/action-candidates', async (request, reply) => {
+    const user = await requireKaimahi(request, reply)
+    if (!user) return reply
+    if (!workflowRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    const parsed = z.object({ workflowSessionId: z.string().uuid() }).safeParse(request.params)
+    if (!parsed.success) return reply.code(404).send({ error: 'not_found' })
+    try {
+      const candidates = await workflowRepository.listPendingActionCandidates(user, parsed.data.workflowSessionId)
+      if (!candidates) return reply.code(404).send({ error: 'not_found' })
+      reply.header('cache-control', 'no-store')
+      return { candidates }
     } catch (error) {
       return workflowFailure(error, request, reply)
     }
