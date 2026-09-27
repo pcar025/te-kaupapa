@@ -956,4 +956,28 @@ describe('ConfirmedPouEvidenceView', () => {
     expect(screen.queryByText('Not explored')).toBeNull()
     expect(screen.queryByText('Insufficient information')).toBeNull()
   })
+
+  it('loads only a selected criterion’s supporting source material on demand and releases it when closed', async () => {
+    const fetchMock = vi.fn(async (path: string) => path.endsWith('/source-excerpts')
+      ? new Response(JSON.stringify({ sourceEvidence: { criterionCode: 'HAS_SOURCE', pouId: 'whakapapa', excerpts: [{ ordinal: 1, speaker: 'kaimahi', text: 'SOURCE_EXCERPT_SENTINEL' }] } }), { status: 200 })
+      : new Response(JSON.stringify({ evidence: { status: 'canonical_snapshot', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1, criteria: [
+        { criterionCode: 'HAS_SOURCE', availabilityStatus: 'evidenced', missingInformationCodes: [], sourceEvidenceReferences: { available: true, count: 1 } },
+        { criterionCode: 'NO_SOURCE', availabilityStatus: 'not_explored', missingInformationCodes: ['not_discussed'], sourceEvidenceReferences: { available: false, count: 0 } },
+      ] } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    render(<ConfirmedPouEvidenceView workflowId={workflowId} pouId="whakapapa" />)
+    const control = await screen.findByRole('button', { name: 'View supporting evidence' })
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(screen.queryByText('SOURCE_EXCERPT_SENTINEL')).toBeNull()
+    fireEvent.click(control)
+    expect(await screen.findByText('Supporting evidence from this Pou reflection')).toBeTruthy()
+    expect(screen.getByText('SOURCE_EXCERPT_SENTINEL')).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(String(fetchMock.mock.calls[1]?.[0])).toContain('/confirmed-evidence/HAS_SOURCE/source-excerpts')
+    expect(screen.queryAllByRole('button', { name: 'View supporting evidence' })).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Close' }))
+    expect(screen.queryByText('SOURCE_EXCERPT_SENTINEL')).toBeNull()
+    expect(screen.getByRole('button', { name: 'View supporting evidence' })).toBeTruthy()
+    expect(screen.queryByText('Supporting evidence from this Pou reflection')).toBeNull()
+  })
 })

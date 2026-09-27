@@ -19,7 +19,7 @@ import { OpenAIWorkflowSynthesisProvider } from './workflow-synthesis/provider.j
 import { PostgresPhq9SupervisorEscalationRepository } from './phq9-escalations/repository.js'
 import { SesPhq9EscalationEmailSender } from './phq9-escalations/ses.js'
 import { Phq9EscalationDeliveryService } from './phq9-escalations/service.js'
-import { PostgresCanonicalPouEvidenceRepository } from './pou-evidence/repository.js'
+import { PostgresCanonicalCriterionSourceEvidenceRepository, PostgresCanonicalPouEvidenceRepository } from './pou-evidence/repository.js'
 
 const config = loadConfiguration()
 const database = createDatabaseConnection(config.databaseUrl)
@@ -29,6 +29,7 @@ const reviewDraftRepository = new PostgresConversationReviewDraftRepository(data
 const workflowSynthesisRepository = new PostgresWorkflowSynthesisRepository(database.db)
 const phq9EscalationRepository = new PostgresPhq9SupervisorEscalationRepository(database.db)
 const canonicalPouEvidenceRepository = new PostgresCanonicalPouEvidenceRepository(database.db)
+const canonicalCriterionSourceEvidenceRepository = new PostgresCanonicalCriterionSourceEvidenceRepository(database.db)
 const phq9EscalationDeliveryService = new Phq9EscalationDeliveryService(phq9EscalationRepository, config.ses ? new SesPhq9EscalationEmailSender(config.ses.region, config.ses.fromAddress) : undefined)
 const pouSpecificationRepository = new PostgresOrganisationPouSpecificationRepository(database.db)
 const workflowRepository = new PostgresWorkflowRepository(database.db, undefined, undefined, safetyAssessmentRepository, reviewDraftRepository, workflowSynthesisRepository, phq9EscalationRepository)
@@ -62,6 +63,7 @@ const app = await createApplication({
   phq9EscalationRepository,
   phq9EscalationDeliveryService,
   canonicalPouEvidenceRepository,
+  canonicalCriterionSourceEvidenceRepository,
 })
 
 // Durable rows survive browser/process failure; this bounded poll only advances queued work.

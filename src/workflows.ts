@@ -45,6 +45,16 @@ export type ConfirmedPouEvidence = {
   snapshotVersion: null
 }
 
+export interface CriterionSourceEvidence {
+  criterionCode: string
+  pouId: WorkflowPouId
+  excerpts: Array<{
+    ordinal: number
+    speaker: 'kaimahi' | 'assistant' | 'unknown'
+    text: string
+  }>
+}
+
 export interface Workflow {
   id: string
   reference: string
@@ -357,6 +367,12 @@ export async function getWorkflow(workflowId: string): Promise<Workflow> {
 export async function getConfirmedPouEvidence(workflowId: string, pouId: WorkflowPouId, signal?: AbortSignal): Promise<ConfirmedPouEvidence> {
   const payload = await requestJson<{ evidence: ConfirmedPouEvidence }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/confirmed-evidence`, { signal })
   return payload.evidence
+}
+
+/** Sensitive supporting excerpts are deliberately fetched only after an explicit request. */
+export async function getCriterionSourceEvidence(workflowId: string, pouId: WorkflowPouId, criterionCode: string, signal?: AbortSignal): Promise<CriterionSourceEvidence> {
+  const payload = await requestJson<{ sourceEvidence: CriterionSourceEvidence }>(`/api/workflows/${encodeURIComponent(workflowId)}/pou/${encodeURIComponent(pouId)}/confirmed-evidence/${encodeURIComponent(criterionCode)}/source-excerpts`, { signal })
+  return payload.sourceEvidence
 }
 
 /** Read-only, bounded delivery state for the active Kaitiakitanga review. */

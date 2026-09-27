@@ -34,6 +34,7 @@ import {
   WorkflowApiError,
   getWorkflow,
   getConfirmedPouEvidence,
+  getCriterionSourceEvidence,
   getPhq9SupervisorEscalation,
   getPouAssessmentCandidates,
   getPouReviewDraft,
@@ -50,6 +51,7 @@ import {
   type WorkflowAction,
   type WorkflowCheckpoint,
   type ConfirmedPouEvidence,
+  type CriterionSourceEvidence,
   type WorkflowReferral,
   type SafetyObservationCurrentView,
   type WorkflowPersistenceState,
@@ -2260,6 +2262,46 @@ const evidenceAvailabilityLabel: Record<Extract<ConfirmedPouEvidence, { status: 
   not_applicable: 'Not applicable',
 }
 
+function CriterionSourceEvidenceDisclosure({ workflowId, pouId, criterionCode }: { workflowId: string; pouId: WorkflowPouId; criterionCode: string }) {
+  const [sourceEvidence, setSourceEvidence] = useState<CriterionSourceEvidence | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [unavailable, setUnavailable] = useState(false)
+  const requestController = useRef<AbortController | null>(null)
+
+  useEffect(() => () => requestController.current?.abort(), [])
+
+  const load = () => {
+    const controller = new AbortController()
+    requestController.current?.abort()
+    requestController.current = controller
+    setLoading(true)
+    setUnavailable(false)
+    void getCriterionSourceEvidence(workflowId, pouId, criterionCode, controller.signal)
+      .then((next) => setSourceEvidence(next))
+      .catch((error) => {
+        if (!(error instanceof DOMException && error.name === 'AbortError')) setUnavailable(true)
+      })
+      .finally(() => { if (requestController.current === controller) setLoading(false) })
+  }
+
+  const close = () => {
+    requestController.current?.abort()
+    requestController.current = null
+    setSourceEvidence(null)
+    setUnavailable(false)
+  }
+
+  if (!sourceEvidence) return <>
+    <button type="button" disabled={loading} onClick={load} className="text-xs disabled:opacity-50" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>{loading ? 'Loading supporting evidence…' : 'View supporting evidence'}</button>
+    {unavailable && <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Supporting evidence is unavailable right now.</p>}
+  </>
+
+  return <section className="mt-3 p-3 space-y-3" aria-label="Supporting source material" style={{ backgroundColor: 'var(--color-ground)', borderLeft: '2px solid var(--color-border-strong)' }}>
+    <div className="flex items-center justify-between gap-3"><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-secondary)' }}>Supporting evidence from this Pou reflection</p><button type="button" onClick={close} className="text-xs flex-shrink-0" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Close</button></div>
+    {sourceEvidence.excerpts.map((excerpt) => <div key={excerpt.ordinal} className="space-y-1"><p className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>{excerpt.speaker === 'kaimahi' ? 'Kaimahi' : excerpt.speaker === 'assistant' ? 'Assistant' : 'Recorded speaker'} · Turn {excerpt.ordinal}</p><p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{excerpt.text}</p></div>)}
+  </section>
+}
+
 /** A small read-only view of the immutable 6D criterion snapshot. */
 export function ConfirmedPouEvidenceView({ workflowId, pouId, confirmedReview, kaitiakitangaPhq9, phq9SupervisorEscalation, safetyObservations = [], onReturnToCurrentPou }: {
   workflowId: string
@@ -2317,6 +2359,7 @@ export function ConfirmedPouEvidenceView({ workflowId, pouId, confirmedReview, k
           <div className="flex items-start justify-between gap-3"><p className="text-xs font-medium" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink)' }}>{criterion.criterionCode}</p><span className="text-xs px-2 py-0.5" style={{ fontFamily: 'var(--font-mono)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)' }}>{evidenceAvailabilityLabel[criterion.availabilityStatus]}</span></div>
           {criterion.missingInformationCodes.length > 0 && <p className="text-xs leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>Missing information: {criterion.missingInformationCodes.join(', ')}</p>}
           <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>{criterion.sourceEvidenceReferences.available ? `${criterion.sourceEvidenceReferences.count} source evidence reference${criterion.sourceEvidenceReferences.count === 1 ? '' : 's'} retained` : 'No source evidence references retained'}</p>
+          {criterion.sourceEvidenceReferences.available && <CriterionSourceEvidenceDisclosure workflowId={workflowId} pouId={pouId} criterionCode={criterion.criterionCode} />}
         </article>)}
       </>}
       {onReturnToCurrentPou && <button type="button" onClick={onReturnToCurrentPou} className="w-full mt-3 px-4 py-3 text-sm" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Return to current Pou</button>}

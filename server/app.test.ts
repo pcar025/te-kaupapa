@@ -1079,6 +1079,28 @@ describe('authenticated application shell API', () => {
     await app.close()
   })
 
+  it('returns source text only from the dedicated snapshot-derived endpoint', async () => {
+    const repository = new MemoryRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: '3b935262-c3a2-4a8d-bdf6-a5307441ff4b', userId: activeKaimahi.id, tokenHash: sha256('source-evidence'), expiresAt: new Date(Date.now() + 60_000) })
+    const sourceEvidenceRepository = {
+      findAndAuditForAuthorizedUser: vi.fn(async (_input: unknown) => ({
+        criterionCode: 'IDENTITY_CONTEXT', pouId: 'whakapapa', excerpts: [{ ordinal: 1, speaker: 'kaimahi', text: 'Authorized source excerpt.', providerPayload: 'must not be exposed' }],
+      })),
+    }
+    const app = await createApplication({ config: config(), repository, canonicalCriterionSourceEvidenceRepository: sourceEvidenceRepository as any, oidcProvider: new FakeOidcProvider() })
+    const url = '/api/workflows/22b1f80c-2c12-4f82-bdd9-65d7b30712bb/pou/whakapapa/confirmed-evidence/IDENTITY_CONTEXT/source-excerpts'
+    expect((await app.inject({ method: 'GET', url })).statusCode).toBe(401)
+    const response = await app.inject({ method: 'GET', url, headers: { cookie: 'test_session=source-evidence' } })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.json()).toEqual({ sourceEvidence: { criterionCode: 'IDENTITY_CONTEXT', pouId: 'whakapapa', excerpts: [{ ordinal: 1, speaker: 'kaimahi', text: 'Authorized source excerpt.' }] } })
+    expect(sourceEvidenceRepository.findAndAuditForAuthorizedUser).toHaveBeenCalledWith(expect.objectContaining({ actor: activeKaimahi, workflowSessionId: '22b1f80c-2c12-4f82-bdd9-65d7b30712bb', pouId: 'whakapapa', criterionCode: 'IDENTITY_CONTEXT' }))
+    expect((await app.inject({ method: 'GET', url: `${url}?turnId=11111111-1111-4111-8111-111111111111`, headers: { cookie: 'test_session=source-evidence' } })).statusCode).toBe(200)
+    expect(sourceEvidenceRepository.findAndAuditForAuthorizedUser.mock.calls[1]?.[0]).not.toHaveProperty('turnId')
+    await app.close()
+  })
+
   it('keeps cross-Pou synthesis and final-record output owner-scoped and free of raw source material', async () => {
     const repository = new MemoryRepository()
     const supervisor: AuthenticatedUser = { ...activeKaimahi, id: 'dd8a7c03-c7a9-496f-b6c4-92a8f90f4f19', roles: ['SUPERVISOR'] }

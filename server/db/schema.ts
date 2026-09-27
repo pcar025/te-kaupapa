@@ -868,6 +868,50 @@ export const workflowPouReviewCriterionSnapshots = pgTable(
 )
 
 /**
+ * Sensitive-read audit for the deliberately requested, snapshot-scoped source
+ * excerpts. It is not a workflow command, acknowledgement, or review event.
+ */
+export const workflowCriterionSourceEvidenceAccessAudits = pgTable(
+  'workflow_criterion_source_evidence_access_audit',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    eventType: text('event_type').notNull(),
+    actorUserId: uuid('actor_user_id').notNull(),
+    actorRole: text('actor_role').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    targetKaimahiUserId: uuid('target_kaimahi_user_id').notNull(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    workflowPouReviewId: uuid('workflow_pou_review_id').notNull(),
+    criterionSnapshotId: uuid('criterion_snapshot_id').notNull(),
+    criterionCode: text('criterion_code').notNull(),
+    workflowConversationId: uuid('workflow_conversation_id').notNull(),
+    referencedTurnIds: jsonb('referenced_turn_ids').notNull(),
+    referencedTurnCount: integer('referenced_turn_count').notNull(),
+    requestId: text('request_id').notNull(),
+    outcome: text('outcome').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.actorUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'criterion_source_evidence_audit_actor_scope_fk' }),
+    foreignKey({ columns: [table.targetKaimahiUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'criterion_source_evidence_audit_kaimahi_scope_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'criterion_source_evidence_audit_workflow_scope_fk' }),
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'criterion_source_evidence_audit_checkpoint_scope_fk' }),
+    foreignKey({ columns: [table.workflowPouReviewId], foreignColumns: [workflowPouReviews.id], name: 'criterion_source_evidence_audit_review_fk' }),
+    foreignKey({ columns: [table.criterionSnapshotId], foreignColumns: [workflowPouReviewCriterionSnapshots.id], name: 'criterion_source_evidence_audit_snapshot_fk' }),
+    foreignKey({ columns: [table.workflowConversationId, table.organisationId, table.workflowSessionId, table.pouId], foreignColumns: [workflowConversations.id, workflowConversations.organisationId, workflowConversations.workflowSessionId, workflowConversations.pouId], name: 'criterion_source_evidence_audit_conversation_scope_fk' }),
+    index('criterion_source_evidence_audit_workflow_created_idx').on(table.workflowSessionId, table.createdAt),
+    index('criterion_source_evidence_audit_actor_created_idx').on(table.actorUserId, table.createdAt),
+    check('criterion_source_evidence_audit_event_type', sql`${table.eventType} = 'criterion_source_evidence_viewed'`),
+    check('criterion_source_evidence_audit_actor_role', sql`${table.actorRole} in ('KAIMAHI', 'SUPERVISOR')`),
+    check('criterion_source_evidence_audit_outcome', sql`${table.outcome} = 'success'`),
+    check('criterion_source_evidence_audit_criterion_code', sql`length(${table.criterionCode}) between 2 and 120`),
+    check('criterion_source_evidence_audit_turns', sql`${table.referencedTurnCount} between 1 and 200 and jsonb_typeof(${table.referencedTurnIds}) = 'array' and jsonb_array_length(${table.referencedTurnIds}) = ${table.referencedTurnCount}`),
+    check('criterion_source_evidence_audit_request_id', sql`length(${table.requestId}) between 1 and 200`),
+  ],
+)
+
+/**
  * Noncanonical cross-Pou synthesis lifecycle. Its revisions are immutable;
  * only an explicit Kaimahi confirmation can make one revision authoritative.
  */

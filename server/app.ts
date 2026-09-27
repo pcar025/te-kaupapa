@@ -59,7 +59,7 @@ import { createFinalRecordPdf, finalRecordPlainText } from './workflow-synthesis
 import { logPouReviewTiming } from './observability/pou-review-timing.js'
 import { PostgresPhq9SupervisorEscalationRepository } from './phq9-escalations/repository.js'
 import { Phq9EscalationDeliveryService } from './phq9-escalations/service.js'
-import { PostgresCanonicalPouEvidenceRepository, type ConfirmedPouEvidence } from './pou-evidence/repository.js'
+import { PostgresCanonicalCriterionSourceEvidenceRepository, PostgresCanonicalPouEvidenceRepository, type ConfirmedPouEvidence, type CriterionSourceEvidence } from './pou-evidence/repository.js'
 import { ConversationGuidanceProjectionError, conversationRuntimeDynamicVariables } from './pou-specifications/domain.js'
 import { PouSpecificationUnavailableError } from './pou-specifications/repository.js'
 import {
@@ -130,6 +130,14 @@ function publicConfirmedPouEvidence(evidence: ConfirmedPouEvidence): ConfirmedPo
   }
 }
 
+function publicCriterionSourceEvidence(sourceEvidence: CriterionSourceEvidence): CriterionSourceEvidence {
+  return {
+    criterionCode: sourceEvidence.criterionCode,
+    pouId: sourceEvidence.pouId,
+    excerpts: sourceEvidence.excerpts.map((excerpt) => ({ ordinal: excerpt.ordinal, speaker: excerpt.speaker, text: excerpt.text })),
+  }
+}
+
 export interface AppDependencies {
   config: AppConfiguration
   repository: AuthRepository
@@ -149,6 +157,7 @@ export interface AppDependencies {
   phq9EscalationRepository?: PostgresPhq9SupervisorEscalationRepository
   phq9EscalationDeliveryService?: Phq9EscalationDeliveryService
   canonicalPouEvidenceRepository?: PostgresCanonicalPouEvidenceRepository
+  canonicalCriterionSourceEvidenceRepository?: PostgresCanonicalCriterionSourceEvidenceRepository
   now?: () => Date
 }
 
@@ -159,7 +168,7 @@ declare module 'fastify' {
 }
 
 export async function createApplication(dependencies: AppDependencies): Promise<FastifyInstance> {
-  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, phq9EscalationRepository, phq9EscalationDeliveryService, canonicalPouEvidenceRepository, now = () => new Date() } = dependencies
+  const { config, repository, workflowRepository, conversationService, safetyAssessmentRepository, conversationAssessmentProvider, conversationReviewDraftProvider, reviewDraftRepository, workflowSynthesisRepository, workflowSynthesisProvider, transcriptRepository, elevenLabsWebhookVerifier, pouSpecificationAuthoringService, safetyPolicyAuthoringService, oidcProvider, phq9EscalationRepository, phq9EscalationDeliveryService, canonicalPouEvidenceRepository, canonicalCriterionSourceEvidenceRepository, now = () => new Date() } = dependencies
   const app = Fastify({ logger: config.nodeEnv !== 'test' })
   const secureCookie = config.nodeEnv === 'production'
 
@@ -809,6 +818,35 @@ export async function createApplication(dependencies: AppDependencies): Promise<
       return { evidence: publicConfirmedPouEvidence(evidence) }
     } catch (error) {
       request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Canonical Pou evidence lookup failed')
+      return reply.code(503).send({ error: 'persistence_unavailable' })
+    }
+  })
+
+  /** Sensitive, on-demand excerpts derived solely from the confirmed snapshot. */
+  app.get('/api/workflows/:workflowSessionId/pou/:pouId/confirmed-evidence/:criterionCode/source-excerpts', async (request, reply) => {
+    const user = await authenticate(request)
+    if (!user) return reply.code(401).send({ error: 'unauthenticated' })
+    const params = z.object({
+      workflowSessionId: z.string().uuid(),
+      pouId: z.enum(WORKFLOW_POU_IDS),
+      criterionCode: z.string().trim().min(2).max(120),
+    }).safeParse(request.params)
+    if (!params.success) return reply.code(404).send({ error: 'not_found' })
+    if (!canonicalCriterionSourceEvidenceRepository) return reply.code(503).send({ error: 'persistence_unavailable' })
+    if (!user.roles.includes('KAIMAHI') && !user.roles.includes('SUPERVISOR')) return reply.code(403).send({ error: 'forbidden' })
+    try {
+      const sourceEvidence = await canonicalCriterionSourceEvidenceRepository.findAndAuditForAuthorizedUser({
+        actor: user,
+        workflowSessionId: params.data.workflowSessionId,
+        pouId: params.data.pouId,
+        criterionCode: params.data.criterionCode,
+        requestId: request.id,
+      })
+      if (!sourceEvidence) return reply.code(404).send({ error: 'not_found' })
+      reply.header('cache-control', 'no-store')
+      return { sourceEvidence: publicCriterionSourceEvidence(sourceEvidence) }
+    } catch (error) {
+      request.log.error({ err: error instanceof Error ? error.name : 'unknown' }, 'Canonical Pou source evidence lookup failed')
       return reply.code(503).send({ error: 'persistence_unavailable' })
     }
   })

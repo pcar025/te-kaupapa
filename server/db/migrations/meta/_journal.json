@@ -190,6 +190,13 @@
       "when": 1790307064787,
       "tag": "0026_confirmed_pou_criterion_snapshots",
       "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1790481795607,
+      "tag": "0027_new_zemo",
+      "breakpoints": true
     }
   ]
 }

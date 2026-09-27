@@ -97,6 +97,7 @@ export async function withPhase5BTestContext<T>(body: (context: any) => Promise<
     try {
       await connection.db.execute(sql`delete from workflow_phq9_supervisor_escalation where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from workflow_kaitiakitanga_phq9_confirmation where organisation_id in (${ids})`)
+      await connection.db.execute(sql`delete from workflow_criterion_source_evidence_access_audit where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from workflow_carry_forward where organisation_id in (${ids})`)
       await connection.db.execute(sql`delete from workflow_pou_review_criterion_snapshot where workflow_pou_review_id in (select id from workflow_pou_review where organisation_id in (${ids}))`)
       await connection.db.execute(sql`delete from workflow_pou_review where organisation_id in (${ids})`)
