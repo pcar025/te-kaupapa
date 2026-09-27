@@ -864,8 +864,86 @@ describe('ConfirmedPouEvidenceView', () => {
     for (const label of ['Evidenced', 'Partially evidenced', 'Not explored', 'Insufficient information', 'Not applicable']) expect(await screen.findByText(label)).toBeTruthy()
     expect(screen.getByText('Missing information: detail_needed')).toBeTruthy()
     expect(screen.queryByText(/score/i)).toBeNull()
-    expect(screen.queryByText(/safe|unsafe|competenc/i)).toBeNull()
+    expect(screen.getByText('Formal safety status')).toBeTruthy()
+    expect(screen.getByText('No safety concerns recorded.')).toBeTruthy()
     expect(String((fetch as any).mock.calls[0]?.[0])).toContain(`/pou/whakapapa/confirmed-evidence`)
+  })
+
+  it('composes persisted confirmed-review content before additive criterion evidence without reconstructing a draft', async () => {
+    const fetchMock = vi.fn(async (_path: string) => new Response(JSON.stringify({ evidence: {
+      status: 'canonical_snapshot', pouId: 'kaitiakitanga', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1,
+      criteria: [{ criterionCode: 'CANONICAL_CRITERION', availabilityStatus: 'insufficient_information', missingInformationCodes: ['CANONICAL_INFORMATION_MARKER'], sourceEvidenceReferences: { available: false, count: 0 } }],
+    } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const confirmedReview = {
+      pouId: 'kaitiakitanga' as const,
+      overallSummary: 'CANONICAL_OVERALL_SUMMARY',
+      strengthsSummary: 'CANONICAL_STRENGTHS_SUMMARY',
+      areasForAttentionSummary: 'CANONICAL_ATTENTION_SUMMARY',
+      stillToExplore: ['DRAFT_DERIVED_TEXT_MUST_NOT_RENDER'],
+      confirmedAt: '2026-09-27T00:00:00.000Z',
+    }
+    render(<ConfirmedPouEvidenceView
+      workflowId={workflowId}
+      pouId="kaitiakitanga"
+      confirmedReview={confirmedReview}
+      kaitiakitangaPhq9={{ indicated: true, completed: true, confirmedTotalScore: 9, supervisorEscalationRequired: false, ruleCode: 'PHQ9_CONFIRMED_SCORE_GTE_12_SUPERVISOR_ESCALATION', ruleVersion: 1, confirmedAt: '2026-09-27T00:00:00.000Z' }}
+    />)
+    expect(await screen.findByText('CANONICAL_OVERALL_SUMMARY')).toBeTruthy()
+    expect(screen.getByText('CANONICAL_STRENGTHS_SUMMARY')).toBeTruthy()
+    expect(screen.getByText('CANONICAL_ATTENTION_SUMMARY')).toBeTruthy()
+    expect(screen.getByText('Information still to explore')).toBeTruthy()
+    expect(screen.getByText('CANONICAL_INFORMATION_MARKER')).toBeTruthy()
+    expect(screen.getByText('Confirmed PHQ-9 total score: 9.')).toBeTruthy()
+    expect(screen.getByText('Formal safety status')).toBeTruthy()
+    expect(screen.queryByText('DRAFT_DERIVED_TEXT_MUST_NOT_RENDER')).toBeNull()
+    expect(screen.getByText('Confirmed criterion evidence')).toBeTruthy()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/confirmed-evidence')
+    expect(String(fetchMock.mock.calls[0]?.[0])).not.toContain('source-excerpts')
+  })
+
+  it('keeps canonical narrative content visible for a legacy confirmed review while criterion evidence remains unavailable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ evidence: {
+      status: 'legacy_unavailable', pouId: 'whakapapa', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: null,
+    } }), { status: 200 })))
+    render(<ConfirmedPouEvidenceView workflowId={workflowId} pouId="whakapapa" confirmedReview={{
+      pouId: 'whakapapa', overallSummary: 'LEGACY_CANONICAL_OVERALL', strengthsSummary: 'LEGACY_CANONICAL_STRENGTHS', areasForAttentionSummary: 'LEGACY_CANONICAL_ATTENTION', confirmedAt: '2026-09-27T00:00:00.000Z',
+    }} />)
+    expect(await screen.findByText('LEGACY_CANONICAL_OVERALL')).toBeTruthy()
+    expect(screen.getByText('LEGACY_CANONICAL_STRENGTHS')).toBeTruthy()
+    expect(screen.getByText('LEGACY_CANONICAL_ATTENTION')).toBeTruthy()
+    expect(screen.getByText('Canonical criterion evidence unavailable')).toBeTruthy()
+  })
+
+  it('restores the same confirmed content after refresh without submitting a workflow command', async () => {
+    const fetchMock = vi.fn(async (_path: string) => new Response(JSON.stringify({ evidence: {
+      status: 'canonical_snapshot', pouId: 'kaitiakitanga', confirmedAt: '2026-09-27T00:00:00.000Z', snapshotVersion: 1,
+      criteria: [],
+    } }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+    const confirmedReview = { pouId: 'kaitiakitanga' as const, overallSummary: 'REFRESH_STABLE_CANONICAL_SUMMARY', strengthsSummary: null, areasForAttentionSummary: null, confirmedAt: '2026-09-27T00:00:00.000Z' }
+    const onConfirm = vi.fn()
+    const props = {
+      pouIdx: TE_WAHAROA_POU.findIndex((pou) => pou.id === 'kaitiakitanga'),
+      checkpoint: { pouId: 'kaitiakitanga' as const, ordinal: 1, progress: 'confirmed' as const, userSelectedConcern: null, note: null, referralSuggested: false, supervisorReviewSuggested: false, confirmedAt: '2026-09-27T00:00:00.000Z' },
+      onConfirm,
+      workflowId,
+      onCandidateConfirm: () => undefined,
+      confirmedReview,
+      persistenceState: 'idle' as const,
+      onRetry: () => undefined,
+      onReload: () => undefined,
+    }
+    const first = render(<SinglePouReviewStage {...props} />)
+    expect(await screen.findByText('REFRESH_STABLE_CANONICAL_SUMMARY')).toBeTruthy()
+    expect(onConfirm).not.toHaveBeenCalled()
+    first.unmount()
+    render(<SinglePouReviewStage {...props} />)
+    expect(await screen.findByText('REFRESH_STABLE_CANONICAL_SUMMARY')).toBeTruthy()
+    expect(onConfirm).not.toHaveBeenCalled()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock.mock.calls.every(([path]) => String(path).includes('/confirmed-evidence'))).toBe(true)
   })
 
   it('keeps legacy evidence distinct from every availability state', async () => {
