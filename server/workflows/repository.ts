@@ -810,6 +810,20 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           if (input.command.reviewDraftRevisionId) {
             if (!this.reviewDrafts) throw new WorkflowTransitionError('The supplied review draft is not available for this Pou.')
             await this.reviewDrafts.confirmCanonical(tx, { actor: input.actor, workflowSessionId: workflow.id, pouId: input.command.pouId, reviewDraftRevisionId: input.command.reviewDraftRevisionId, timestamp })
+            await this.promoteCarryForwardsAtPouConfirmation(tx, {
+              actor: input.actor,
+              workflowId: workflow.id,
+              pouId: input.command.pouId,
+              reviewDraftRevisionId: input.command.reviewDraftRevisionId,
+              timestamp,
+            })
+          } else {
+            const selected = await tx.select({ id: schema.workflowCarryForwards.id }).from(schema.workflowCarryForwards).where(and(
+              eq(schema.workflowCarryForwards.workflowSessionId, workflow.id),
+              eq(schema.workflowCarryForwards.organisationId, input.actor.organisation.id),
+              eq(schema.workflowCarryForwards.pouId, input.command.pouId),
+            )).limit(1)
+            if (selected[0]) throw new WorkflowTransitionError('Selected carry-forward items require a canonical Pou review before confirmation.')
           }
           const next = checkpointAfterPouReview({
             stage: workflow.currentStage as WorkflowStage,
@@ -1170,6 +1184,92 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
 
   private async updateSafetyOnlyWorkflow(executor: WorkflowDatabase, workflowId: string, version: number, timestamp: Date) {
     await executor.update(schema.workflowSessions).set({ version, updatedAt: timestamp }).where(eq(schema.workflowSessions.id, workflowId))
+  }
+
+  /**
+   * A carry-forward marker remains a noncanonical selection until its exact
+   * draft revision is confirmed. This promotion intentionally creates no
+   * action, referral, safety consequence, or provider call.
+   */
+  private async promoteCarryForwardsAtPouConfirmation(
+    executor: WorkflowDatabase,
+    input: { actor: AuthenticatedUser; workflowId: string; pouId: WorkflowPouId; reviewDraftRevisionId: string; timestamp: Date },
+  ) {
+    const [review] = await executor.select({
+      id: schema.workflowPouReviews.id,
+      reviewDraftRevisionId: schema.workflowPouReviews.reviewDraftRevisionId,
+    }).from(schema.workflowPouReviews).where(and(
+      eq(schema.workflowPouReviews.workflowSessionId, input.workflowId),
+      eq(schema.workflowPouReviews.organisationId, input.actor.organisation.id),
+      eq(schema.workflowPouReviews.pouId, input.pouId),
+      eq(schema.workflowPouReviews.reviewDraftRevisionId, input.reviewDraftRevisionId),
+      eq(schema.workflowPouReviews.criterionSnapshotsVersion, 1),
+    )).limit(1)
+    if (!review) throw new WorkflowValidationError('The confirmed Pou review is unavailable for carry-forward candidates.')
+
+    const selections = (await executor.select().from(schema.workflowCarryForwards).where(and(
+      eq(schema.workflowCarryForwards.workflowSessionId, input.workflowId),
+      eq(schema.workflowCarryForwards.organisationId, input.actor.organisation.id),
+      eq(schema.workflowCarryForwards.pouId, input.pouId),
+    ))).filter((selection) => selection.source === 'safety_observation'
+      || selection.reviewDraftRevisionId === input.reviewDraftRevisionId)
+    if (selections.length === 0) return
+
+    const selectedSafetyObservationIds = selections.flatMap((selection) => selection.source === 'safety_observation' && selection.safetyObservationId
+      ? [selection.safetyObservationId]
+      : [])
+    if (selectedSafetyObservationIds.length > 0) {
+      const activeSafetyObservations = await executor.select({ id: schema.workflowSafetyObservations.id }).from(schema.workflowSafetyObservations).where(and(
+        eq(schema.workflowSafetyObservations.workflowSessionId, input.workflowId),
+        eq(schema.workflowSafetyObservations.organisationId, input.actor.organisation.id),
+        eq(schema.workflowSafetyObservations.pouId, input.pouId),
+        eq(schema.workflowSafetyObservations.status, 'active'),
+        inArray(schema.workflowSafetyObservations.id, selectedSafetyObservationIds),
+      ))
+      if (activeSafetyObservations.length !== selectedSafetyObservationIds.length) {
+        throw new WorkflowValidationError('The selected formal safety concern is no longer active for this Pou.')
+      }
+    }
+
+    const snapshots = await executor.select({
+      id: schema.workflowPouReviewCriterionSnapshots.id,
+      criterionCode: schema.workflowPouReviewCriterionSnapshots.criterionCode,
+    }).from(schema.workflowPouReviewCriterionSnapshots).where(eq(
+      schema.workflowPouReviewCriterionSnapshots.workflowPouReviewId,
+      review.id,
+    ))
+    const snapshotByCriterion = new Map(snapshots.map((snapshot) => [snapshot.criterionCode, snapshot.id]))
+
+    await executor.insert(schema.workflowActionCandidates).values(selections.map((selection) => {
+      const criterionSnapshotId = selection.source === 'review_criterion'
+        ? snapshotByCriterion.get(selection.criterionCode ?? '')
+        : null
+      if (selection.source === 'review_criterion' && !criterionSnapshotId) {
+        throw new WorkflowValidationError('The selected criterion has no confirmed evidence snapshot.')
+      }
+      const proposedDescription = selection.note?.trim()
+        || (selection.source === 'review_criterion'
+          ? `Follow up on ${selection.criterionCode}.`
+          : selection.source === 'areas_for_attention'
+            ? 'Follow up on the identified area for attention.'
+            : 'Additional ordinary follow-up alongside a formal safety observation.')
+      if (!proposedDescription) throw new WorkflowValidationError('The selected carry-forward item has no bounded description.')
+      return {
+        workflowSessionId: input.workflowId,
+        organisationId: input.actor.organisation.id,
+        pouId: input.pouId,
+        workflowPouReviewId: review.id,
+        reviewDraftRevisionId: review.reviewDraftRevisionId,
+        criterionSnapshotId,
+        sourceCarryForwardId: selection.id,
+        sourceSafetyObservationId: selection.source === 'safety_observation' ? selection.safetyObservationId : null,
+        originKind: 'kaimahi_carry_forward' as const,
+        proposedDescription,
+        disposition: 'pending' as const,
+        createdByUserId: input.actor.id,
+        createdAt: input.timestamp,
+      }
+    }))
   }
 
   private async evaluateAndReconcileSafetyObservation(

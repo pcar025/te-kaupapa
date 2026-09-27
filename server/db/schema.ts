@@ -47,6 +47,8 @@ export const workflowPouProgress = pgEnum('workflow_pou_progress', ['not_started
 export const workflowActionType = pgEnum('workflow_action_type', ['follow-up', 'support', 'other'])
 export const workflowActionStatus = pgEnum('workflow_action_status', ['open', 'completed', 'withdrawn'])
 export const workflowCarryForwardSource = pgEnum('workflow_carry_forward_source', ['review_criterion', 'areas_for_attention', 'safety_observation'])
+export const workflowActionCandidateOrigin = pgEnum('workflow_action_candidate_origin', ['kaimahi_carry_forward', 'ai_suggestion', 'deterministic_required'])
+export const workflowActionCandidateDisposition = pgEnum('workflow_action_candidate_disposition', ['pending', 'accepted_as_action', 'rejected', 'routed_to_referral'])
 export const workflowReferralStatus = pgEnum('workflow_referral_status', ['draft', 'prepared', 'declined', 'withdrawn'])
 export const workflowSynthesisStatus = pgEnum('workflow_synthesis_status', ['generating', 'generated', 'failed'])
 export const workflowSynthesisRevisionSource = pgEnum('workflow_synthesis_revision_source', ['generated', 'edited'])
@@ -1345,6 +1347,47 @@ export const workflowCarryForwards = pgTable(
     index('carry_forward_workflow_created_idx').on(table.workflowSessionId, table.createdAt),
     check('carry_forward_note_length', sql`${table.note} is null or length(${table.note}) between 1 and 1000`),
     check('carry_forward_source_shape', sql`(${table.source} = 'review_criterion' and ${table.reviewDraftRevisionId} is not null and ${table.criterionCode} is not null and ${table.safetyObservationId} is null) or (${table.source} = 'areas_for_attention' and ${table.reviewDraftRevisionId} is not null and ${table.criterionCode} is null and ${table.safetyObservationId} is null) or (${table.source} = 'safety_observation' and ${table.reviewDraftRevisionId} is null and ${table.criterionCode} is null and ${table.safetyObservationId} is not null)`),
+  ],
+)
+
+/**
+ * A bounded, noncanonical follow-up candidate created only when its source
+ * Pou review is explicitly confirmed. It is deliberately distinct from an
+ * action or referral; a later Action Plan decision owns that conversion.
+ */
+export const workflowActionCandidates = pgTable(
+  'workflow_action_candidate',
+  {
+    id: uuid('id').defaultRandom().primaryKey(),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    pouId: workflowPouId('pou_id').notNull(),
+    workflowPouReviewId: uuid('workflow_pou_review_id').notNull(),
+    reviewDraftRevisionId: uuid('review_draft_revision_id').notNull(),
+    criterionSnapshotId: uuid('criterion_snapshot_id'),
+    sourceCarryForwardId: uuid('source_carry_forward_id'),
+    sourceSafetyObservationId: uuid('source_safety_observation_id'),
+    originKind: workflowActionCandidateOrigin('origin_kind').notNull(),
+    proposedDescription: text('proposed_description').notNull(),
+    disposition: workflowActionCandidateDisposition('disposition').default('pending').notNull(),
+    dispositionedAt: timestamp('dispositioned_at', { withTimezone: true }),
+    dispositionedByUserId: uuid('dispositioned_by_user_id'),
+    createdByUserId: uuid('created_by_user_id').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId, table.pouId], foreignColumns: [workflowPouCheckpoints.workflowSessionId, workflowPouCheckpoints.organisationId, workflowPouCheckpoints.pouId], name: 'action_candidate_checkpoint_organisation_fk' }),
+    foreignKey({ columns: [table.workflowPouReviewId], foreignColumns: [workflowPouReviews.id], name: 'action_candidate_confirmed_review_fk' }),
+    foreignKey({ columns: [table.reviewDraftRevisionId], foreignColumns: [conversationReviewDraftRevisions.id], name: 'action_candidate_review_revision_fk' }),
+    foreignKey({ columns: [table.criterionSnapshotId], foreignColumns: [workflowPouReviewCriterionSnapshots.id], name: 'action_candidate_criterion_snapshot_fk' }),
+    foreignKey({ columns: [table.sourceCarryForwardId], foreignColumns: [workflowCarryForwards.id], name: 'action_candidate_source_carry_forward_fk' }),
+    foreignKey({ columns: [table.sourceSafetyObservationId], foreignColumns: [workflowSafetyObservations.id], name: 'action_candidate_source_safety_observation_fk' }),
+    foreignKey({ columns: [table.createdByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'action_candidate_created_by_organisation_fk' }),
+    foreignKey({ columns: [table.dispositionedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'action_candidate_dispositioned_by_organisation_fk' }),
+    uniqueIndex('action_candidate_source_carry_forward_uq').on(table.sourceCarryForwardId),
+    index('action_candidate_workflow_pending_idx').on(table.workflowSessionId, table.disposition, table.createdAt),
+    check('action_candidate_description_length', sql`length(${table.proposedDescription}) between 1 and 1000`),
+    check('action_candidate_disposition_audit', sql`(${table.disposition} = 'pending' and ${table.dispositionedAt} is null and ${table.dispositionedByUserId} is null) or (${table.disposition} <> 'pending' and ${table.dispositionedAt} is not null and ${table.dispositionedByUserId} is not null)`),
   ],
 )
 

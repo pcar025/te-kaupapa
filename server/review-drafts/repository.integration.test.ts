@@ -353,9 +353,9 @@ describe('Whakapapa review-draft reconciliation', () => {
     })
   }, 15_000)
 
-  it('lets the Kaimahi carry forward only a current scoped review need without creating an action or confirming the Pou', async () => {
+  it('keeps a selected review need noncanonical until confirmation, then pins one candidate without creating an action or referral', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository, canonicalSnapshot }: any) => {
-      expect((await request(payload({ transcript: [{ role: 'user', message: 'Synthetic Whakapapa reflection with strength and cultural connection.' }] }))).statusCode).toBe(202)
+      expect((await request(payload({ transcript: [{ role: 'user', message: 'Synthetic Whakapapa reflection with strength and cultural connection. [scenario:all-no-concern]' }] }))).statusCode).toBe(202)
       const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
       const reviewNeed = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
       expect(reviewNeed).toBeDefined()
@@ -415,6 +415,7 @@ describe('Whakapapa review-draft reconciliation', () => {
       expect((await canonicalSnapshot()).checkpoint).toMatchObject({ progress: 'not_started', confirmedAt: null })
       expect((await canonicalSnapshot()).counts).toMatchObject({ workflowSafetyObservations: 0, workflowActions: 0, workflowReferrals: 0, workflowSupervisorReviewRequests: 0 })
       expect(JSON.stringify(carried.workflow.carryForwards)).not.toContain('Synthetic Whakapapa reflection with strength and cultural connection.')
+      expect(await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))).toHaveLength(0)
 
       // The source revision is scoped to its exact workflow, organisation and
       // Pou. Possessing its opaque UUID must not make it reusable elsewhere.
@@ -481,6 +482,155 @@ describe('Whakapapa review-draft reconciliation', () => {
         },
       })).rejects.toThrow('safety concern')
       expect(await connection.db.select().from(schema.workflowCarryForwards).where(eq(schema.workflowCarryForwards.workflowSessionId, workflowId))).toHaveLength(1)
+
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'pou-review-confirmed',
+          idempotencyKey: randomUUID(),
+          expectedVersion: 3,
+          pouId: 'whakapapa',
+          reviewDraftRevisionId: edited.revisionId,
+        },
+      })
+      const [review] = await connection.db.select().from(schema.workflowPouReviews).where(and(
+        eq(schema.workflowPouReviews.workflowSessionId, workflowId),
+        eq(schema.workflowPouReviews.pouId, 'whakapapa'),
+      ))
+      const [candidate] = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))
+      const [snapshot] = await connection.db.select().from(schema.workflowPouReviewCriterionSnapshots).where(and(
+        eq(schema.workflowPouReviewCriterionSnapshots.workflowPouReviewId, review!.id),
+        eq(schema.workflowPouReviewCriterionSnapshots.criterionCode, reviewNeed!.criterionCode),
+      ))
+      expect(candidate).toMatchObject({
+        workflowPouReviewId: review!.id,
+        reviewDraftRevisionId: edited.revisionId,
+        criterionSnapshotId: snapshot!.id,
+        originKind: 'kaimahi_carry_forward',
+        disposition: 'pending',
+        sourceSafetyObservationId: null,
+        createdByUserId: actor.id,
+      })
+      expect(candidate!.proposedDescription).not.toContain('Synthetic Whakapapa reflection')
+      let immutableOriginRejection: unknown
+      try {
+        await connection.db.execute(sql`update workflow_action_candidate set proposed_description = 'Forged replacement' where id = ${candidate!.id}`)
+      } catch (error) { immutableOriginRejection = error }
+      expect(postgresCause(immutableOriginRejection)).toMatchObject({ code: 'P0001', message: 'action candidate origin is immutable' })
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflowId))).toHaveLength(0)
     })
   })
+
+  it('does not promote a selection from a superseded unconfirmed review revision', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const reviewNeed = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
+      const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa',
+          source: { kind: 'review_criterion', reviewDraftRevisionId: ready.draft.revisionId, criterionCode: reviewNeed!.criterionCode },
+        },
+      })
+      const revised = await reviewDraftRepository.edit(actor, workflowId, {
+        reviewDraftId: ready.draft.id,
+        expectedRevision: ready.draft.revision,
+        content: {
+          overallSummary: 'Revised canonical review.', strengthsSummary: ready.draft.strengthsSummary,
+          areasForAttentionSummary: ready.draft.areasForAttentionSummary, evidenceTurnIds: ready.draft.evidenceTurnIds,
+        },
+      })
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'whakapapa', reviewDraftRevisionId: revised.revisionId },
+      })
+      expect(await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
+  it('pins a selected active formal-safety observation as supplementary ordinary follow-up without changing safety or creating an action', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const observationId = randomUUID()
+      await connection.db.insert(schema.workflowSafetyObservations).values({
+        id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id,
+        assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low',
+        status: 'active', currentRevision: 1, confirmedByUserId: actor.id,
+        confirmedAt: new Date('2026-08-13T00:00:00.000Z'), updatedAt: new Date('2026-08-13T00:00:00.000Z'),
+      })
+      const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa',
+          source: { kind: 'safety_observation', observationId },
+        },
+      })
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 3, pouId: 'whakapapa', reviewDraftRevisionId: ready.draft.revisionId },
+      })
+      const [candidate] = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))
+      const [observation] = await connection.db.select().from(schema.workflowSafetyObservations).where(eq(schema.workflowSafetyObservations.id, observationId))
+      expect(candidate).toMatchObject({
+        originKind: 'kaimahi_carry_forward', sourceSafetyObservationId: observationId, criterionSnapshotId: null,
+        proposedDescription: 'Additional ordinary follow-up alongside a formal safety observation.', disposition: 'pending',
+      })
+      expect(observation).toMatchObject({ status: 'active', currentRevision: 1 })
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
+  it('fails closed when a selected formal-safety observation is retracted before Pou confirmation', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const observationId = randomUUID()
+      await connection.db.insert(schema.workflowSafetyObservations).values({
+        id: observationId, workflowSessionId: workflowId, organisationId: actor.organisation.id,
+        assessmentContext: 'pou', pouId: 'whakapapa', broadClass: 'practice_quality', concernLevel: 'low',
+        status: 'active', currentRevision: 1, confirmedByUserId: actor.id,
+        confirmedAt: new Date('2026-08-13T00:00:00.000Z'), updatedAt: new Date('2026-08-13T00:00:00.000Z'),
+      })
+      const workflowRepository = new PostgresWorkflowRepository(connection.db, () => new Date('2026-08-13T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: 2, pouId: 'whakapapa',
+          source: { kind: 'safety_observation', observationId },
+        },
+      })
+      await workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: {
+          type: 'safety-observation-retracted', observationId, idempotencyKey: randomUUID(), expectedVersion: 3,
+          expectedObservationRevision: 1, reason: 'Synthetic retraction before confirmation.',
+        },
+      })
+      await expect(workflowRepository.submitCommand({
+        actor,
+        workflowSessionId: workflowId,
+        command: { type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: 4, pouId: 'whakapapa', reviewDraftRevisionId: ready.draft.revisionId },
+      })).rejects.toThrow('no longer active')
+      expect(await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowPouReviews).where(eq(schema.workflowPouReviews.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+      expect(await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.workflowSessionId, workflowId))).toHaveLength(0)
+    })
+  })
+
 })
