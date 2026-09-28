@@ -6066,7 +6066,11 @@ function CarryForwardSourceList({ items }: { items: Workflow['carryForwards'] })
   })}</div>
 }
 
-function WorkflowSynthesisStage({
+const SYNTHESIS_POLL_INTERVAL_MILLISECONDS = 3_000
+const SYNTHESIS_LONG_WAIT_MILLISECONDS = 30_000
+const MAXIMUM_AUTOMATIC_SYNTHESIS_POLLS = 40
+
+export function WorkflowSynthesisStage({
   workflow,
   onConfirm,
   persistenceState,
@@ -6079,39 +6083,122 @@ function WorkflowSynthesisStage({
   onRetry: () => void
   onReload: () => void
 }) {
-  const [synthesis, setSynthesis] = useState<WorkflowSynthesisState | null>(null)
+  const [synthesisState, setSynthesisState] = useState<{ workflowId: string; value: WorkflowSynthesisState } | null>(null)
   const [content, setContent] = useState<WorkflowSynthesisContent | null>(null)
-  const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const load = async () => {
-    try {
-      const current = await getWorkflowSynthesis(workflow.id)
-      setSynthesis(current)
-      if (current.draft) { setContent(current.draft.content); setDirty(false) }
-      return current
-    } catch {
-      setError('The synthesis could not be loaded. Check your connection and try again.')
-      return null
-    } finally { setLoading(false) }
+  const [pollCount, setPollCount] = useState(0)
+  const [stillPreparing, setStillPreparing] = useState(false)
+  const generationRequestedFor = useRef<string | null>(null)
+  const generationInFlight = useRef(false)
+  const synthesisLifecycle = useRef(0)
+  const retryReadController = useRef<AbortController | null>(null)
+  const preparingStartedAt = useRef<number | null>(null)
+  const synthesis = synthesisState?.workflowId === workflow.id ? synthesisState.value : null
+  const applySynthesis = (next: WorkflowSynthesisState) => {
+    setSynthesisState({ workflowId: workflow.id, value: next })
+    if (next.draft) { setContent(next.draft.content); setDirty(false) }
+    if (next.status === 'analysing' || next.status === 'not_ready') {
+      if (preparingStartedAt.current === null) preparingStartedAt.current = Date.now()
+    } else {
+      preparingStartedAt.current = null
+      setStillPreparing(false)
+      setPollCount(0)
+    }
   }
-  useEffect(() => { void load() }, [workflow.id])
+  const requestGeneration = () => {
+    if (generationInFlight.current) return
+    const lifecycle = synthesisLifecycle.current
+    generationInFlight.current = true
+    void generateWorkflowSynthesis(workflow.id)
+      .then((next) => { if (synthesisLifecycle.current === lifecycle) applySynthesis(next) })
+      .catch(() => { if (synthesisLifecycle.current === lifecycle) setError('Something went wrong while preparing your synthesis.') })
+      .finally(() => { if (synthesisLifecycle.current === lifecycle) generationInFlight.current = false })
+  }
+  useEffect(() => {
+    const controller = new AbortController()
+    const lifecycle = ++synthesisLifecycle.current
+    retryReadController.current?.abort()
+    retryReadController.current = null
+    generationRequestedFor.current = null
+    generationInFlight.current = false
+    preparingStartedAt.current = Date.now()
+    setSynthesisState(null)
+    setContent(null)
+    setDirty(false)
+    setError(null)
+    setPollCount(0)
+    setStillPreparing(false)
+    void getWorkflowSynthesis(workflow.id, controller.signal)
+      .then((current) => { if (!controller.signal.aborted && synthesisLifecycle.current === lifecycle) applySynthesis(current) })
+      .catch(() => { if (!controller.signal.aborted && synthesisLifecycle.current === lifecycle) setError('Something went wrong while preparing your synthesis.') })
+    return () => {
+      controller.abort()
+      retryReadController.current?.abort()
+      retryReadController.current = null
+      if (synthesisLifecycle.current === lifecycle) synthesisLifecycle.current += 1
+    }
+  }, [workflow.id])
   useEffect(() => {
     if (synthesis?.status !== 'not_ready') return
-    setLoading(true)
-    void generateWorkflowSynthesis(workflow.id).then((next) => { setSynthesis(next); if (next.draft) setContent(next.draft.content) }).catch(() => setError('The synthesis could not be generated. Nothing has been confirmed.')).finally(() => setLoading(false))
+    if (generationRequestedFor.current === workflow.id) return
+    generationRequestedFor.current = workflow.id
+    if (preparingStartedAt.current === null) preparingStartedAt.current = Date.now()
+    setError(null)
+    requestGeneration()
   }, [synthesis?.status, workflow.id])
   useEffect(() => {
-    if (synthesis?.status !== 'analysing') return
-    const timer = window.setTimeout(() => void load(), 3_000)
+    if (synthesis?.status !== 'analysing' || pollCount >= MAXIMUM_AUTOMATIC_SYNTHESIS_POLLS) return
+    const controller = new AbortController()
+    const lifecycle = synthesisLifecycle.current
+    const timer = window.setTimeout(() => {
+      void getWorkflowSynthesis(workflow.id, controller.signal)
+        .then((next) => {
+          if (controller.signal.aborted || synthesisLifecycle.current !== lifecycle) return
+          applySynthesis(next)
+          if (next.status === 'analysing') {
+            setPollCount((current) => current + 1)
+          }
+        })
+        .catch(() => { if (!controller.signal.aborted && synthesisLifecycle.current === lifecycle) setError('Something went wrong while preparing your synthesis.') })
+    }, SYNTHESIS_POLL_INTERVAL_MILLISECONDS)
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [pollCount, synthesis?.status, workflow.id])
+  useEffect(() => {
+    if (synthesis?.status !== 'analysing' && synthesis?.status !== 'not_ready') return
+    const elapsed = Date.now() - (preparingStartedAt.current ?? Date.now())
+    const timer = window.setTimeout(() => setStillPreparing(true), Math.max(0, SYNTHESIS_LONG_WAIT_MILLISECONDS - elapsed))
     return () => window.clearTimeout(timer)
-  }, [synthesis?.status])
+  }, [synthesis?.status, workflow.id])
+  const retryAnalysingRead = () => {
+    retryReadController.current?.abort()
+    const controller = new AbortController()
+    const lifecycle = synthesisLifecycle.current
+    retryReadController.current = controller
+    setError(null)
+    void getWorkflowSynthesis(workflow.id, controller.signal)
+      .then((next) => {
+        if (controller.signal.aborted || synthesisLifecycle.current !== lifecycle) return
+        applySynthesis(next)
+        if (next.status === 'analysing') setPollCount((current) => current + 1)
+      })
+      .catch(() => { if (!controller.signal.aborted && synthesisLifecycle.current === lifecycle) setError('Something went wrong while preparing your synthesis.') })
+      .finally(() => { if (retryReadController.current === controller) retryReadController.current = null })
+  }
+  const retry = () => {
+    if (synthesis?.status === 'analysing') { retryAnalysingRead(); return }
+    generationRequestedFor.current = workflow.id
+    preparingStartedAt.current = Date.now()
+    setStillPreparing(false)
+    setError(null)
+    requestGeneration()
+  }
   const update = (key: keyof WorkflowSynthesisContent, value: string) => { setDirty(true); setContent((current) => current ? { ...current, [key]: value.trim() || null } : current) }
   const save = async () => {
     if (!synthesis?.draft || !synthesis.synthesisId || !content) return
     setSaving(true); setError(null)
-    try { const next = await editWorkflowSynthesis(workflow.id, { synthesisId: synthesis.synthesisId, expectedRevision: synthesis.draft.revision, content }); setSynthesis(next); setContent(next.draft?.content ?? null); setDirty(false) }
+    try { const next = await editWorkflowSynthesis(workflow.id, { synthesisId: synthesis.synthesisId, expectedRevision: synthesis.draft.revision, content }); applySynthesis(next); setContent(next.draft?.content ?? null); setDirty(false) }
     catch (failure) { setError(failure instanceof WorkflowApiError && failure.code === 'stale_synthesis' ? 'This synthesis changed elsewhere. Reload the saved version before editing again.' : 'The synthesis could not be saved. Nothing has been confirmed.') }
     finally { setSaving(false) }
   }
@@ -6119,8 +6206,9 @@ function WorkflowSynthesisStage({
     ['overallSummary', 'Overall reflection', 'This brings together what emerged across all seven Pou.'],
     ['keyThemes', 'Key themes', ''], ['strengthsSummary', 'Strengths and protective factors', ''], ['areasForAttentionSummary', 'Areas requiring attention', ''], ['informationStillToExploreSummary', 'Information still to explore', ''], ['confirmedSafetyConcernsSummary', 'Confirmed safety concerns', 'Only human-confirmed safety state appears here.'],
   ]
-  if (loading || !synthesis || synthesis.status === 'analysing') return <div className="px-6 py-10 text-center" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Bringing together the confirmed reflections…</div>
-  if (synthesis.status === 'failed' || !synthesis.draft || !content) return <div className="px-6 py-10 space-y-4" style={{ fontFamily: 'var(--font-body)' }}><p className="text-sm" style={{ color: 'var(--color-ink-secondary)' }}>{error ?? 'The synthesis is not available yet. Nothing has been confirmed.'}</p><button onClick={() => { setLoading(true); void generateWorkflowSynthesis(workflow.id).then((next) => { setSynthesis(next); if (next.draft) setContent(next.draft.content) }).catch(() => setError('The synthesis could not be generated.')).finally(() => setLoading(false)) }} className="text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try again</button></div>
+  const preparing = !error && (!synthesis || synthesis.status === 'not_ready' || synthesis.status === 'analysing')
+  if (preparing) return <div className="flex min-h-72 flex-col items-center justify-center px-6 py-10 text-center" role="status" aria-live="polite" style={{ fontFamily: 'var(--font-body)', color: 'var(--color-ink-secondary)' }}><div className="mb-7 flex items-center gap-2 text-xl" aria-hidden="true" style={{ color: 'var(--color-ridge)' }}><span>●</span><span style={{ opacity: 0.65 }}>●</span><span style={{ opacity: 0.35 }}>●</span></div><h2 className="mb-3 text-xl italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>{stillPreparing ? 'Still preparing your synthesis' : 'Preparing your synthesis'}</h2><p className="max-w-sm text-sm italic leading-relaxed" style={{ fontFamily: 'var(--font-display)' }}>{stillPreparing ? 'It’s taking a little longer than usual. You can stay on this screen while we finish preparing it.' : 'We’re bringing together the key themes from your seven Pou. This can take up to 30 seconds.'}</p></div>
+  if (error || synthesis?.status === 'failed' || !synthesis?.draft || !content) return <div className="px-6 py-10 space-y-4" role="alert" style={{ fontFamily: 'var(--font-body)' }}><h2 className="text-xl italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink)' }}>We couldn’t prepare your synthesis</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>{error ?? 'Something went wrong while preparing your synthesis.'}</p><button type="button" onClick={retry} className="text-sm" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ridge)' }}>Try again</button></div>
   return (
     <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}>

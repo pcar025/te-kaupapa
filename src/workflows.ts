@@ -407,8 +407,8 @@ export async function getPhq9SupervisorEscalation(workflowId: string, signal?: A
   return payload.escalation
 }
 
-export async function getWorkflowSynthesis(workflowId: string): Promise<WorkflowSynthesisState> {
-  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`)
+export async function getWorkflowSynthesis(workflowId: string, signal?: AbortSignal): Promise<WorkflowSynthesisState> {
+  const payload = await requestJson<{ synthesis: WorkflowSynthesisState }>(`/api/workflows/${encodeURIComponent(workflowId)}/synthesis`, { signal })
   return payload.synthesis
 }
 
