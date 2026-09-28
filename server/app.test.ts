@@ -17,6 +17,7 @@ import {
   WorkflowNotFoundError,
   type WorkflowMutationResult,
   type WorkflowRepository,
+  type WorkflowReferralCandidateView,
   type WorkflowView,
 } from './workflows/repository.js'
 import type { CreateWorkflowInput, SubmitWorkflowCommandInput } from './workflows/repository.js'
@@ -175,6 +176,12 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     return []
   }
 
+  async listRoutedReferralCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowReferralCandidateView[] | null> {
+    const workflow = this.workflows.get(workflowSessionId)
+    if (!workflow || workflow.ownerId !== actor.id) return null
+    return []
+  }
+
   async listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]> {
     return [...this.workflows.values()]
       .filter((workflow) => workflow.ownerId === actor.id && (workflow.status === 'draft' || workflow.status === 'in_progress'))
@@ -320,6 +327,7 @@ class MemoryWorkflowRepository implements WorkflowRepository {
     } else if (input.command.type === 'referral-plan-confirmed') {
       workflow.referrals = input.command.referrals.map((referral) => ({
         ...referral,
+        sourceCandidateId: referral.sourceCandidateId ?? null,
         pouId: referral.pouId ?? null,
         destinationCode: referral.destinationCode ?? null,
         handoverNote: referral.handoverNote ?? null,
@@ -1035,6 +1043,27 @@ describe('authenticated application shell API', () => {
     expect(response.headers['cache-control']).toBe('no-store')
     expect(response.json()).toEqual({ escalation: { status: 'provider_accepted', attemptCount: 1, providerAcceptedAt: '2026-09-23T00:00:01.000Z', failureCategory: null } })
     expect(escalationRepository.findForWorkflow).toHaveBeenCalledWith(activeKaimahi.organisation.id, created.workflow.id)
+    await app.close()
+  })
+
+  it('exposes only bounded routed referral candidates to the owning Kaimahi', async () => {
+    const repository = new MemoryRepository()
+    const workflows = new MemoryWorkflowRepository()
+    repository.identities.set('cognito:kaimahi', activeKaimahi)
+    await repository.createSession({ id: 'routed-referral-session', userId: activeKaimahi.id, tokenHash: sha256('routed-referral'), expiresAt: new Date(Date.now() + 60_000) })
+    const created = await workflows.createDraft({ actor: activeKaimahi, idempotencyKey: '9b5ec3e2-a698-419f-9b21-7551eb35a708' })
+    vi.spyOn(workflows, 'listRoutedReferralCandidates').mockResolvedValue([{
+      id: 'e22f4aa5-89fd-45e6-8a80-7a5fe2c7e3ad', pouId: 'tikanga', originKind: 'kaimahi_carry_forward',
+      proposedDescription: 'Consider a tikanga support pathway.', sourceCriterionCode: 'TIKANGA_ETHICAL_TENSIONS',
+    }])
+    const app = await createApplication({ config: config(), repository, workflowRepository: workflows, oidcProvider: new FakeOidcProvider() })
+    expect((await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/referral-candidates` })).statusCode).toBe(401)
+    const response = await app.inject({ method: 'GET', url: `/api/workflows/${created.workflow.id}/referral-candidates`, headers: { cookie: 'test_session=routed-referral' } })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.json()).toEqual({ candidates: [{ id: 'e22f4aa5-89fd-45e6-8a80-7a5fe2c7e3ad', pouId: 'tikanga', originKind: 'kaimahi_carry_forward', proposedDescription: 'Consider a tikanga support pathway.', sourceCriterionCode: 'TIKANGA_ETHICAL_TENSIONS' }] })
+    expect(response.json().candidates[0]).not.toHaveProperty('transcript')
+    expect(response.json().candidates[0]).not.toHaveProperty('safety')
     await app.close()
   })
 

@@ -13,6 +13,7 @@ import type {
   WorkflowActionCandidateDecisionInput,
   WorkflowCarryForwardSource,
   WorkflowPouId,
+  WorkflowReferralCandidateDecisionInput,
   WorkflowReferralInput,
   WorkflowStage,
 } from '../../shared/workflow'
@@ -35,6 +36,7 @@ import {
   WorkflowApiError,
   getWorkflow,
   getPendingActionCandidates,
+  getRoutedReferralCandidates,
   getConfirmedPouEvidence,
   getCriterionSourceEvidence,
   getPhq9SupervisorEscalation,
@@ -52,6 +54,7 @@ import {
   type Workflow,
   type WorkflowAction,
   type WorkflowActionCandidate,
+  type WorkflowReferralCandidate,
   type WorkflowCheckpoint,
   type ConfirmedPouEvidence,
   type CriterionSourceEvidence,
@@ -6152,6 +6155,9 @@ function WorkflowSynthesisStage({
 
 type ManualAction = WorkflowActionInput
 type ManualReferral = WorkflowReferralInput
+type ReferralCandidateResolution =
+  | { decision: 'accept'; referral: ManualReferral }
+  | { decision: 'decline' }
 type CandidateResolution =
   | { decision: 'accept'; action: ManualAction }
   | { decision: 'reject' | 'route' }
@@ -6270,21 +6276,70 @@ function RealReferralsStage({
   onReload,
 }: {
   workflow: Workflow
-  onConfirm: (referrals: ManualReferral[]) => void
+  onConfirm: (referrals: ManualReferral[], candidateDecisions: WorkflowReferralCandidateDecisionInput[]) => void
   persistenceState: WorkflowPersistenceState
   onRetry: () => void
   onReload: () => void
 }) {
   const [referrals, setReferrals] = useState<ManualReferral[]>(() => workflow.referrals
     .filter(({ status }) => status !== 'withdrawn')
-    .map((referral) => ({ ...referral, pouId: referral.pouId ?? undefined, destinationCode: referral.destinationCode ?? undefined, handoverNote: referral.handoverNote ?? undefined, notes: referral.notes ?? undefined, status: referral.status as ManualReferral['status'] })))
+    .map((referral) => ({ ...referral, sourceCandidateId: referral.sourceCandidateId ?? undefined, pouId: referral.pouId ?? undefined, destinationCode: referral.destinationCode ?? undefined, handoverNote: referral.handoverNote ?? undefined, notes: referral.notes ?? undefined, status: referral.status as ManualReferral['status'] })))
+  const [candidates, setCandidates] = useState<WorkflowReferralCandidate[] | null>(null)
+  const [candidateError, setCandidateError] = useState<string | null>(null)
+  const [resolutions, setResolutions] = useState<Record<string, ReferralCandidateResolution>>({})
+  useEffect(() => {
+    const controller = new AbortController()
+    setCandidates(null)
+    setCandidateError(null)
+    void getRoutedReferralCandidates(workflow.id, controller.signal)
+      .then(setCandidates)
+      .catch((error: unknown) => {
+        if (controller.signal.aborted) return
+        setCandidateError(error instanceof Error ? error.message : 'Unable to load routed referral suggestions.')
+      })
+    return () => controller.abort()
+  }, [workflow.id])
   const update = (id: string, patch: Partial<ManualReferral>) => setReferrals((items) => items.map((referral) => referral.id === id ? { ...referral, ...patch } : referral))
   const add = () => setReferrals((items) => [...items, { id: crypto.randomUUID(), destinationName: '', reason: '', status: 'draft' }])
+  const decide = (candidate: WorkflowReferralCandidate, decision: ReferralCandidateResolution['decision']) => setResolutions((current) => ({
+    ...current,
+    [candidate.id]: decision === 'accept'
+      ? { decision, referral: { id: crypto.randomUUID(), sourceCandidateId: candidate.id, destinationName: '', reason: candidate.proposedDescription, pouId: candidate.pouId, status: 'draft' } }
+      : { decision },
+  }))
+  const updateCandidateReferral = (candidateId: string, patch: Partial<ManualReferral>) => setResolutions((current) => {
+    const resolution = current[candidateId]
+    return resolution?.decision === 'accept'
+      ? { ...current, [candidateId]: { ...resolution, referral: { ...resolution.referral, ...patch } } }
+      : current
+  })
+  const acceptedCandidateReferrals = Object.values(resolutions).flatMap((resolution) => resolution.decision === 'accept' ? [resolution.referral] : [])
+  const candidateDecisions = Object.entries(resolutions).flatMap(([candidateId, resolution]) => resolution.decision === 'decline'
+    ? [{ candidateId, disposition: 'declined' as const }]
+    : [])
+  const allCandidatesDecided = candidates !== null && candidates.every((candidate) => Boolean(resolutions[candidate.id]))
   return (
     <div className="flex flex-col pb-16" style={{ fontFamily: 'var(--font-body)' }}>
       <div className="px-6 pt-7 pb-5" style={{ borderBottom: '1px solid var(--color-border)' }}><p className="text-xs tracking-widest uppercase mb-3" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-growth)', letterSpacing: '0.14em' }}>Ngā Ara Tautoko — Referrals</p><h2 className="mb-2 leading-snug" style={{ fontFamily: 'var(--font-display)', fontSize: '1.375rem', fontWeight: 500, color: 'var(--color-ink)' }}>Prepare the pathways you choose</h2><p className="text-sm italic" style={{ fontFamily: 'var(--font-display)', color: 'var(--color-ink-secondary)' }}>Prepared means recorded within Te Kaupapa only. Nothing is sent externally.</p></div>
-      <div className="px-5 pt-5 space-y-3">{referrals.map((referral, index) => <div key={referral.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><div className="flex items-center justify-between gap-3"><SectionLabel>Referral {index + 1}</SectionLabel><button onClick={() => setReferrals((items) => items.filter((item) => item.id !== referral.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div><input value={referral.destinationName} onChange={(event) => update(referral.id, { destinationName: event.target.value })} placeholder="Destination name" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /><input value={referral.destinationCode ?? ''} onChange={(event) => update(referral.id, { destinationCode: event.target.value || undefined })} placeholder="Destination code (optional)" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.reason} onChange={(event) => update(referral.id, { reason: event.target.value })} placeholder="Reason for referral" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><select value={referral.pouId ?? ''} onChange={(event) => update(referral.id, { pouId: event.target.value ? event.target.value as ManualReferral['pouId'] : undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="">No linked Pou</option>{TE_WAHAROA_POU.map((pou) => <option key={pou.id} value={pou.id}>{pou.reo}</option>)}</select><select value={referral.status} onChange={(event) => update(referral.id, { status: event.target.value as ManualReferral['status'] })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="draft">Draft</option><option value="prepared">Prepared in Te Kaupapa</option><option value="declined">Declined</option></select><textarea value={referral.handoverNote ?? ''} onChange={(event) => update(referral.id, { handoverNote: event.target.value || undefined })} placeholder="Handover note (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.notes ?? ''} onChange={(event) => update(referral.id, { notes: event.target.value || undefined })} placeholder="Notes (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></div>)}<button onClick={add} className="w-full px-4 py-3 text-left" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)', fontFamily: 'var(--font-mono)', color: 'var(--color-growth)' }}>+ Add referral</button></div>
-      <div className="px-5 pt-6"><button onClick={() => onConfirm(referrals)} disabled={referrals.some((referral) => !referral.destinationName.trim() || !referral.reason.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Haere tonu — Structured review</button><PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
+      <div className="px-5 pt-5 space-y-3">
+        <div className="p-4" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)' }}><SectionLabel>Routed candidates</SectionLabel><p className="text-xs mt-2" style={{ color: 'var(--color-ink-muted)' }}>These were routed here from Action Planning for consideration. They are not referrals until you explicitly accept and confirm this Referral Plan.</p></div>
+        {candidateError && <p className="text-xs" style={{ color: 'var(--color-concern)' }}>{candidateError}</p>}
+        {candidates === null && !candidateError && <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>Loading routed candidates…</p>}
+        {candidates?.map((candidate) => {
+          const resolution = resolutions[candidate.id]
+          const referral = resolution?.decision === 'accept' ? resolution.referral : null
+          return <div key={candidate.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-caution)' }}>
+            <SectionLabel>{WORKFLOW_POU_NAMES[candidate.pouId]}</SectionLabel>
+            <p className="text-sm leading-relaxed" style={{ color: 'var(--color-ink-secondary)' }}>{candidate.proposedDescription}</p>
+            <p className="text-xs" style={{ color: 'var(--color-ink-muted)' }}>{candidate.originKind === 'kaimahi_carry_forward' ? 'Kaimahi carry-forward' : 'Candidate origin recorded'}{candidate.sourceCriterionCode ? ` · ${candidate.sourceCriterionCode}` : ''}</p>
+            <div className="grid grid-cols-2 gap-2"><button onClick={() => decide(candidate, 'accept')} className="py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: resolution?.decision === 'accept' ? 'var(--color-ridge)' : 'var(--color-ground)', color: resolution?.decision === 'accept' ? 'white' : 'var(--color-ridge)', border: '1px solid var(--color-border)' }}>Accept as referral</button><button onClick={() => decide(candidate, 'decline')} className="py-2 text-xs" style={{ fontFamily: 'var(--font-mono)', backgroundColor: resolution?.decision === 'decline' ? 'var(--color-ridge)' : 'var(--color-ground)', color: resolution?.decision === 'decline' ? 'white' : 'var(--color-ridge)', border: '1px solid var(--color-border)' }}>Decline</button></div>
+            {referral && <div className="space-y-2 pt-1"><label className="block text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>DESTINATION NAME<input value={referral.destinationName} onChange={(event) => updateCandidateReferral(candidate.id, { destinationName: event.target.value })} className="mt-2 w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /></label><label className="block text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-ink-muted)' }}>FINAL REFERRAL WORDING<textarea value={referral.reason} onChange={(event) => updateCandidateReferral(candidate.id, { reason: event.target.value })} rows={2} className="mt-2 w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></label><textarea value={referral.handoverNote ?? ''} onChange={(event) => updateCandidateReferral(candidate.id, { handoverNote: event.target.value || undefined })} placeholder="Handover note (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></div>}
+          </div>
+        })}
+        {referrals.map((referral, index) => <div key={referral.id} className="p-4 space-y-3" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-growth)' }}><div className="flex items-center justify-between gap-3"><SectionLabel>Referral {index + 1}</SectionLabel><button onClick={() => setReferrals((items) => items.filter((item) => item.id !== referral.id))} className="text-xs" style={{ fontFamily: 'var(--font-mono)', color: 'var(--color-concern)' }}>Remove</button></div><input value={referral.destinationName} onChange={(event) => update(referral.id, { destinationName: event.target.value })} placeholder="Destination name" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink)', borderLeft: '3px solid var(--color-border)' }} /><input value={referral.destinationCode ?? ''} onChange={(event) => update(referral.id, { destinationCode: event.target.value || undefined })} placeholder="Destination code (optional)" className="w-full px-3 py-3 text-sm outline-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.reason} onChange={(event) => update(referral.id, { reason: event.target.value })} placeholder="Reason for referral" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><select value={referral.pouId ?? ''} onChange={(event) => update(referral.id, { pouId: event.target.value ? event.target.value as ManualReferral['pouId'] : undefined })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="">No linked Pou</option>{TE_WAHAROA_POU.map((pou) => <option key={pou.id} value={pou.id}>{pou.reo}</option>)}</select><select value={referral.status} onChange={(event) => update(referral.id, { status: event.target.value as ManualReferral['status'] })} className="w-full px-3 py-3 text-xs" style={{ backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', border: '1px solid var(--color-border)' }}><option value="draft">Draft</option><option value="prepared">Prepared in Te Kaupapa</option><option value="declined">Declined</option></select><textarea value={referral.handoverNote ?? ''} onChange={(event) => update(referral.id, { handoverNote: event.target.value || undefined })} placeholder="Handover note (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /><textarea value={referral.notes ?? ''} onChange={(event) => update(referral.id, { notes: event.target.value || undefined })} placeholder="Notes (optional)" rows={2} className="w-full px-3 py-3 text-sm outline-none resize-none" style={{ fontFamily: 'var(--font-display)', backgroundColor: 'var(--color-ground)', color: 'var(--color-ink-secondary)', borderLeft: '3px solid var(--color-border)' }} /></div>)}
+        <button onClick={add} className="w-full px-4 py-3 text-left" style={{ backgroundColor: 'var(--color-surface)', borderLeft: '3px solid var(--color-border)', fontFamily: 'var(--font-mono)', color: 'var(--color-growth)' }}>+ Add referral</button>
+      </div>
+      <div className="px-5 pt-6"><button onClick={() => onConfirm([...referrals, ...acceptedCandidateReferrals], candidateDecisions)} disabled={candidates === null || Boolean(candidateError) || !allCandidatesDecided || [...referrals, ...acceptedCandidateReferrals].some((referral) => !referral.destinationName.trim() || !referral.reason.trim())} className="w-full py-4 text-sm disabled:opacity-40" style={{ backgroundColor: 'var(--color-ridge)', color: 'white', fontFamily: 'var(--font-mono)' }}>Haere tonu — Structured review</button>{candidates !== null && !allCandidatesDecided && <p className="text-xs mt-3" style={{ color: 'var(--color-caution)' }}>Choose accept or decline for every routed candidate before confirming.</p>}<PersistenceFeedback state={persistenceState} onRetry={onRetry} onReload={onReload} /></div>
     </div>
   )
 }
@@ -6819,7 +6874,7 @@ export function SessionShell({
       | { type: 'workflow-synthesis-confirmed'; synthesisRevisionId: string }
       | { type: 'pou-summary-confirmed' | 'structured-review-confirmed' | 'workflow-completed' }
       | { type: 'action-plan-confirmed'; actions: ManualAction[]; candidateDecisions: WorkflowActionCandidateDecisionInput[] }
-      | { type: 'referral-plan-confirmed'; referrals: ManualReferral[] },
+      | { type: 'referral-plan-confirmed'; referrals: ManualReferral[]; candidateDecisions: WorkflowReferralCandidateDecisionInput[] },
   ) => {
     const submission = command.type === 'action-plan-confirmed' || command.type === 'referral-plan-confirmed'
       ? { ...command, idempotencyKey: crypto.randomUUID(), expectedVersion: workflow.version }
@@ -6902,7 +6957,7 @@ export function SessionShell({
         {stage === 'pou-review'   && <SinglePouReviewStage pouIdx={currentPouIdx} journeyPouIds={journeyPouIds} checkpoint={workflow.checkpoints.find((checkpoint) => checkpoint.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirm={confirmPouReview} workflowId={workflow.id} carryForwards={workflow.carryForwards} safetyObservations={workflow.safety.observations} onMarkCarryForward={markCarryForward} onCandidateConfirm={confirmAssessmentCandidate} kaitiakitangaPhq9={workflow.kaitiakitangaPhq9} phq9SupervisorEscalation={workflow.phq9SupervisorEscalation} confirmedReview={workflow.pouReviews.find((review) => review.pouId === TE_WAHAROA_POU[currentPouIdx]?.id)} onConfirmKaitiakitangaPhq9={confirmKaitiakitangaPhq9} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} onReturnToCurrentPou={() => { if (workflow.currentPouId) setCurrentPouIdx(pouIndexForId(workflow.currentPouId)); setStage('pou-convo') }} />}
         {stage === 'pou-summary'  && <WorkflowSynthesisStage workflow={workflow} onConfirm={(synthesisRevisionId) => confirmDownstream({ type: 'workflow-synthesis-confirmed', synthesisRevisionId })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'risks'        && <RealActionsStage key={workflow.version} workflow={workflow} onConfirm={(actions, candidateDecisions) => confirmDownstream({ type: 'action-plan-confirmed', actions, candidateDecisions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
-        {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals) => confirmDownstream({ type: 'referral-plan-confirmed', referrals })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
+        {stage === 'referrals'    && <RealReferralsStage key={workflow.version} workflow={workflow} onConfirm={(referrals, candidateDecisions) => confirmDownstream({ type: 'referral-plan-confirmed', referrals, candidateDecisions })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'synthesis'    && <RealStructuredReviewStage workflow={workflow} onConfirm={() => confirmDownstream({ type: 'structured-review-confirmed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
         {stage === 'record'       && <RecordReviewStage workflow={workflow} onComplete={() => confirmDownstream({ type: 'workflow-completed' })} persistenceState={persistenceState} onRetry={retryLatestSubmission} onReload={reloadLatest} />}
       </div>

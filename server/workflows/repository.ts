@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto'
 
-import { and, desc, eq, inArray, sql } from 'drizzle-orm'
+import { and, desc, eq, inArray, isNull, sql } from 'drizzle-orm'
 import type { NodePgDatabase } from 'drizzle-orm/node-postgres'
 
 import {
@@ -18,6 +18,7 @@ import {
   type WorkflowPouId,
   type WorkflowReadiness,
   type WorkflowReferralInput,
+  type WorkflowReferralCandidateDecisionInput,
   type WorkflowReferralStatus,
   type SafetyBroadClass,
   type SafetyObservationConcernLevel,
@@ -88,6 +89,7 @@ export interface WorkflowActionCandidateView {
 
 export interface WorkflowReferralView {
   id: string
+  sourceCandidateId: string | null
   pouId: WorkflowPouId | null
   destinationCode: string | null
   destinationName: string
@@ -98,6 +100,14 @@ export interface WorkflowReferralView {
   withdrawnAt: Date | null
   createdAt: Date
   updatedAt: Date
+}
+
+export interface WorkflowReferralCandidateView {
+  id: string
+  pouId: WorkflowPouId
+  originKind: 'kaimahi_carry_forward' | 'ai_suggestion' | 'deterministic_required'
+  proposedDescription: string
+  sourceCriterionCode: string | null
 }
 
 export interface WorkflowCarryForwardView {
@@ -313,6 +323,7 @@ export interface WorkflowRepository {
   listCompleted(actor: AuthenticatedUser): Promise<CompletedWorkflowListItem[]>
   submitCommand(input: SubmitWorkflowCommandInput): Promise<WorkflowMutationResult>
   listPendingActionCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowActionCandidateView[] | null>
+  listRoutedReferralCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowReferralCandidateView[] | null>
   findSafetyObservationHistory(actor: AuthenticatedUser, workflowSessionId: string, observationId: string): Promise<WorkflowSafetyObservationHistory | null>
 }
 
@@ -489,6 +500,14 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
       proposedDescription: candidate.proposedDescription,
       sourceCriterionCode: candidate.sourceCriterionCode,
     }))
+  }
+
+  async listRoutedReferralCandidates(actor: AuthenticatedUser, workflowSessionId: string): Promise<WorkflowReferralCandidateView[] | null> {
+    const [workflow] = await this.db.select({ id: schema.workflowSessions.id, currentStage: schema.workflowSessions.currentStage }).from(schema.workflowSessions).where(and(eq(schema.workflowSessions.id, workflowSessionId), eq(schema.workflowSessions.organisationId, actor.organisation.id), eq(schema.workflowSessions.kaimahiUserId, actor.id))).limit(1)
+    if (!workflow) return null
+    if (!['referral-planning', 'structured-review', 'record-review'].includes(workflow.currentStage)) throw new WorkflowTransitionError('Referral suggestions are available only during Referral Planning or its revision stages.')
+    const rows = await this.db.select({ id: schema.workflowActionCandidates.id, pouId: schema.workflowActionCandidates.pouId, originKind: schema.workflowActionCandidates.originKind, proposedDescription: schema.workflowActionCandidates.proposedDescription, sourceCriterionCode: schema.workflowPouReviewCriterionSnapshots.criterionCode }).from(schema.workflowActionCandidates).leftJoin(schema.workflowPouReviewCriterionSnapshots, eq(schema.workflowActionCandidates.criterionSnapshotId, schema.workflowPouReviewCriterionSnapshots.id)).leftJoin(schema.workflowReferralCandidateDecisions, eq(schema.workflowActionCandidates.id, schema.workflowReferralCandidateDecisions.sourceCandidateId)).where(and(eq(schema.workflowActionCandidates.workflowSessionId, workflow.id), eq(schema.workflowActionCandidates.organisationId, actor.organisation.id), eq(schema.workflowActionCandidates.disposition, 'routed_to_referral'), isNull(schema.workflowReferralCandidateDecisions.sourceCandidateId))).orderBy(schema.workflowActionCandidates.createdAt)
+    return rows.map((row) => ({ ...row, pouId: row.pouId as WorkflowPouId, originKind: row.originKind as WorkflowReferralCandidateView['originKind'] }))
   }
 
   async listResumable(actor: AuthenticatedUser): Promise<WorkflowListItem[]> {
@@ -963,7 +982,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
             const next = workflow.currentStage === 'referral-planning'
               ? checkpointAfterReferralPlan(checkpoint)
               : this.assertReferralRevisionStage(checkpoint)
-            await this.replaceReferrals(tx, workflow.id, input.actor, input.command.referrals, timestamp)
+            await this.replaceReferrals(tx, workflow.id, input.actor, input.command.referrals, input.command.candidateDecisions ?? [], timestamp)
             await this.updateWorkflowCheckpoint(tx, workflow.id, next, resultingVersion, timestamp)
             interactionType = 'referral_plan_confirmed'
           } else if (input.command.type === 'structured-review-confirmed') {
@@ -1225,19 +1244,42 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     workflowId: string,
     actor: AuthenticatedUser,
     referrals: WorkflowReferralInput[],
+    candidateDecisions: WorkflowReferralCandidateDecisionInput[],
     timestamp: Date,
   ) {
     this.assertUniqueIds(referrals, 'Referral')
+    this.assertUniqueIds(candidateDecisions.map(({ candidateId }) => ({ id: candidateId })), 'Referral candidate')
     const existing = await executor
       .select()
       .from(schema.workflowReferrals)
       .where(eq(schema.workflowReferrals.workflowSessionId, workflowId))
     const existingById = new Map(existing.map((referral) => [referral.id, referral]))
     const requestedIds = new Set(referrals.map(({ id }) => id))
+    const routed = await executor.select().from(schema.workflowActionCandidates).where(and(eq(schema.workflowActionCandidates.workflowSessionId, workflowId), eq(schema.workflowActionCandidates.organisationId, actor.organisation.id), eq(schema.workflowActionCandidates.disposition, 'routed_to_referral')))
+    const routedById = new Map(routed.map((candidate) => [candidate.id, candidate]))
+    const existingDecisions = await executor.select().from(schema.workflowReferralCandidateDecisions).where(eq(schema.workflowReferralCandidateDecisions.workflowSessionId, workflowId))
+    const existingDecisionByCandidateId = new Map(existingDecisions.map((decision) => [decision.sourceCandidateId, decision]))
+    const accepted = referrals.filter((referral) => !existingById.has(referral.id) && referral.sourceCandidateId)
+    const acceptedIds = accepted.map((referral) => referral.sourceCandidateId!)
+    const declinedIds = candidateDecisions.map((decision) => decision.candidateId)
+    if (new Set(acceptedIds).size !== acceptedIds.length || acceptedIds.some((id) => declinedIds.includes(id))) throw new WorkflowValidationError('Each routed candidate must have one referral outcome.')
+    if (acceptedIds.some((id) => existingDecisionByCandidateId.has(id)) || declinedIds.some((id) => existingDecisionByCandidateId.has(id))) throw new WorkflowValidationError('Referral candidate outcomes are already recorded and cannot be replaced.')
+    const decidedIds = new Set([...existingDecisionByCandidateId.keys(), ...acceptedIds, ...declinedIds])
+    if (decidedIds.size !== routed.length || routed.some((candidate) => !decidedIds.has(candidate.id)) || [...decidedIds].some((id) => !routedById.has(id))) throw new WorkflowValidationError('Every routed referral candidate must be accepted or declined before Referral Planning is confirmed.')
+
+    for (const referral of existing) {
+      if (referral.sourceCandidateId && existingDecisionByCandidateId.has(referral.sourceCandidateId) && !requestedIds.has(referral.id)) {
+        throw new WorkflowValidationError('A candidate-derived referral with a recorded outcome cannot be removed.')
+      }
+    }
 
     for (const referral of referrals) {
+      const existingReferral = existingById.get(referral.id)
+      if (existingReferral && referral.sourceCandidateId !== (existingReferral.sourceCandidateId ?? undefined)) throw new WorkflowValidationError('Canonical referral candidate provenance cannot be changed.')
+      const candidate = referral.sourceCandidateId ? routedById.get(referral.sourceCandidateId) : undefined
+      if (referral.sourceCandidateId && (!candidate || referral.pouId !== candidate.pouId || (!existingReferral && existingDecisionByCandidateId.has(referral.sourceCandidateId)))) throw new WorkflowValidationError('A candidate-derived referral must remain linked to its source Pou.')
       const values = {
-        pouId: referral.pouId ?? null,
+        pouId: candidate ? candidate.pouId : referral.pouId ?? null,
         destinationCode: referral.destinationCode?.trim() || null,
         destinationName: referral.destinationName.trim(),
         reason: referral.reason.trim(),
@@ -1258,10 +1300,18 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
           workflowSessionId: workflowId,
           organisationId: actor.organisation.id,
           createdByUserId: actor.id,
+          sourceCandidateId: referral.sourceCandidateId ?? null,
           ...values,
           createdAt: timestamp,
         })
       }
+    }
+
+    for (const referral of accepted) {
+      await executor.insert(schema.workflowReferralCandidateDecisions).values({ sourceCandidateId: referral.sourceCandidateId!, workflowSessionId: workflowId, organisationId: actor.organisation.id, referralId: referral.id, disposition: 'accepted_as_referral', decidedByUserId: actor.id, decidedAt: timestamp })
+    }
+    for (const decision of candidateDecisions) {
+      await executor.insert(schema.workflowReferralCandidateDecisions).values({ sourceCandidateId: decision.candidateId, workflowSessionId: workflowId, organisationId: actor.organisation.id, referralId: null, disposition: 'declined', decidedByUserId: actor.id, decidedAt: timestamp })
     }
 
     for (const referral of existing) {
@@ -1588,6 +1638,7 @@ export class PostgresWorkflowRepository implements WorkflowRepository {
     }))
     const referralViews = referrals.map((referral) => ({
       id: referral.id,
+      sourceCandidateId: referral.sourceCandidateId,
       pouId: referral.pouId as WorkflowPouId | null,
       destinationCode: referral.destinationCode,
       destinationName: referral.destinationName,

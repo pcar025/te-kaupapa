@@ -669,7 +669,7 @@ describe('approved application smoke paths', () => {
     const workflow = workflowFixture({
       currentStage: 'record-review', currentPouId: null,
       actions: [{ id: '24c30b9f-7161-4e2e-844b-84daee3eedb4', sourceCandidateId: null, pouId: 'whakapapa', title: 'Arrange a reconnection kōrero', type: 'follow-up', dueDate: '2026-08-22', status: 'open', notes: null, withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
-      referrals: [{ id: 'b5bca508-eef0-4a03-9c07-f6c848af6afc', pouId: 'manaakitanga', destinationCode: null, destinationName: 'Whānau support service', reason: 'Requested support', handoverNote: null, notes: null, status: 'prepared', withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
+      referrals: [{ id: 'b5bca508-eef0-4a03-9c07-f6c848af6afc', sourceCandidateId: null, pouId: 'manaakitanga', destinationCode: null, destinationName: 'Whānau support service', reason: 'Requested support', handoverNote: null, notes: null, status: 'prepared', withdrawnAt: null, createdAt: '2026-08-18T00:00:00.000Z', updatedAt: '2026-08-18T00:00:00.000Z' }],
       safety: { ...emptySafety, observations: [activeObservation({ assessmentContext: 'pou', pouId: 'kaitiakitanga', concernLevel: 'action', contextNote: 'Human-confirmed safety context.' })], indicators: { ...emptySafety.indicators, activeObservationCount: 1 } },
     })
     const synthesis = {
@@ -723,6 +723,56 @@ describe('approved application smoke paths', () => {
     expect(screen.getByText(/not actions, referrals, or safety decisions/i)).toBeTruthy()
     expect(screen.queryByText(/review item/i)).toBeNull()
     expect(screen.queryByText(/Synthetic Whakapapa reflection with strength/i)).toBeNull()
+  })
+
+  it('requires an explicit Referral Plan outcome before a routed candidate becomes a referral', async () => {
+    const workflow = workflowFixture({ currentStage: 'referral-planning', currentPouId: null, version: 9 })
+    const acknowledged = { ...workflow, currentStage: 'structured-review' as const, version: 10 }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/referral-candidates')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: [{ id: 'e22f4aa5-89fd-45e6-8a80-7a5fe2c7e3ad', pouId: 'whakapapa', originKind: 'kaimahi_carry_forward', proposedDescription: 'Explore a whānau support pathway.', sourceCriterionCode: 'WHAKAPAPA_CONNECTIONS' }] }) })
+      if (url.endsWith('/interactions')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) })
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow }) })
+    }))
+    const user = userEvent.setup()
+    render(<SessionShell workflow={workflow} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
+
+    expect(await screen.findByText('Routed candidates')).toBeTruthy()
+    expect(screen.getByText(/not referrals until you explicitly accept/i)).toBeTruthy()
+    await user.click(screen.getByRole('button', { name: 'Accept as referral' }))
+    await user.type(screen.getByLabelText('DESTINATION NAME'), 'Kaimahi-selected support pathway')
+    await user.click(screen.getByRole('button', { name: /Structured review/i }))
+
+    await waitFor(() => expect(interactionCalls()).toHaveLength(1))
+    expect(JSON.parse(String(interactionCalls()[0]?.[1]?.body))).toMatchObject({
+      type: 'referral-plan-confirmed',
+      referrals: [{ sourceCandidateId: 'e22f4aa5-89fd-45e6-8a80-7a5fe2c7e3ad', destinationName: 'Kaimahi-selected support pathway', reason: 'Explore a whānau support pathway.', pouId: 'whakapapa' }],
+      candidateDecisions: [],
+    })
+  })
+
+  it('records a routed-candidate decline separately without posting a referral', async () => {
+    const workflow = workflowFixture({ currentStage: 'referral-planning', currentPouId: null, version: 9 })
+    const acknowledged = { ...workflow, currentStage: 'structured-review' as const, version: 10 }
+    vi.stubGlobal('fetch', vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.endsWith('/referral-candidates')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ candidates: [{ id: '9841ed77-faa6-4680-9723-b5e2eb6e10fd', pouId: 'tikanga', originKind: 'kaimahi_carry_forward', proposedDescription: 'Consider a tikanga support pathway.', sourceCriterionCode: 'TIKANGA_ETHICAL_TENSIONS' }] }) })
+      if (url.endsWith('/interactions')) return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow: acknowledged, acknowledgement: { replayed: false } }) })
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ workflow }) })
+    }))
+    const user = userEvent.setup()
+    render(<SessionShell workflow={workflow} onWorkflowChange={() => undefined} displayName="Test Kaimahi" onDone={() => undefined} />)
+
+    await screen.findByText('Routed candidates')
+    await user.click(screen.getByRole('button', { name: 'Decline' }))
+    await user.click(screen.getByRole('button', { name: /Structured review/i }))
+
+    await waitFor(() => expect(interactionCalls()).toHaveLength(1))
+    expect(JSON.parse(String(interactionCalls()[0]?.[1]?.body))).toMatchObject({
+      type: 'referral-plan-confirmed',
+      referrals: [],
+      candidateDecisions: [{ candidateId: '9841ed77-faa6-4680-9723-b5e2eb6e10fd', disposition: 'declined' }],
+    })
   })
 
   it('uses canonical confirmed narrative reviews rather than retired checkpoint concern fields in structured review', () => {

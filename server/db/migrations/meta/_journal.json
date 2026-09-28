@@ -225,6 +225,13 @@
       "when": 1790545000000,
       "tag": "0031_candidate_action_delete_invariant",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790553648014,
+      "tag": "0032_high_master_chief",
+      "breakpoints": true
     }
   ]
 }

@@ -50,6 +50,7 @@ export const workflowCarryForwardSource = pgEnum('workflow_carry_forward_source'
 export const workflowActionCandidateOrigin = pgEnum('workflow_action_candidate_origin', ['kaimahi_carry_forward', 'ai_suggestion', 'deterministic_required'])
 export const workflowActionCandidateDisposition = pgEnum('workflow_action_candidate_disposition', ['pending', 'accepted_as_action', 'rejected', 'routed_to_referral'])
 export const workflowReferralStatus = pgEnum('workflow_referral_status', ['draft', 'prepared', 'declined', 'withdrawn'])
+export const workflowReferralCandidateDecisionStatus = pgEnum('workflow_referral_candidate_decision_status', ['accepted_as_referral', 'declined'])
 export const workflowSynthesisStatus = pgEnum('workflow_synthesis_status', ['generating', 'generated', 'failed'])
 export const workflowSynthesisRevisionSource = pgEnum('workflow_synthesis_revision_source', ['generated', 'edited'])
 export const workflowSafetyAssessmentContext = pgEnum('workflow_safety_assessment_context', ['setup', 'pou'])
@@ -1162,6 +1163,7 @@ export const workflowReferrals = pgTable(
     handoverNote: text('handover_note'),
     notes: text('notes'),
     status: workflowReferralStatus('status').default('draft').notNull(),
+    sourceCandidateId: uuid('source_candidate_id').references(() => workflowActionCandidates.id),
     createdByUserId: uuid('created_by_user_id').notNull(),
     withdrawnAt: timestamp('withdrawn_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
@@ -1184,12 +1186,33 @@ export const workflowReferrals = pgTable(
       name: 'workflow_referral_created_by_organisation_fk',
     }),
     index('workflow_referral_workflow_status_idx').on(table.workflowSessionId, table.status),
+    uniqueIndex('workflow_referral_source_candidate_uq').on(table.sourceCandidateId),
     check('workflow_referral_destination_code_length', sql`${table.destinationCode} is null or length(${table.destinationCode}) between 1 and 100`),
     check('workflow_referral_destination_name_length', sql`length(${table.destinationName}) between 1 and 300`),
     check('workflow_referral_reason_length', sql`length(${table.reason}) between 1 and 4000`),
     check('workflow_referral_handover_note_length', sql`${table.handoverNote} is null or length(${table.handoverNote}) <= 4000`),
     check('workflow_referral_notes_length', sql`${table.notes} is null or length(${table.notes}) <= 4000`),
     check('workflow_referral_withdrawn_state', sql`(${table.status} = 'withdrawn') = (${table.withdrawnAt} is not null)`),
+  ],
+)
+
+/** Durable Referral Planning decision for a candidate already routed by Action Planning. */
+export const workflowReferralCandidateDecisions = pgTable(
+  'workflow_referral_candidate_decision',
+  {
+    sourceCandidateId: uuid('source_candidate_id').primaryKey().references(() => workflowActionCandidates.id),
+    workflowSessionId: uuid('workflow_session_id').notNull(),
+    organisationId: uuid('organisation_id').notNull(),
+    referralId: uuid('referral_id').references(() => workflowReferrals.id),
+    disposition: workflowReferralCandidateDecisionStatus('disposition').notNull(),
+    decidedByUserId: uuid('decided_by_user_id').notNull(),
+    decidedAt: timestamp('decided_at', { withTimezone: true }).defaultNow().notNull(),
+  },
+  (table) => [
+    foreignKey({ columns: [table.workflowSessionId, table.organisationId], foreignColumns: [workflowSessions.id, workflowSessions.organisationId], name: 'referral_candidate_decision_session_organisation_fk' }),
+    foreignKey({ columns: [table.decidedByUserId, table.organisationId], foreignColumns: [appUsers.id, appUsers.organisationId], name: 'referral_candidate_decision_actor_organisation_fk' }),
+    uniqueIndex('referral_candidate_decision_referral_uq').on(table.referralId),
+    check('referral_candidate_decision_shape', sql`(${table.disposition} = 'accepted_as_referral' and ${table.referralId} is not null) or (${table.disposition} = 'declined' and ${table.referralId} is null)`),
   ],
 )
 

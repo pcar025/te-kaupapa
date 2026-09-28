@@ -128,6 +128,8 @@ export interface WorkflowActionCandidateDecisionInput {
 
 export interface WorkflowReferralInput {
   id: string
+  /** Present only when this explicit referral accepts a routed candidate. */
+  sourceCandidateId?: string
   destinationCode?: string
   destinationName: string
   reason: string
@@ -135,6 +137,12 @@ export interface WorkflowReferralInput {
   handoverNote?: string
   notes?: string
   status: Exclude<WorkflowReferralStatus, 'withdrawn'>
+}
+
+/** A referral-side outcome that preserves the prior Action Plan routing decision. */
+export interface WorkflowReferralCandidateDecisionInput {
+  candidateId: string
+  disposition: 'declined'
 }
 
 /**
@@ -216,6 +224,7 @@ export type WorkflowCommand =
       idempotencyKey: string
       expectedVersion: number
       referrals: WorkflowReferralInput[]
+      candidateDecisions?: WorkflowReferralCandidateDecisionInput[]
     }
   | {
       type: 'structured-review-confirmed'

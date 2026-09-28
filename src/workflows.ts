@@ -245,6 +245,7 @@ export interface WorkflowActionCandidate {
 
 export interface WorkflowReferral {
   id: string
+  sourceCandidateId: string | null
   pouId: WorkflowPouId | null
   destinationCode: string | null
   destinationName: string
@@ -256,6 +257,8 @@ export interface WorkflowReferral {
   createdAt: string
   updatedAt: string
 }
+
+export interface WorkflowReferralCandidate extends WorkflowActionCandidate {}
 
 export interface WorkflowStructuredReview {
   reference: string
@@ -378,6 +381,11 @@ export async function getPendingActionCandidates(workflowId: string, signal?: Ab
     `/api/workflows/${encodeURIComponent(workflowId)}/action-candidates`,
     { signal },
   )
+  return Array.isArray(payload.candidates) ? payload.candidates : []
+}
+
+export async function getRoutedReferralCandidates(workflowId: string, signal?: AbortSignal): Promise<WorkflowReferralCandidate[]> {
+  const payload = await requestJson<{ candidates: WorkflowReferralCandidate[] }>(`/api/workflows/${encodeURIComponent(workflowId)}/referral-candidates`, { signal })
   return Array.isArray(payload.candidates) ? payload.candidates : []
 }
 

@@ -758,6 +758,107 @@ describe('Whakapapa review-draft reconciliation', () => {
     })
   })
 
+  it('hands routed candidates to Referral Planning without changing the Action Plan decision', async () => {
+    await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
+      expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
+      const ready = await reviewDraftRepository.findForKaimahi(actor, workflowId)
+      const criterion = ready.draft.criterionAssessments.find((assessment: { status: string }) => assessment.status === 'not_explored')
+      const workflows = new PostgresWorkflowRepository(connection.db, () => new Date('2026-09-28T00:00:00.000Z'), undefined, repository, reviewDraftRepository)
+      const edited = await reviewDraftRepository.edit(actor, workflowId, {
+        reviewDraftId: ready.draft.id,
+        expectedRevision: ready.draft.revision,
+        content: {
+          overallSummary: ready.draft.overallSummary,
+          strengthsSummary: ready.draft.strengthsSummary,
+          areasForAttentionSummary: 'Kaimahi-confirmed area for referral consideration.',
+          evidenceTurnIds: ready.draft.evidenceTurnIds,
+        },
+      })
+      let version = 2
+      for (const source of [
+        { kind: 'review_criterion' as const, reviewDraftRevisionId: edited.revisionId, criterionCode: criterion!.criterionCode },
+        { kind: 'areas_for_attention' as const, reviewDraftRevisionId: edited.revisionId },
+      ]) {
+        const carried = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+          type: 'carry-forward-marked', itemId: randomUUID(), idempotencyKey: randomUUID(), expectedVersion: version, pouId: 'whakapapa', source,
+        } })
+        version = carried.workflow.version
+      }
+      const confirmed = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'pou-review-confirmed', idempotencyKey: randomUUID(), expectedVersion: version, pouId: 'whakapapa', reviewDraftRevisionId: edited.revisionId,
+      } })
+      await connection.db.update(schema.workflowSessions).set({ currentStage: 'action-planning', currentPouId: null }).where(eq(schema.workflowSessions.id, workflowId))
+      const pending = await workflows.listPendingActionCandidates(actor, workflowId)
+      expect(pending).toHaveLength(2)
+      const actionPlan = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'action-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: confirmed.workflow.version, actions: [],
+        candidateDecisions: pending!.map((candidate: any) => ({ candidateId: candidate.id, disposition: 'routed_to_referral' as const })),
+      } })
+      expect(actionPlan.workflow).toMatchObject({ currentStage: 'referral-planning', referrals: [] })
+      const routed = await workflows.listRoutedReferralCandidates(actor, workflowId)
+      expect(routed).toHaveLength(2)
+      expect(JSON.stringify(routed)).not.toContain('Synthetic Whakapapa reflection')
+      expect(await workflows.listRoutedReferralCandidates({ ...actor, id: randomUUID() }, workflowId)).toBeNull()
+      const accepted = routed!.find((candidate: any) => candidate.sourceCriterionCode === criterion!.criterionCode)!
+      const declined = routed!.find((candidate: any) => candidate.id !== accepted.id)!
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.insert(schema.workflowReferrals).values({
+          id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa',
+          sourceCandidateId: accepted.id, destinationName: 'Forged undecided referral', reason: 'Not permitted', status: 'draft', createdByUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived referral requires its accepted referral decision')
+      await expect(connection.db.transaction(async (tx: any) => {
+        const forgedReferralId = randomUUID()
+        await tx.insert(schema.workflowReferrals).values({
+          id: forgedReferralId, workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'whakapapa',
+          sourceCandidateId: declined.id, destinationName: 'Forged declined referral', reason: 'Not permitted', status: 'draft', createdByUserId: actor.id,
+        })
+        await tx.insert(schema.workflowReferralCandidateDecisions).values({
+          sourceCandidateId: declined.id, workflowSessionId: workflowId, organisationId: actor.organisation.id, referralId: null, disposition: 'declined', decidedByUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'declined referral decision cannot link a canonical referral')
+      const referralId = randomUUID()
+      const referralPlan = {
+        type: 'referral-plan-confirmed' as const,
+        idempotencyKey: randomUUID(),
+        expectedVersion: actionPlan.workflow.version,
+        referrals: [{ id: referralId, sourceCandidateId: accepted.id, destinationName: 'Kaimahi-selected pathway', reason: 'Kaimahi-edited referral wording.', pouId: 'whakapapa' as const, status: 'prepared' as const }],
+        candidateDecisions: [{ candidateId: declined.id, disposition: 'declined' as const }],
+      }
+      const result = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: referralPlan })
+      expect(result.workflow).toMatchObject({ currentStage: 'structured-review', referrals: [{ id: referralId, sourceCandidateId: accepted.id, destinationName: 'Kaimahi-selected pathway', reason: 'Kaimahi-edited referral wording.', pouId: 'whakapapa', status: 'prepared' }] })
+      expect((await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: referralPlan })).replayed).toBe(true)
+      const [storedReferral] = await connection.db.select().from(schema.workflowReferrals).where(eq(schema.workflowReferrals.id, referralId))
+      expect(storedReferral).toMatchObject({ sourceCandidateId: accepted.id, workflowSessionId: workflowId, organisationId: actor.organisation.id, reason: 'Kaimahi-edited referral wording.' })
+      const decisions = await connection.db.select().from(schema.workflowReferralCandidateDecisions).where(eq(schema.workflowReferralCandidateDecisions.workflowSessionId, workflowId))
+      expect(decisions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ sourceCandidateId: accepted.id, referralId, disposition: 'accepted_as_referral', decidedByUserId: actor.id }),
+        expect.objectContaining({ sourceCandidateId: declined.id, referralId: null, disposition: 'declined', decidedByUserId: actor.id }),
+      ]))
+      const storedCandidates = await connection.db.select().from(schema.workflowActionCandidates).where(eq(schema.workflowActionCandidates.workflowSessionId, workflowId))
+      expect(storedCandidates.every((candidate: any) => candidate.disposition === 'routed_to_referral')).toBe(true)
+      expect(await connection.db.select().from(schema.workflowActions).where(eq(schema.workflowActions.workflowSessionId, workflowId))).toHaveLength(0)
+      await expect(connection.db.execute(sql`update workflow_referral set source_candidate_id = null where id = ${referralId}`)).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'canonical referral candidate provenance is immutable')
+      await expect(connection.db.execute(sql`delete from workflow_referral_candidate_decision where source_candidate_id = ${accepted.id}`)).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'referral candidate decision is immutable')
+      await expect(connection.db.execute(sql`update workflow_referral_candidate_decision set source_candidate_id = ${declined.id} where source_candidate_id = ${accepted.id}`)).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'referral candidate decision is immutable')
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.update(schema.workflowActionCandidates).set({ disposition: 'rejected', dispositionedAt: new Date('2026-09-28T00:00:00.000Z'), dispositionedByUserId: actor.id }).where(eq(schema.workflowActionCandidates.id, declined.id))
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate with a referral outcome must remain routed')
+      const revision = await workflows.submitCommand({ actor, workflowSessionId: workflowId, command: {
+        type: 'referral-plan-confirmed', idempotencyKey: randomUUID(), expectedVersion: result.workflow.version,
+        referrals: [{ id: referralId, sourceCandidateId: accepted.id, destinationName: 'Kaimahi-selected pathway', reason: 'Kaimahi-edited revised referral wording.', pouId: 'whakapapa', status: 'prepared' }], candidateDecisions: [],
+      } })
+      expect(revision.workflow.referrals).toMatchObject([{ id: referralId, sourceCandidateId: accepted.id, reason: 'Kaimahi-edited revised referral wording.' }])
+      expect(await connection.db.select().from(schema.workflowReferralCandidateDecisions).where(eq(schema.workflowReferralCandidateDecisions.workflowSessionId, workflowId))).toHaveLength(2)
+      await expect(connection.db.transaction(async (tx: any) => {
+        await tx.insert(schema.workflowReferrals).values({
+          id: randomUUID(), workflowSessionId: workflowId, organisationId: actor.organisation.id, pouId: 'manaakitanga',
+          sourceCandidateId: accepted.id, destinationName: 'Forged cross-Pou referral', reason: 'Not permitted', status: 'draft', createdByUserId: actor.id,
+        })
+      })).rejects.toSatisfy((error: unknown) => postgresCause(error)?.message === 'candidate-derived referral must match its source workflow, organisation, and Pou')
+    })
+  })
+
   it('caps distinct carry-forward sources at the Action Plan decision capacity', async () => {
     await withPhase5BTestContext(async ({ request, payload, connection, actor, workflowId, reviewDraftRepository, repository }: any) => {
       expect((await request(payload({ transcript: 'Synthetic Whakapapa reflection [scenario:all-no-concern]' }))).statusCode).toBe(202)
